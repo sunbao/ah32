@@ -1,0 +1,147 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ah32.skill.v1.schema.json",
+  "title": "AH32 Skill Manifest (v1)",
+  "type": "object",
+  "additionalProperties": false,
+  "patternProperties": {
+    "^x-": {
+      "description": "Extension fields reserved for private/custom usage.",
+      "type": ["object", "array", "string", "number", "integer", "boolean", "null"]
+    }
+  },
+  "required": ["schema_version", "meta", "entry"],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "ah32.skill.v1",
+      "description": "Skill manifest version. New grouped format MUST set this to ah32.skill.v1."
+    },
+    "meta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9\\-_]{1,63}$",
+          "description": "Stable skill id. Used in routing, logs, and UI."
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "description": "Human-readable skill name shown in UI."
+        },
+        "version": { "type": "string", "default": "0.0.0" },
+        "enabled": { "type": "boolean", "default": true },
+        "priority": {
+          "type": "integer",
+          "default": 0,
+          "description": "Higher priority wins when multiple skills match. Used as a small stable bias, not a replacement for routing."
+        },
+        "description": { "type": "string", "default": "" },
+        "group": {
+          "type": "string",
+          "description": "Optional grouping/category for mutual exclusion and UI."
+        }
+      }
+    },
+    "routing": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "hosts": {
+          "type": "array",
+          "items": { "type": "string", "enum": ["writer", "et", "wpp", "wps", "office", "*"] }
+        },
+        "tags": { "type": "array", "items": { "type": "string" } },
+        "intents": { "type": "array", "items": { "type": "string" } },
+        "triggers": { "type": "array", "items": { "type": "string" } },
+        "examples": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "delivery": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "default_writeback": {
+          "type": "string",
+          "enum": ["direct", "compare_table"],
+          "description": "Default writeback delivery mode hint. compare_table: deliver a compare table first and optionally provide a manual apply macro."
+        }
+      }
+    },
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "active_doc_text": { "type": "boolean" },
+        "active_doc_max_chars": { "type": "integer", "minimum": 1, "maximum": 200000 },
+        "writeback": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "default_anchor": { "type": "string", "enum": ["cursor", "end"], "default": "cursor" }
+          }
+        }
+      }
+    },
+    "output": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "markers": { "type": "array", "items": { "type": "string" } },
+        "output_schema": { "type": "string" },
+        "max_chars": { "type": "integer" },
+        "styleSpecHints": {
+          "description": "Optional hints that map to ah32.styleSpec.v1 fields for the host.",
+          "oneOf": [
+            { "type": "object", "additionalProperties": true },
+            { "type": "string" }
+          ]
+        }
+      }
+    },
+    "tools": {
+      "type": "array",
+      "description": "Tools provided by this skill. Located in scripts/ directory.",
+      "items": {
+        "oneOf": [
+          {
+            "type": "string",
+            "description": "Simple mode: tool name (auto-discovered from scripts/tool_name.py)"
+          },
+          {
+            "type": "object",
+            "description": "Full mode: tool definition",
+            "additionalProperties": false,
+            "required": ["name"],
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Tool name (must match script filename without .py)"
+              },
+              "description": {
+                "type": "string",
+                "description": "Tool description for LLM"
+              },
+              "parameters": {
+                "type": "object",
+                "description": "JSON Schema for tool parameters"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "system_prompt": { "type": "string" },
+        "prompt": { "type": "string" }
+      }
+    }
+  }
+}

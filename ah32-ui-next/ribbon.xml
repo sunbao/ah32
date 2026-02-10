@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<customUI xmlns="http://schemas.microsoft.com/office/2006/01/customui" onLoad="ribbon.OnAddinLoad">
+    <ribbon startFromScratch="false">
+        <tabs>
+            <tab id="Ah32Tab" label="阿蛤">
+                <group id="Ah32Group" label="智能助手">
+                    <button id="btnOpenPanel" label="打开助手" size="large"
+                            onAction="ribbon.OnAction"
+                            getEnabled="ribbon.OnGetEnabled"
+                            getVisible="ribbon.OnGetVisible"
+                            getImage="ribbon.GetImage" />
+                </group>
+            </tab>
+        </tabs>
+    </ribbon>
+</customUI>

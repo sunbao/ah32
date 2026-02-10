@@ -1,0 +1,81 @@
+{
+  "schema_version": "ah32.skill.v1",
+  "meta": {
+    "id": "meeting-minutes",
+    "name": "会议纪要助手",
+    "version": "0.2.0",
+    "enabled": true,
+    "priority": 35,
+    "description": "会议纪要：把讨论整理成结论/决议/行动项（Owner/DDL）并列出未决问题。",
+    "group": "meeting"
+  },
+  "routing": {
+    "hosts": [
+      "writer"
+    ],
+    "tags": [
+      "会议",
+      "纪要",
+      "待办",
+      "决议",
+      "行动项"
+    ],
+    "intents": [
+      "meeting_minutes",
+      "action_items"
+    ],
+    "triggers": [
+      "会议纪要",
+      "纪要",
+      "会议记录",
+      "复盘",
+      "周会",
+      "例会",
+      "评审会",
+      "决议",
+      "结论",
+      "待办",
+      "行动项",
+      "owner",
+      "ddl"
+    ],
+    "examples": [
+      "把讨论内容整理成会议纪要，并输出待办表（Owner/DDL）",
+      "把会议决策、行动项、未决问题分开列清单",
+      "把分歧点记录清楚，并给出下一步拍板机制与DDL"
+    ]
+  },
+  "output": {
+    "markers": [
+      "结论摘要",
+      "决议清单",
+      "待办表",
+      "风险与未决问题",
+      "分歧点",
+      "拍板机制"
+    ],
+    "output_schema": "输出必须包含：1) 基本信息；2) 结论摘要；3) 议题-讨论要点（证据摘录）；4) 决议清单；5) 待办表（Owner/DDL/状态）；6) 风险与未决；7) 自检清单。",
+    "max_chars": 3200,
+    "styleSpecHints": {
+      "writer": {
+        "font": {
+          "body": {
+            "name": "??",
+            "size": 12
+          }
+        },
+        "table": {
+          "header": {
+            "bold": true,
+            "fill": "#f1f5f9"
+          }
+        }
+      },
+      "group": "meeting",
+      "schema": "ah32.styleSpecHints.v1"
+    }
+  },
+  "entry": {
+    "system_prompt": "SYSTEM.docx"
+  }
+}

@@ -1,0 +1,72 @@
+{
+  "schema_version": "ah32.skill.v1",
+  "meta": {
+    "id": "answer-mode",
+    "name": "Answer Mode（写回题干）",
+    "version": "0.2.0",
+    "enabled": true,
+    "priority": 55,
+    "description": "在现有试题/表单中按题号定位括号/下划线/横线并写回答案，尽量不改动题干。",
+    "group": "exam"
+  },
+  "delivery": {
+    "default_writeback": "plan"
+  },
+  "routing": {
+    "hosts": [
+      "writer"
+    ],
+    "tags": [
+      "答题",
+      "填空",
+      "写回",
+      "题号",
+      "选择题",
+      "问卷"
+    ],
+    "intents": [
+      "answer_mode",
+      "writeback"
+    ],
+    "triggers": [
+      "填答案",
+      "填入答案",
+      "写回答案",
+      "把答案写回",
+      "答题",
+      "做题",
+      "选择题",
+      "填空题",
+      "括号",
+      "下划线",
+      "横线",
+      "题号",
+      "第1题",
+      "答案："
+    ],
+    "examples": [
+      "把第1-5题答案填到括号里：1.A 2.C 3.B 4.D 5.A",
+      "把下划线处填空：1. 北京 2. 2026年",
+      "在试卷原文中按题号填答案，不要改题干"
+    ]
+  },
+  "capabilities": {
+    "active_doc_text": true,
+    "active_doc_max_chars": 60000
+  },
+  "output": {
+    "markers": [
+      "AnswerMode",
+      "题号",
+      "括号",
+      "下划线",
+      "不改题干"
+    ],
+    "output_schema": "输出必须是可执行 Plan JSON（schema_version=ah32.plan.v1，host_app=wps），并使用 op=answer_mode_apply（answers=[{q,answer}]）按题号定位并填充答案；不改动题干正文；写回需幂等（重复执行不重复插入）。若找不到题号/占位符，必须抛出可读错误（包含题号）。",
+    "max_chars": 2400
+  },
+  "entry": {
+    "system_prompt": "SYSTEM.txt"
+  }
+}
+

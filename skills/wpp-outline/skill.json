@@ -1,0 +1,20 @@
+{
+  "schema_version": "ah32.skill.v1",
+  "meta": {
+    "id": "wpp-outline",
+    "name": "演示文稿大纲助手",
+    "version": "0.2.0",
+    "enabled": true,
+    "priority": 50,
+    "description": "按内容推荐 WPP 版式并映射占位布局"
+  },
+  "routing": {
+    "hosts": ["wpp"],
+    "tags": ["ppt", "wpp", "layout"],
+    "triggers": ["版式", "布局", "演示文稿", "幻灯片"]
+  },
+  "entry": {
+    "system_prompt": "SYSTEM.txt"
+  },
+  "tools": ["layout_recommender", "placeholder_mapper"]
+}

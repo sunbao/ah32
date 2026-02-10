@@ -1,0 +1,149 @@
+{
+  "schema_version": "ah32.skill.v1",
+  "meta": {
+    "id": "exam-answering",
+    "name": "试题答题助手",
+    "version": "0.2.0",
+    "enabled": true,
+    "priority": 45,
+    "description": "基于当前文档题干生成《答案与解析》，并写回文档末尾（不改动题干）。",
+    "group": "exam"
+  },
+  "delivery": {
+    "default_writeback": "plan"
+  },
+  "routing": {
+    "hosts": [
+      "writer"
+    ],
+    "tags": [
+      "试题",
+      "答题",
+      "考试",
+      "语文",
+      "填空",
+      "阅读",
+      "文言文",
+      "选择题"
+    ],
+    "intents": [
+      "exam_answering",
+      "qa",
+      "writeback"
+    ],
+    "triggers": [
+      "做题",
+      "答题",
+      "试题",
+      "试卷",
+      "中考",
+      "高考",
+      "模拟题",
+      "预测题",
+      "答案与解析",
+      "选择题",
+      "填空题",
+      "阅读题",
+      "文言文",
+      "译文"
+    ],
+    "examples": [
+      "请替我完成本套试题：不要改动题干；在文档末尾生成《答案与解析》，按题号输出。",
+      "按题号给出答案：选择题只写选项字母；填空题写填空内容；阅读题给要点式答案。"
+    ]
+  },
+  "capabilities": {
+    "active_doc_text": true,
+    "active_doc_max_chars": 40000,
+    "writeback": {
+      "default_anchor": "end"
+    }
+  },
+  "output": {
+    "markers": [
+      "答案与解析",
+      "选择题",
+      "填空题",
+      "译文",
+      "要点"
+    ],
+    "output_schema": "输出必须是可执行 Plan JSON（schema_version=ah32.plan.v1, host_app=wps），并满足：1) 不改动题干；2) 用 upsert_block(anchor=end) 在文档末尾追加《答案与解析》小节；3) 按题号输出；4) 选择题只写选项字母；5) 填空题只写填空内容；6) 文言文翻译给出译文；7) 阅读题给要点式答案；8) 重跑幂等（使用稳定 block_id，避免重复插入）。",
+    "max_chars": 4200,
+    "styleSpecHints": {
+      "writer": {
+        "font": {
+          "body": {
+            "name": "??",
+            "size": 12
+          }
+        },
+        "table": {
+          "header": {
+            "bold": true,
+            "fill": "#f1f5f9"
+          }
+        }
+      },
+      "group": "exam",
+      "schema": "ah32.styleSpecHints.v1"
+    }
+  },
+  "entry": {
+    "system_prompt": "SYSTEM.txt"
+  },
+  "tools": [
+    {
+      "name": "fill_blank_detector",
+      "description": "检测文档中的纯下划线填空题（______），返回每个填空的位置、上下文和题号。适用于无法直接解析结构的扫描文档或格式不规范文档。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "doc_text": {
+            "type": "string",
+            "description": "待检测的文档文本内容"
+          },
+          "context_chars": {
+            "type": "integer",
+            "description": "上下文保留字符数，默认20",
+            "default": 20
+          }
+        },
+        "required": ["doc_text"]
+      }
+    },
+    {
+      "name": "question_parser",
+      "description": "解析文档中的题干结构，自动识别题型（选择/填空/问答/文言文/阅读）、提取题号和选项。适用于结构化文档。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "doc_text": {
+            "type": "string",
+            "description": "待解析的文档文本内容"
+          }
+        },
+        "required": ["doc_text"]
+      }
+    },
+    {
+      "name": "answer_formatter",
+      "description": "将答案列表格式化为 Plan JSON 格式。包含完整 JSON、纯字母、纯文字三种输出格式。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "answers": {
+            "type": "array",
+            "description": "答案列表，每个元素包含 q、answer、type、analysis 字段"
+          },
+          "format": {
+            "type": "string",
+            "description": "输出格式：json(完整)、letter(字母)、text(文字)",
+            "enum": ["json", "letter", "text"],
+            "default": "json"
+          }
+        },
+        "required": ["answers"]
+      }
+    }
+  ]
+}

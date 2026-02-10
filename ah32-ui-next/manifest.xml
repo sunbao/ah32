@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<JsPlugin>
+  <ApiVersion>1.0.0</ApiVersion>
+  <Name>Ah32</Name>
+  <Description>阿蛤 - WPS 智能办公助手（对话 + 可执行 JS 宏）</Description>
+  <Entry>
+    <Path>index.html</Path>
+  </Entry>
+  <Ribbon>
+    <Path>ribbon.xml</Path>
+  </Ribbon>
+</JsPlugin>

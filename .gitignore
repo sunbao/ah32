@@ -1,0 +1,67 @@
+# Python
+.venv/
+__pycache__/
+.mypy_cache/
+.pytest_cache/
+*.pyc
+*.pyo
+*.pyd
+
+# Node.js
+node_modules/
+ah32-ui-next/node_modules/
+ah32-ui-next/.vite/
+ah32-ui-next/dist/
+
+# Logs
+*.log
+logs/
+storage/logs/*
+
+# Local-only docs (do not publish)
+docs/
+
+# Local-only QA assets (do not publish)
+qa/
+
+# System
+.DS_Store
+
+# Storage
+storage/
+storage/embeddings/*
+storage/models/*
+storage/uploads/*
+storage/memory/*
+storage/knowledge/*
+
+# IDE
+.idea/
+ah32-ui/.idea/
+.claude/
+
+# Codex / local agent artifacts
+.codex-loop*/
+.coverage
+scripts/ralph_codex_loop.sh
+scripts/ralph_codex_prompt.md
+
+# Config
+.env
+
+# Build artifacts
+*.spec
+build/
+dist/
+rag/
+*.egg-info/
+wps-plugin/
+_release/
+Ah32WpsPlugin*.zip
+INSTALL_*.txt
+
+# Packaging
+packaging/out/
+installer/out/
+tests/
+.venv*/

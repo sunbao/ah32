@@ -1,0 +1,58 @@
+{
+  "schema_version": "ah32.skill.v1",
+  "meta": {
+    "id": "exam-answering",
+    "name": "试题答题助手",
+    "version": "0.2.0",
+    "enabled": true,
+    "priority": 60,
+    "description": "面向试卷/练习题的结构化解析与答案整理"
+  },
+  "routing": {
+    "hosts": ["writer", "wps"],
+    "tags": ["exam", "qa", "education"],
+    "triggers": ["答题", "做题", "试卷", "填空题", "选择题"]
+  },
+  "entry": {
+    "system_prompt": "SYSTEM.txt"
+  },
+  "tools": [
+    {
+      "name": "fill_blank_detector",
+      "description": "定位文档中的下划线填空位置与上下文",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "doc_text": { "type": "string" },
+          "context_chars": { "type": "integer", "default": 20 }
+        },
+        "required": ["doc_text"]
+      }
+    },
+    {
+      "name": "question_parser",
+      "description": "解析题目结构并识别题型、题号、选项",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "doc_text": { "type": "string" },
+          "parse_options": { "type": "boolean", "default": true }
+        },
+        "required": ["doc_text"]
+      }
+    },
+    {
+      "name": "answer_formatter",
+      "description": "将答案整理为统一结构，便于输出 Plan JSON",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "answers": { "type": "array" },
+          "format": { "type": "string", "default": "plan_json" },
+          "include_rationale": { "type": "boolean", "default": false }
+        },
+        "required": ["answers"]
+      }
+    }
+  ]
+}

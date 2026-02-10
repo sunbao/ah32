@@ -1,0 +1,85 @@
+{
+  "schema_version": "ah32.skill.v1",
+  "meta": {
+    "id": "finance-audit",
+    "name": "财务审计助手",
+    "version": "0.2.0",
+    "enabled": true,
+    "priority": 30,
+    "description": "面向财务审计/对账/异常核验：输出异常清单、核验步骤、佐证材料与关键发现摘要。",
+    "group": "finance"
+  },
+  "routing": {
+    "hosts": [
+      "writer"
+    ],
+    "tags": [
+      "财务",
+      "审计",
+      "对账",
+      "异常",
+      "口径"
+    ],
+    "intents": [
+      "finance_audit",
+      "anomaly_detection",
+      "reconcile"
+    ],
+    "triggers": [
+      "财务",
+      "审计",
+      "对账",
+      "异常",
+      "波动",
+      "报表",
+      "预算",
+      "毛利",
+      "费用",
+      "收入",
+      "成本",
+      "发票",
+      "凭证",
+      "流水",
+      "应收",
+      "应付"
+    ],
+    "examples": [
+      "对这份财务数据做异常点清单，并给出需要的佐证与核验步骤",
+      "输出对账差异原因假设，并给出下一步核验清单",
+      "按收入/费用/采购/现金流四条链路给出取证与核验步骤"
+    ]
+  },
+  "output": {
+    "markers": [
+      "异常/差异清单表",
+      "核验步骤",
+      "需要的佐证材料",
+      "范围与口径",
+      "关键发现摘要",
+      "取证链条"
+    ],
+    "output_schema": "输出必须包含：1) 范围与口径；2) 关键发现摘要；3) 异常/差异清单表（现象-可能原因-佐证-核验步骤）；4) 待办；5) 自检清单。",
+    "max_chars": 3400,
+    "styleSpecHints": {
+      "writer": {
+        "font": {
+          "body": {
+            "name": "??",
+            "size": 12
+          }
+        },
+        "table": {
+          "header": {
+            "bold": true,
+            "fill": "#f1f5f9"
+          }
+        }
+      },
+      "group": "finance",
+      "schema": "ah32.styleSpecHints.v1"
+    }
+  },
+  "entry": {
+    "system_prompt": "SYSTEM.docx"
+  }
+}

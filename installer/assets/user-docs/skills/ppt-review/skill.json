@@ -1,0 +1,78 @@
+{
+  "schema_version": "ah32.skill.v1",
+  "meta": {
+    "id": "ppt-review",
+    "name": "PPT审稿与结构优化助手",
+    "version": "0.2.0",
+    "enabled": true,
+    "priority": 26,
+    "description": "PPT审稿与优化：结构叙事、逐页问题清单、版式一致性与材料缺口清单。",
+    "group": "ppt"
+  },
+  "routing": {
+    "hosts": [
+      "wpp"
+    ],
+    "tags": [
+      "PPT",
+      "审稿",
+      "结构",
+      "逻辑",
+      "排版",
+      "一致性"
+    ],
+    "intents": [
+      "ppt_review",
+      "structure_review",
+      "design_review"
+    ],
+    "triggers": [
+      "ppt",
+      "PPT",
+      "审稿",
+      "审阅",
+      "改稿",
+      "排版",
+      "对齐",
+      "版式",
+      "逻辑",
+      "结构",
+      "一致性",
+      "讲稿"
+    ],
+    "examples": [
+      "帮我审一下这份PPT：指出逻辑漏洞、信息缺口和排版问题，并给修改建议",
+      "把这套PPT改得更像专业汇报：统一口径、优化结构、补齐关键页"
+    ]
+  },
+  "output": {
+    "markers": [
+      "问题概览",
+      "逐页问题清单",
+      "证据定位",
+      "版式与一致性规范",
+      "材料缺口清单",
+      "致命问题"
+    ],
+    "output_schema": "输出必须包含：1) 问题概览（按严重度）；2) 结构与叙事问题；3) 逐页问题清单（证据+建议）；4) 版式与一致性规范；5) 需要补充的数据/材料；6) 自检清单。",
+    "max_chars": 3600,
+    "styleSpecHints": {
+      "wpp": {
+        "theme": {
+          "palette": {
+            "primary": "#2563eb",
+            "accent": "#f59e0b"
+          }
+        },
+        "layout": {
+          "grid": "standard"
+        }
+      },
+      "group": "ppt",
+      "schema": "ah32.styleSpecHints.v1"
+    }
+  },
+  "entry": {
+    "system_prompt": "SYSTEM.docx"
+  }
+}

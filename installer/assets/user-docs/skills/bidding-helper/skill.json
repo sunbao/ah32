@@ -1,0 +1,147 @@
+{
+  "schema_version": "ah32.skill.v1",
+  "meta": {
+    "id": "bidding-helper",
+    "name": "招投标助手",
+    "version": "0.2.1",
+    "enabled": true,
+    "priority": 40,
+    "description": "面向招投标/标书场景：符合性/偏离矩阵、澄清问题清单、证据定位与风险建议。",
+    "group": "bidding"
+  },
+  "routing": {
+    "hosts": [
+      "writer"
+    ],
+    "tags": [
+      "招投标",
+      "投标",
+      "标书",
+      "招标文件",
+      "响应",
+      "符合性",
+      "偏离",
+      "澄清",
+      "评分"
+    ],
+    "intents": [
+      "bidding",
+      "compliance_matrix",
+      "risk"
+    ],
+    "triggers": [
+      "招标",
+      "投标",
+      "标书",
+      "招标文件",
+      "投标文件",
+      "响应文件",
+      "资格审查",
+      "门槛",
+      "符合性",
+      "偏离",
+      "偏离表",
+      "响应表",
+      "技术条款",
+      "商务条款",
+      "评分",
+      "技术响应",
+      "商务响应",
+      "澄清",
+      "答疑",
+      "应答"
+    ],
+    "examples": [
+      "根据招标文件输出符合性/偏离表，并列出需要澄清的问题",
+      "把技术条款逐条应答，给出证据定位与风险提示"
+    ]
+  },
+  "output": {
+    "markers": [
+      "符合性/偏离矩阵",
+      "澄清问题清单",
+      "证据定位",
+      "风险与建议",
+      "自检清单"
+    ],
+    "output_schema": "输出必须包含并使用以下标题：1) 执行摘要；2) 符合性/偏离矩阵（含证据定位）；3) 澄清问题清单（含章节定位）；4) 风险与建议（含Owner/DDL）；5) 自检清单。",
+    "max_chars": 3600,
+    "styleSpecHints": {
+      "writer": {
+        "font": {
+          "body": {
+            "name": "??",
+            "size": 12
+          }
+        },
+        "table": {
+          "header": {
+            "bold": true,
+            "fill": "#f1f5f9"
+          }
+        }
+      },
+      "group": "bidding",
+      "schema": "ah32.styleSpecHints.v1"
+    }
+  },
+  "entry": {
+    "system_prompt": "SYSTEM.md"
+  },
+  "tools": [
+    {
+      "name": "generate_timeline",
+      "description": "从招标文档提取里程碑时间线，包括资格审查、现场探勘、答疑截止、投标截止等关键日期。自动计算剩余天数并标注来源章节。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "bid_doc_text": {
+            "type": "string",
+            "description": "招标文档全文内容"
+          },
+          "reference_date": {
+            "type": "string",
+            "description": "参考日期（格式：YYYY-MM-DD），默认今天"
+          }
+        },
+        "required": ["bid_doc_text"]
+      }
+    },
+    {
+      "name": "check_compliance",
+      "description": "逐条检查投标文件与招标文件的符合性，识别符合、偏离、待确认项。生成符合性矩阵和高风险项清单。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "tender_doc": {
+            "type": "string",
+            "description": "招标文件内容"
+          },
+          "bid_doc": {
+            "type": "string",
+            "description": "投标文件内容，用于对比"
+          }
+        },
+        "required": ["tender_doc"]
+      }
+    },
+    {
+      "name": "generate_checklist",
+      "description": "生成封标前检查清单，包括签章完整性、密封要求、授权委托书、报价完整性等10项检查。判断是否满足封标条件。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "bid_doc": {
+            "type": "string",
+            "description": "投标文件内容，用于检查"
+          },
+          "tender_doc": {
+            "type": "string",
+            "description": "招标文件内容，用于检查密封要求"
+          }
+        },
+        "required": []
+      }
+    }
+  ]
+}

@@ -1,0 +1,115 @@
+{
+  "schema_version": "ah32.skill.v1",
+  "meta": {
+    "id": "wpp-outline",
+    "name": "WPP版式助手",
+    "version": "0.2.0",
+    "enabled": true,
+    "priority": 50,
+    "description": "根据幻灯片内容推荐 WPP 版式ID，生成占位区域映射，支持标题页、目录页、内容页等多种场景。",
+    "group": "wpp"
+  },
+  "routing": {
+    "hosts": [
+      "wpp"
+    ],
+    "tags": [
+      "PPT",
+      "幻灯片",
+      "版式",
+      "WPP",
+      "演示",
+      "模板"
+    ],
+    "intents": [
+      "wpp_layout",
+      "slide_design",
+      "outline"
+    ],
+    "triggers": [
+      "版式",
+      "幻灯片",
+      "PPT",
+      "WPP",
+      "演示文稿",
+      "模板",
+      "标题页",
+      "目录页",
+      "内容页"
+    ],
+    "examples": [
+      "推荐一个适合产品介绍PPT的版式",
+      "根据这个标题推荐合适的WPP版式",
+      "帮我设计一个项目汇报的幻灯片版式"
+    ]
+  },
+  "output": {
+    "markers": [
+      "版式ID",
+      "占位区域",
+      "推荐理由"
+    ],
+    "output_schema": "输出必须是可执行 Plan JSON（schema_version=ah32.plan.v1, host_app=wpp），推荐1-3个版式ID并说明理由。",
+    "max_chars": 2000,
+    "styleSpecHints": {
+      "wpp": {
+        "layout_recommendation": true
+      },
+      "group": "wpp",
+      "schema": "ah32.styleSpecHints.v1"
+    }
+  },
+  "entry": {
+    "system_prompt": "SYSTEM.md"
+  },
+  "tools": [
+    {
+      "name": "recommend_layout",
+      "description": "根据幻灯片内容推荐合适的 WPP 版式ID。支持标题页、目录页、两栏内容页、图表页、图片页等场景。返回推荐版式及置信度。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "content_type": {
+            "type": "string",
+            "description": "内容类型：title（标题页）、toc（目录页）、two_column（两栏内容）、chart（图表页）、image（图片页）、text（纯文本）、mix（混合内容）"
+          },
+          "has_title": {
+            "type": "boolean",
+            "description": "是否包含标题"
+          },
+          "has_chart": {
+            "type": "boolean",
+            "description": "是否包含图表"
+          },
+          "has_image": {
+            "type": "boolean",
+            "description": "是否包含图片"
+          },
+          "point_count": {
+            "type": "integer",
+            "description": "要点数量"
+          },
+          "custom_requirements": {
+            "type": "string",
+            "description": "自定义需求描述"
+          }
+        },
+        "required": ["content_type"]
+      }
+    },
+    {
+      "name": "get_placeholder_map",
+      "description": "获取指定版式的占位区域映射。返回各占位区域的坐标、类型（标题/正文/图片/图表等）和尺寸。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "layout_id": {
+            "type": "integer",
+            "description": "版式ID"
+          }
+        },
+        "required": ["layout_id"]
+      }
+    }
+  ]
+}

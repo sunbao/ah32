@@ -1,0 +1,78 @@
+{
+  "schema_version": "ah32.skill.v1",
+  "meta": {
+    "id": "risk-register",
+    "name": "风险台账助手",
+    "version": "0.2.0",
+    "enabled": true,
+    "priority": 20,
+    "description": "风险台账：风险登记表、分级口径、应对策略、升级机制与待办清单。",
+    "group": "risk"
+  },
+  "routing": {
+    "hosts": [
+      "writer"
+    ],
+    "tags": [
+      "风险",
+      "台账",
+      "登记",
+      "应对",
+      "Owner",
+      "DDL"
+    ],
+    "intents": [
+      "risk_register",
+      "risk_assessment"
+    ],
+    "triggers": [
+      "风险台账",
+      "风险登记",
+      "风险清单",
+      "概率",
+      "影响",
+      "应对",
+      "owner",
+      "ddl",
+      "缓解措施"
+    ],
+    "examples": [
+      "把风险点整理成风险台账（含概率/影响/等级/Owner/DDL）",
+      "输出风险矩阵与整改行动清单",
+      "把项目/合同/安全风险按优先级排序，并给出应对策略与升级机制"
+    ]
+  },
+  "output": {
+    "markers": [
+      "风险登记表",
+      "风险等级口径",
+      "综合等级",
+      "应对策略",
+      "升级机制",
+      "待办清单"
+    ],
+    "output_schema": "输出必须包含：1) 风险登记表（字段齐全）；2) 风险等级口径；3) Top 风险摘要与建议；4) 自检清单。",
+    "max_chars": 3600,
+    "styleSpecHints": {
+      "writer": {
+        "font": {
+          "body": {
+            "name": "??",
+            "size": 12
+          }
+        },
+        "table": {
+          "header": {
+            "bold": true,
+            "fill": "#f1f5f9"
+          }
+        }
+      },
+      "group": "risk",
+      "schema": "ah32.styleSpecHints.v1"
+    }
+  },
+  "entry": {
+    "system_prompt": "SYSTEM.docx"
+  }
+}

@@ -1,0 +1,109 @@
+{
+  "schema_version": "ah32.skill.v1",
+  "meta": {
+    "id": "ppt-outline",
+    "name": "PPT大纲与讲稿助手",
+    "version": "0.2.0",
+    "enabled": true,
+    "priority": 28,
+    "description": "PPT大纲与讲稿：叙事主线、逐页大纲表、讲稿、素材/数据需求与版式建议。",
+    "group": "ppt"
+  },
+  "routing": {
+    "hosts": [
+      "wpp"
+    ],
+    "tags": [
+      "PPT",
+      "汇报",
+      "演示",
+      "大纲",
+      "讲稿",
+      "结构",
+      "版式"
+    ],
+    "intents": [
+      "ppt_outline",
+      "speaker_notes",
+      "storyline"
+    ],
+    "triggers": [
+      "ppt",
+      "PPT",
+      "演示",
+      "汇报",
+      "路演",
+      "slide",
+      "Slides",
+      "大纲",
+      "讲稿",
+      "逐页",
+      "结构",
+      "金字塔"
+    ],
+    "examples": [
+      "给我做一份10页的汇报PPT大纲，并写逐页讲稿（每页1分钟）",
+      "把这份方案整理成路演PPT结构：问题-方案-价值-落地-风险"
+    ]
+  },
+  "output": {
+    "markers": [
+      "逐页大纲表",
+      "讲稿",
+      "叙事主线",
+      "数据/素材需求",
+      "主题与版式建议",
+      "颜色"
+    ],
+    "output_schema": "输出必须包含：1) 目标与受众假设；2) 整体叙事主线；3) 逐页大纲表（标题/目的/要点/图示建议/讲稿/数据需求/风险提示）；4) 主题与版式建议；5) 自检清单。",
+    "max_chars": 3800,
+    "styleSpecHints": {
+      "wpp": {
+        "theme": {
+          "palette": {
+            "primary": "#2563eb",
+            "accent": "#f59e0b"
+          }
+        },
+        "layout": {
+          "grid": "standard"
+        }
+      },
+      "group": "ppt",
+      "schema": "ah32.styleSpecHints.v1"
+    }
+  },
+  "entry": {
+    "system_prompt": "SYSTEM.docx"
+  },
+  "tools": [
+    {
+      "name": "layout_recommender",
+      "description": "根据幻灯片内容结构推荐版式",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "slide_content": {
+            "type": "object",
+            "description": "幻灯片内容特征（type/has_chart/has_image/point_count）"
+          }
+        },
+        "required": ["slide_content"]
+      }
+    },
+    {
+      "name": "placeholder_mapper",
+      "description": "根据版式编号返回占位区域映射",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "layout_id": {
+            "type": "integer",
+            "description": "版式编号"
+          }
+        },
+        "required": ["layout_id"]
+      }
+    }
+  ]
+}

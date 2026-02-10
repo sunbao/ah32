@@ -1,0 +1,220 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ah32.styleSpec.v1",
+  "title": "AH32 StyleSpec v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "name"],
+  "properties": {
+    "schema": { "type": "string", "const": "ah32.styleSpec.v1" },
+    "name": { "type": "string", "minLength": 1 },
+    "palette": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "primary": { "$ref": "#/$defs/color" },
+        "accent": { "$ref": "#/$defs/color" },
+        "danger": { "$ref": "#/$defs/color" },
+        "muted": { "$ref": "#/$defs/color" },
+        "background": { "$ref": "#/$defs/color" }
+      }
+    },
+    "font": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "body": { "$ref": "#/$defs/fontStyle" },
+        "title": { "$ref": "#/$defs/fontStyle" },
+        "subtitle": { "$ref": "#/$defs/fontStyle" }
+      }
+    },
+    "writer": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "paragraph": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "titleSpacing": { "$ref": "#/$defs/spacing" },
+            "bodySpacing": { "$ref": "#/$defs/spacing" },
+            "lineSpacing": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "rule": { "type": "string", "enum": ["single", "1.5", "double", "exactly", "multiple"] },
+                "pt": { "type": "number" },
+                "multiple": { "type": "number" }
+              }
+            }
+          }
+        },
+        "table": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "header": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "bold": { "type": "boolean" },
+                "fill": { "$ref": "#/$defs/color" }
+              }
+            },
+            "borders": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "outer": { "type": "string", "enum": ["none", "thin", "thick"] },
+                "inner": { "type": "string", "enum": ["none", "thin", "thick"] }
+              }
+            },
+            "alignment": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "header": { "type": "string", "enum": ["left", "center", "right"] },
+                "numberColumnsRightAlign": { "type": "boolean" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "et": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sheet": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "freeze": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "row": { "type": "integer", "minimum": 0 },
+                "col": { "type": "integer", "minimum": 0 }
+              }
+            },
+            "columnWidth": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "autoFit": { "type": "boolean" }
+              }
+            }
+          }
+        },
+        "numberFormat": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "money": { "type": "string" },
+            "percent": { "type": "string" },
+            "date": { "type": "string" }
+          }
+        },
+        "chart": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "theme": { "type": "string" },
+            "palette": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/color" },
+              "minItems": 1,
+              "maxItems": 12
+            },
+            "title": { "$ref": "#/$defs/fontStyle" }
+          }
+        }
+      }
+    },
+    "wpp": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "deck": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "theme": { "type": "string" },
+            "titleAlign": { "type": "string", "enum": ["left", "center", "right"] }
+          }
+        },
+        "slide": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "title": { "$ref": "#/$defs/fontStyle" },
+            "body": { "$ref": "#/$defs/fontStyle" }
+          }
+        },
+        "layout": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "grid": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "columns": { "type": "integer", "minimum": 1, "maximum": 6 },
+                "gutter": { "type": "number", "minimum": 0 },
+                "margin": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "left": { "type": "number", "minimum": 0 },
+                    "right": { "type": "number", "minimum": 0 },
+                    "top": { "type": "number", "minimum": 0 },
+                    "bottom": { "type": "number", "minimum": 0 }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "shape": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "emphasisBox": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "fill": { "$ref": "#/$defs/color" },
+                "textColor": { "$ref": "#/$defs/color" }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "color": {
+      "type": "string",
+      "pattern": "^#[0-9a-fA-F]{6}$"
+    },
+    "fontStyle": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string" },
+        "size": { "type": "number", "minimum": 1 },
+        "bold": { "type": "boolean" },
+        "italic": { "type": "boolean" },
+        "color": { "$ref": "#/$defs/color" }
+      }
+    },
+    "spacing": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "beforePt": { "type": "number", "minimum": 0 },
+        "afterPt": { "type": "number", "minimum": 0 }
+      }
+    }
+  }
+}

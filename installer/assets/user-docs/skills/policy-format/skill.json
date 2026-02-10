@@ -1,0 +1,88 @@
+{
+  "schema_version": "ah32.skill.v1",
+  "meta": {
+    "id": "policy-format",
+    "name": "制度/规范排版助手",
+    "version": "0.2.0",
+    "enabled": true,
+    "priority": 25,
+    "description": "制度/规范排版：编号层级、术语一致性、可替换模板段落与格式化检查清单。",
+    "group": "policy"
+  },
+  "routing": {
+    "hosts": [
+      "writer"
+    ],
+    "tags": [
+      "制度",
+      "政策",
+      "格式",
+      "排版",
+      "编号",
+      "措辞"
+    ],
+    "intents": [
+      "policy_format",
+      "structure",
+      "rewrite"
+    ],
+    "triggers": [
+      "制度",
+      "办法",
+      "规定",
+      "规范",
+      "SOP",
+      "流程",
+      "格式",
+      "编号",
+      "条款",
+      "修订",
+      "术语",
+      "定义",
+      "职责",
+      "审批",
+      "留痕"
+    ],
+    "examples": [
+      "把这份制度按规范的编号与层级重排，并给出格式化检查清单",
+      "统一术语与措辞，输出可直接应用的排版规则",
+      "补齐制度必备章节并给出可替换模板段落（职责/流程/追责）"
+    ]
+  },
+  "delivery": {
+    "default_writeback": "compare_table"
+  },
+  "output": {
+    "markers": [
+      "结构与编号规范",
+      "建议章节结构",
+      "术语/一致性/合规问题清单",
+      "可直接替换",
+      "制度必备章节",
+      "RACI"
+    ],
+    "output_schema": "输出必须包含：1) 结构与编号规范；2) 建议章节结构；3) 术语/一致性/合规问题清单（证据定位+可替换文本）；4) 关键段落模板；5) 自检清单。",
+    "max_chars": 3400,
+    "styleSpecHints": {
+      "writer": {
+        "font": {
+          "body": {
+            "name": "??",
+            "size": 12
+          }
+        },
+        "table": {
+          "header": {
+            "bold": true,
+            "fill": "#f1f5f9"
+          }
+        }
+      },
+      "group": "policy",
+      "schema": "ah32.styleSpecHints.v1"
+    }
+  },
+  "entry": {
+    "system_prompt": "SYSTEM.docx"
+  }
+}

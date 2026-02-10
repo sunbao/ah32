@@ -1,0 +1,93 @@
+{
+  "schema_version": "ah32.skill.v1",
+  "meta": {
+    "id": "contract-review",
+    "name": "合同审阅助手",
+    "version": "0.2.0",
+    "enabled": true,
+    "priority": 50,
+    "description": "面向合同/协议场景：按风险等级输出风险清单、建议修改条款与待确认问题。",
+    "group": "legal"
+  },
+  "routing": {
+    "hosts": [
+      "writer"
+    ],
+    "tags": [
+      "合同",
+      "法务",
+      "审阅",
+      "条款",
+      "风险"
+    ],
+    "intents": [
+      "contract_review",
+      "risk",
+      "rewrite_clause"
+    ],
+    "triggers": [
+      "合同",
+      "协议",
+      "条款",
+      "补充协议",
+      "框架协议",
+      "SLA",
+      "付款",
+      "发票",
+      "交付",
+      "验收",
+      "质保",
+      "违约",
+      "违约金",
+      "责任限制",
+      "赔偿",
+      "保密",
+      "知识产权",
+      "数据",
+      "个人信息",
+      "争议解决",
+      "管辖"
+    ],
+    "examples": [
+      "审查这份合同的风险点并给出可直接替换的修改条款",
+      "把合同条款按风险等级列成清单，并提出需要确认的问题",
+      "重点审阅付款、验收、违约责任、责任上限与数据/保密条款，输出风险台账"
+    ]
+  },
+  "delivery": {
+    "default_writeback": "compare_table"
+  },
+  "output": {
+    "markers": [
+      "风险清单表",
+      "建议修改文本",
+      "条款定位",
+      "风险等级",
+      "需确认问题",
+      "待办清单"
+    ],
+    "output_schema": "输出必须包含：1) 执行摘要；2) 风险清单表（条款定位+原文摘录+风险等级+建议修改文本）；3) 需确认问题；4) 待办（Owner/优先级/DDL）；5) 自检清单。",
+    "max_chars": 4000,
+    "styleSpecHints": {
+      "writer": {
+        "font": {
+          "body": {
+            "name": "??",
+            "size": 12
+          }
+        },
+        "table": {
+          "header": {
+            "bold": true,
+            "fill": "#f1f5f9"
+          }
+        }
+      },
+      "group": "legal",
+      "schema": "ah32.styleSpecHints.v1"
+    }
+  },
+  "entry": {
+    "system_prompt": "SYSTEM.docx"
+  }
+}
