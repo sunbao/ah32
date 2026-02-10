@@ -76,7 +76,7 @@ if (Test-Path (Join-Path $repoRoot "dist\\$AppName")) { Remove-Item -Recurse -Fo
   --name $AppName `
   --noconsole `
   --paths src `
-  -m ah32.launcher
+  src\\ah32\\launcher.py
 
 $pyDist = Join-Path $repoRoot ("dist\\" + $AppName)
 if (-not (Test-Path $pyDist)) { throw "PyInstaller output not found: $pyDist" }
