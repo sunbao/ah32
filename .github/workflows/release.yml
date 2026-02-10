@@ -142,14 +142,10 @@ jobs:
             dist/checksums-backend-linux-arm64.txt
 
   build-backend-macos:
-    strategy:
-      matrix:
-        include:
-          - runner: macos-13
-            platform: macos-x64
-          - runner: macos-14
-            platform: macos-arm64
-    runs-on: ${{ matrix.runner }}
+    # NOTE: GitHub-hosted Intel macOS runners (e.g. macos-13) may be unavailable.
+    # Keep ARM64 builds on macos-14. If you need macos-x64, use a self-hosted Intel runner
+    # or adjust to build universal2 when your toolchain supports it.
+    runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
 
@@ -165,19 +161,19 @@ jobs:
       - name: Build backend tar.gz
         run: |
           mkdir -p dist
-          bash scripts/package-backend.sh --platform "${{ matrix.platform }}" --out-dir dist
+          bash scripts/package-backend.sh --platform macos-arm64 --out-dir dist
 
       - name: Checksums
         run: |
           ls -la dist || true
-          shasum -a 256 "dist/Ah32Backend-${{ matrix.platform }}.tar.gz" > "dist/checksums-backend-${{ matrix.platform }}.txt"
+          shasum -a 256 "dist/Ah32Backend-macos-arm64.tar.gz" > "dist/checksums-backend-macos-arm64.txt"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ah32-backend-${{ matrix.platform }}
+          name: ah32-backend-macos-arm64
           path: |
-            dist/Ah32Backend-${{ matrix.platform }}.tar.gz
-            dist/checksums-backend-${{ matrix.platform }}.txt
+            dist/Ah32Backend-macos-arm64.tar.gz
+            dist/checksums-backend-macos-arm64.txt
 
   publish-release:
     runs-on: ubuntu-latest
