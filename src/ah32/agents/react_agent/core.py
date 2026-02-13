@@ -3737,6 +3737,13 @@ class ReActAgent:
 
         done_payload = {"type": "done", "content": "", "session_id": session_id}
 
+        # Frontend may auto-enqueue writeback on `done`. Provide an explicit, authoritative
+        # server-side decision to avoid spurious "写回失败" on pure chat turns (e.g. "你好").
+        try:
+            done_payload["want_writeback"] = bool(getattr(self, "_turn_want_writeback", False))
+        except Exception as e:
+            logger.debug("[output-guard] attach want_writeback failed (ignored): %s", e, exc_info=True)
+
         try:
 
             acc = getattr(self, "_token_usage_acc", None)

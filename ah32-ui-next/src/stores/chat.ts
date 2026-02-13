@@ -3894,8 +3894,41 @@ export const useChatStore = defineStore('chat', () => {
                             if (!disableAutoWriteback) {
                                 const lastMsg = sendBucketMessages[sendBucketMessages.length - 1]
                                 if (lastMsg && lastMsg.type === 'assistant') {
-                                    // Auto-writeback: JSON-only in this branch (Plan blocks only).
-                                    enqueueMacroJobForAssistantMessage(lastMsg as any, updateTargetBlockId, { excludeConfirm: true, onlyTypes: ['plan'] })
+                                    // Gate auto-writeback:
+                                    // - If backend says this is a chat-only turn (want_writeback=false), do NOT enqueue.
+                                    // - Otherwise, enqueue only when a plan block exists, unless backend explicitly
+                                    //   expects writeback (want_writeback=true) in which case we enqueue to surface
+                                    //   a clear error for missing/invalid plans.
+                                    let wantWriteback: boolean | null = null
+                                    try {
+                                        const v = (data as any)?.want_writeback
+                                        const v2 = (data as any)?.wantWriteback
+                                        if (typeof v === 'boolean') wantWriteback = v
+                                        else if (typeof v2 === 'boolean') wantWriteback = v2
+                                    } catch (e) {
+                                        ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/stores/chat.ts', e)
+                                        wantWriteback = null
+                                    }
+
+                                    if (wantWriteback !== false) {
+                                        let hasPlanBlocks = false
+                                        try {
+                                            const previewBlocks = _extractMacroBlocksFromContent(
+                                                String((lastMsg as any)?.content || ''),
+                                                String((lastMsg as any)?.id || ''),
+                                                { updateTargetBlockId }
+                                            )
+                                            hasPlanBlocks = (previewBlocks || []).length > 0
+                                        } catch (e) {
+                                            ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/stores/chat.ts', e)
+                                            hasPlanBlocks = false
+                                        }
+
+                                        if (hasPlanBlocks || wantWriteback === true) {
+                                            // Auto-writeback: JSON-only in this branch (Plan blocks only).
+                                            enqueueMacroJobForAssistantMessage(lastMsg as any, updateTargetBlockId, { excludeConfirm: true, onlyTypes: ['plan'] })
+                                        }
+                                    }
                                 }
                             }
                             } catch (e) {
