@@ -53,6 +53,51 @@ def _effective_stream_debug_flags(*, query_params, expose_agent_thoughts: bool, 
 router = APIRouter(prefix="/agentic", tags=["agentic"])
 
 
+def _sanitize_frontend_context_for_failure_store(frontend_context: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Remove document content from debug retention.
+
+    Policy:
+    - Never keep active document text in the server-side failure context store.
+    - Keep only minimal metadata to help correlate issues without leaking user documents.
+    """
+    try:
+        if not isinstance(frontend_context, dict):
+            return None
+
+        host_app = frontend_context.get("host_app") or frontend_context.get("hostApp")
+
+        active = frontend_context.get("activeDocument") or frontend_context.get("document") or {}
+        active_out: Dict[str, Any] = {}
+        if isinstance(active, dict):
+            if "id" in active:
+                active_out["id"] = active.get("id")
+            if "name" in active:
+                active_out["name"] = active.get("name")
+            if "hostApp" in active:
+                active_out["hostApp"] = active.get("hostApp")
+
+        run_context = frontend_context.get("run_context") or frontend_context.get("runContext") or {}
+        run_out: Dict[str, Any] = {}
+        if isinstance(run_context, dict):
+            for k in ("run_id", "mode", "host_app", "doc_id", "doc_key", "session_id", "message_id"):
+                if k in run_context:
+                    run_out[k] = run_context.get(k)
+
+        docs = frontend_context.get("documents") or []
+        docs_count = len(docs) if isinstance(docs, list) else 0
+
+        return {
+            "host_app": host_app,
+            "activeDocument": active_out or None,
+            "documents_count": docs_count,
+            "run_context": run_out or None,
+            "timestamp": frontend_context.get("timestamp"),
+        }
+    except Exception:
+        logger.debug("[failure_context] sanitize frontend_context failed (ignored)", exc_info=True)
+        return None
+
+
 def _extract_javascript_code(text: str) -> str:
     """Extract executable JS code from a model response.
 
@@ -414,6 +459,8 @@ async def plan_repair(
     host = (request.host_app or "wps").strip().lower()
     if host not in ("wps", "et", "wpp"):
         host = "wps"
+    error_type = (request.error_type or "").strip().lower()
+    fast_path_only = bool(request.attempt <= 0 or error_type in ("preflight", "preflight_validate", "validate_only"))
     try:
         if settings.enable_auth and ("pytest" not in sys.modules and "PYTEST_CURRENT_TEST" not in os.environ):
             if not api_key or api_key != settings.api_key:
@@ -433,14 +480,36 @@ async def plan_repair(
                     op="plan_repair",
                     success=resp.success,
                     duration_ms=int((time.perf_counter() - t0) * 1000),
-                    extra={"host_app": host, "fast_path": True},
+                    extra={"host_app": host, "fast_path": True, "fast_path_only": fast_path_only},
                 )
                 return resp
-        except ValidationError:
+        except ValidationError as e:
+            # For preflight/validate-only checks, do not invoke LLM; return deterministic error early.
+            if fast_path_only:
+                resp = PlanRepairResponse(
+                    success=False,
+                    error=f"invalid plan: {e.errors(include_url=False)}",
+                )
+                metrics_recorder.record(
+                    op="plan_repair",
+                    success=resp.success,
+                    duration_ms=int((time.perf_counter() - t0) * 1000),
+                    extra={"host_app": host, "fast_path": True, "fast_path_only": True},
+                )
+                return resp
             # Continue to LLM repair below.
             pass
         except Exception as e:
             logger.error(f"Plan repair fast path failed: {e}", exc_info=True)
+            if fast_path_only:
+                resp = PlanRepairResponse(success=False, error=str(e))
+                metrics_recorder.record(
+                    op="plan_repair",
+                    success=resp.success,
+                    duration_ms=int((time.perf_counter() - t0) * 1000),
+                    extra={"host_app": host, "fast_path": True, "fast_path_only": True},
+                )
+                return resp
 
         try:
             llm = load_llm(settings)
@@ -762,6 +831,7 @@ async def agentic_chat_stream(
                     try:
                         from ah32._internal.failure_context_store import record_failure_context
 
+                        safe_frontend_context = _sanitize_frontend_context_for_failure_store(request.frontend_context)
                         record_failure_context(
                             session_id=request.session_id,
                             kind="chat",
@@ -769,7 +839,7 @@ async def agentic_chat_stream(
                                 "message": request.message,
                                 "document_name": request.document_name,
                                 "rule_files": request.rule_files,
-                                "frontend_context": request.frontend_context,
+                                "frontend_context": safe_frontend_context,
                                 "show_thoughts": bool(show_thoughts),
                                 "show_rag": bool(show_rag),
                             },

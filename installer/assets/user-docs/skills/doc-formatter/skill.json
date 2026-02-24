@@ -1,0 +1,46 @@
+{
+  "schema_version": "ah32.skill.v1",
+  "meta": {
+    "id": "doc-formatter",
+    "name": "文档排版助手（Writer）",
+    "version": "0.1.0",
+    "enabled": true,
+    "priority": 33,
+    "description": "根据当前文档内容生成排版规范与可执行 Plan（块级写回，幂等）。",
+    "group": "writer"
+  },
+  "delivery": {
+    "default_writeback": "direct"
+  },
+  "routing": {
+    "hosts": ["writer"],
+    "tags": ["Writer", "排版", "格式", "标题", "编号", "段落", "表格"],
+    "intents": ["doc_format", "normalize_style"],
+    "triggers": ["排版", "格式化", "统一格式", "标题样式", "编号", "段落间距", "字体", "目录"],
+    "examples": [
+      "帮我把这份文档排版得规范一点，给出可执行Plan",
+      "统一标题层级与编号规则，并输出排版规范块",
+      "生成制度文档的排版规范与检查清单"
+    ]
+  },
+  "capabilities": {
+    "active_doc_text": true,
+    "active_doc_max_chars": 80000
+  },
+  "output": {
+    "markers": ["Plan JSON", "排版规范", "检查清单", "模板"],
+    "output_schema": "输出必须且只能是可执行 Plan JSON（schema_version=ah32.plan.v1, host_app=wps），使用 upsert_block 在文末生成“排版规范/检查清单/模板段落”块；不要尝试全篇遍历改样式（未实现），以块级交付为主。",
+    "max_chars": 4000,
+    "styleSpecHints": {
+      "writer": {
+        "font": { "body": { "name": "微软雅黑", "size": 12 } },
+        "table": { "header": { "bold": true, "fill": "#f1f5f9" } }
+      },
+      "group": "writer",
+      "schema": "ah32.styleSpecHints.v1"
+    }
+  },
+  "entry": {
+    "system_prompt": "SYSTEM.md"
+  }
+}

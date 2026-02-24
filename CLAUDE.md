@@ -33,6 +33,10 @@
 
 - 分工：Claude负责代码修改，用户负责启动测试
 
+- 主分支：开发并测试通过要提交到 github/main分支
+
+- 开发分支：plan-writeback
+
 
 
 ## 💎 质量标准
@@ -117,19 +121,13 @@
 
 
 
-## 📝 WPS插件JS宏
+## 📝 WPS写回（Plan JSON）
 
-
-
-- **核心架构**：用户需求→Agent→GenerateJsMacroCodeTool→LLM→JS宏→前端执行
-
-- **⚠️ 重要**：WPS免费版不支持VBA，必须使用JS宏
-
-- **执行流程**：前端检测` ```js `代码块 → JSMacroExecutor.execute(code) → 动态执行
-
-- **API要点**：`selection.TypeText()`插入文本、`app.ActiveDocument.Save()`保存、`doc.Tables.Add()`创建表格
-
-- **禁止**：VBA语法、硬编码响应、环境检查跳过
+- **核心架构**：用户需求 → Agent/Skills/Tools → LLM 输出 `ah32.plan.v1` → 前端 PlanExecutor 执行 → WPS JSAPI 改文档
+- **⚠️ 重要**：WPS 免费版不支持 VBA；运行期仍是 JS（Taskpane/宏运行时），但模型默认不再输出 JS 宏代码（节省 token、降低风险）
+- **执行流程**：前端提取 Plan JSON → `PlanExecutor.executePlan(plan)` → 失败时可调用 `/agentic/plan/repair` 修复并重试
+- **提示**：部分 plan op（例如 `answer_mode_apply`）会委托给 Taskpane 的 JS 宏运行时内置函数（对外仍以 Plan 为准）
+- **禁止**：在“写回/执行”场景里让模型输出 JS 宏代码（除非明确要求）
 
 
 

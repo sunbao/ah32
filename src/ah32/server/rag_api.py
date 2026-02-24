@@ -341,7 +341,7 @@ def _task_emit(task_id: str, payload: Dict[str, Any]) -> None:
         q.put_nowait(payload)
     except Exception:
         # Best-effort; don't block ingestion.
-        pass
+        logger.warning("[rag] task emit failed task_id=%s", task_id, exc_info=True)
 
 
 def _task_update(task_id: str, **updates) -> None:
@@ -649,6 +649,7 @@ def _upsert_text_to_vector_store(
     name: str,
     import_method: str = "upload",
     path_alias: Optional[str] = None,
+    extra_metadata: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Upload-to-RAG mode: embed plain text without requiring a backend-readable filesystem path."""
     from langchain_core.documents import Document  # 延迟导入
@@ -695,6 +696,22 @@ def _upsert_text_to_vector_store(
     chunks = _split_into_chunks(content, max_length=1000)
     now = time.time()
     docs: List[Document] = []
+    safe_extra: Dict[str, Any] = {}
+    try:
+        if isinstance(extra_metadata, dict):
+            reserved = {
+                "source",
+                "chunk_index",
+                "file_name",
+                "import_method",
+                "file_hash",
+                "created_at",
+                "updated_at",
+                "client_path",
+            }
+            safe_extra = {str(k): v for k, v in extra_metadata.items() if k and str(k) not in reserved}
+    except Exception:
+        safe_extra = {}
     for i, chunk in enumerate(chunks):
         docs.append(
             Document(
@@ -708,6 +725,7 @@ def _upsert_text_to_vector_store(
                     "created_at": now,
                     "updated_at": now,
                     "client_path": (path_alias or name or "").strip() or source_ref,
+                    **(safe_extra or {}),
                 },
             )
         )

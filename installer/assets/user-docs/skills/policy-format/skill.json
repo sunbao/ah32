@@ -49,6 +49,10 @@
       "补齐制度必备章节并给出可替换模板段落（职责/流程/追责）"
     ]
   },
+  "capabilities": {
+    "active_doc_text": true,
+    "active_doc_max_chars": 60000
+  },
   "delivery": {
     "default_writeback": "compare_table"
   },
@@ -84,5 +88,32 @@
   },
   "entry": {
     "system_prompt": "SYSTEM.docx"
-  }
+  },
+  "tools": [
+    {
+      "name": "numbering_checker",
+      "description": "校验章节编号层级与连续性，输出问题与建议（默认读取当前文档，无需传 doc_text）",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "doc_text": { "type": "string", "description": "制度/规范全文（可省略，默认使用当前文档）" },
+          "max_issues": { "type": "integer", "description": "最多返回多少条编号问题" }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "terminology_checker",
+      "description": "检查术语一致性与是否定义（以下简称/简称/术语）",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "doc_text": { "type": "string", "description": "制度/规范全文（可省略，默认使用当前文档）" },
+          "max_terms": { "type": "integer", "description": "最多返回多少个高频术语" },
+          "max_issues": { "type": "integer", "description": "最多返回多少条术语问题" }
+        },
+        "required": []
+      }
+    }
+  ]
 }

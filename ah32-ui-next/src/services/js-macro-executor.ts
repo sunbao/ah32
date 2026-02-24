@@ -1530,6 +1530,30 @@ export class JSMacroExecutor {
 
         const ops = Array.isArray((window as any).__BID_AUDIT_OPS) ? (window as any).__BID_AUDIT_OPS : []
 
+        const macroDiag = (() => {
+          try {
+            const d = (window as any).__BID_AUDIT_DIAG
+            if (Array.isArray(d) && d.length) return d.slice(0, 80)
+          } catch (e) {
+            ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/js-macro-executor.ts', e)
+          }
+          return undefined
+        })()
+
+        const extra: Record<string, any> = {}
+        if (macroDiag) extra.macro_diag = macroDiag
+        if (normalizeMeta.changed) {
+          extra.normalized = true
+          extra.normalizeNotes = normalizeMeta.notes
+          try {
+            if (wrappedCodeForDebug) {
+              extra.suspiciousCharsWrapped = this.findSuspiciousChars(String(wrappedCodeForDebug || '')).slice(0, 12)
+            }
+          } catch (e) {
+            ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/js-macro-executor.ts', e)
+          }
+        }
+
         void reportAuditEvent({
 
           mode: 'js',
@@ -1542,7 +1566,9 @@ export class JSMacroExecutor {
 
           ops: Array.from(new Set(ops.map((x: any) => String(x || '')).filter(Boolean))),
 
-          success: true
+          success: true,
+
+          extra: Object.keys(extra).length > 0 ? extra : undefined
 
         })
 
@@ -1576,23 +1602,22 @@ export class JSMacroExecutor {
 
           normalized: normalizeMeta.changed,
 
-          normalizeNotes: normalizeMeta.notes,
+	          normalizeNotes: normalizeMeta.notes,
 
-          suspiciousCharsWrapped: (() => {
+	          suspiciousCharsWrapped: (() => {
 
-            try {
+	            try {
 
-              if (!wrappedCodeForDebug) return undefined
+	              if (!wrappedCodeForDebug) return undefined
 
-              if ((name === 'SyntaxError' || msg.includes('SyntaxError')) && /Invalid or unexpected token/i.test(msg)) {
+	              // Success path: do not reference error-scoped variables (name/msg). Only include when we
+	              // already normalized the code, to help debugging "almost-broken" macros without noise.
+	              if (!normalizeMeta.changed) return undefined
+	              return this.findSuspiciousChars(String(wrappedCodeForDebug || '')).slice(0, 12)
 
-                return this.findSuspiciousChars(String(wrappedCodeForDebug || '')).slice(0, 12)
+	            } catch (e) {
 
-              }
-
-            } catch (e) {
-
-              ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/js-macro-executor.ts', e)
+	              ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/js-macro-executor.ts', e)
 
             }
 
@@ -1646,13 +1671,40 @@ export class JSMacroExecutor {
 
       try {
 
-        const hostApp = String(this.hostApp || 'unknown')
+        const hostApp = String(hostForDebug || this.hostApp || 'unknown')
 
         const sid = String(this.sessionId || '')
 
         const blockId = String((window as any).__BID_AUDIT_BLOCK_ID || '')
 
         const ops = Array.isArray((window as any).__BID_AUDIT_OPS) ? (window as any).__BID_AUDIT_OPS : []
+
+        const macroDiag = (() => {
+          try {
+            const d = (window as any).__BID_AUDIT_DIAG
+            if (Array.isArray(d) && d.length) return d.slice(0, 80)
+          } catch (e) {
+            ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/js-macro-executor.ts', e)
+          }
+          return undefined
+        })()
+
+        const extra: Record<string, any> = {
+          host: hostForDebug,
+          normalized: normalizeMeta.changed,
+          normalizeNotes: normalizeMeta.notes,
+        }
+        if (macroDiag) extra.macro_diag = macroDiag
+        try {
+          if ((name === 'SyntaxError' || msg.includes('SyntaxError')) && /Invalid or unexpected token/i.test(msg)) {
+            extra.suspiciousChars = this.findSuspiciousChars(String(code || '')).slice(0, 20)
+            if (wrappedCodeForDebug) {
+              extra.suspiciousCharsWrapped = this.findSuspiciousChars(String(wrappedCodeForDebug || '')).slice(0, 20)
+            }
+          }
+        } catch (e) {
+          ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/js-macro-executor.ts', e)
+        }
 
         void reportAuditEvent({
 
@@ -1670,7 +1722,9 @@ export class JSMacroExecutor {
 
           error_type: name || 'execution_error',
 
-          error_message: msg
+          error_message: msg,
+
+          extra
 
         })
 
@@ -3765,7 +3819,7 @@ export class JSMacroExecutor {
 
         // Allow a few additional "safe" prev chars to fix trailing items without commas.
 
-        const prevOk = prev === '' || ',;]})\'"'.includes(prev)
+	        const prevOk = prev === '' || ',;]}){\'"'.includes(prev)
 
         const nextOk =
 
@@ -5294,11 +5348,21 @@ export class JSMacroExecutor {
 
           `    }`,
 
-          `  } catch (e) {`,
+	          `  } catch (e) {`,
 
-          `    // ignore`,
+	          `    try {`,
+	          `      if (typeof window !== 'undefined') {`,
+	          `        if (!window.__BID_AUDIT_DIAG) window.__BID_AUDIT_DIAG = [];`,
+	          `        var a = window.__BID_AUDIT_DIAG;`,
+	          `        if (a && typeof a.push === 'function' && a.length < 80) {`,
+	          `          var msg = '';`,
+	          `          try { msg = String(e && e.message ? e.message : (e || '')) } catch (_e0) { msg = '' }`,
+	          `          a.push({ tag: 'safe_alert', message: msg.slice(0, 300), extra: null });`,
+	          `        }`,
+	          `      }`,
+	          `    } catch (_e) { if (typeof console !== 'undefined' && console.warn) console.warn('[js-macro-executor:safe_alert]', _e) }`,
 
-          `  }`,
+	          `  }`,
 
           `  return null;`,
 
@@ -5596,7 +5660,7 @@ var BID = (function () {
 
   function _isCancelled() {
 
-    try { return !!(typeof window !== 'undefined' && window.__BID_CANCEL_MACRO) } catch (e) { return false }
+    try { return !!(typeof window !== 'undefined' && window.__BID_CANCEL_MACRO) } catch (e) { _diagPush('cancel_flag_probe', e); return false }
 
   }
 
@@ -5688,7 +5752,7 @@ var BID = (function () {
 
         var ok = false
 
-        try { ok = !!r.Find.Execute() } catch (e) { ok = false }
+        try { ok = !!r.Find.Execute() } catch (e) { _diagPush('wps_find_execute', e); ok = false }
 
         if (ok) return r
 
@@ -5898,7 +5962,7 @@ var BID = (function () {
 
     if (!bm) return null
 
-    try { return bm.Range } catch (e) { return null }
+    try { return bm.Range } catch (e) { _diagPush('wps_bm_range', e); return null }
 
   }
 
@@ -5954,7 +6018,7 @@ var BID = (function () {
 
   function _supportsBookmarks(doc) {
 
-    try { return !!(doc && doc.Bookmarks && typeof doc.Bookmarks.Add === 'function') } catch (e) { return false }
+    try { return !!(doc && doc.Bookmarks && typeof doc.Bookmarks.Add === 'function') } catch (e) { _diagPush('wps_bm_add_probe', e); return false }
 
   }
 
@@ -6132,7 +6196,7 @@ var BID = (function () {
 
   function _getSelection() {
 
-    try { return app && app.Selection } catch (e) { return null }
+    try { return app && app.Selection } catch (e) { _diagPush('wps_selection_probe', e); return null }
 
   }
 
@@ -6140,7 +6204,7 @@ var BID = (function () {
 
   function _getDoc() {
 
-    try { return app && app.ActiveDocument } catch (e) { return null }
+    try { return app && app.ActiveDocument } catch (e) { _diagPush('wps_doc_probe', e); return null }
 
   }
 
@@ -6602,12 +6666,6 @@ var BID = (function () {
 
   function _writebackMode() {
 
-    try {
-
-      }
-
-    } catch (e) { _diagPush('limits', e) }
-
     return 'apply_with_backup'
 
   }
@@ -6848,7 +6906,7 @@ var BID = (function () {
 
   function _stripSpaces(s) {
 
-    try { return String(s || '').replace(/\\s+/g, '') } catch (e) { return String(s || '') }
+    try { return String(s || '').replace(/\\s+/g, '') } catch (e) { _diagPush('normalize_ws', e); return String(s || '') }
 
   }
 
@@ -6863,6 +6921,8 @@ var BID = (function () {
     if (t.indexOf('[[AH32:') >= 0) return true
 
     if (/^_+$/.test(t) || /^＿+$/.test(t)) return true
+
+    if (/^[-－—–─━]+$/.test(t)) return true
 
     // Single-choice/common marks.
 
@@ -6922,6 +6982,42 @@ var BID = (function () {
 
 
 
+  function _findBracketSlot(text, openCh, closeCh) {
+
+    var s = String(text || '')
+
+    var idx = 0
+
+    while (idx < s.length) {
+
+      var i = s.indexOf(openCh, idx)
+
+      if (i < 0) break
+
+      var j = s.indexOf(closeCh, i + 1)
+
+      if (j < 0) break
+
+      // Too long: likely not an answer slot.
+
+      if ((j - i) > 24) { idx = i + 1; continue }
+
+      var inner = s.slice(i + 1, j)
+
+      if (_isLikelyAnswerSlotInner(inner)) {
+
+        return { kind: 'bracket', start: i + 1, end: j }
+
+      }
+
+      idx = j + 1
+
+    }
+
+    return null
+
+  }
+
   function _findUnderlineSlot(text) {
 
     var s = String(text || '')
@@ -6948,11 +7044,43 @@ var BID = (function () {
 
 
 
+  function _findDashSlot(text) {
+
+    var s = String(text || '')
+
+    var m1 = s.match(/-{3,}/)
+
+    if (m1 && typeof m1.index === 'number') {
+
+      return { kind: 'dash', start: m1.index, end: m1.index + String(m1[0] || '').length }
+
+    }
+
+    var m2 = s.match(/－{3,}/)
+
+    if (m2 && typeof m2.index === 'number') {
+
+      return { kind: 'dash', start: m2.index, end: m2.index + String(m2[0] || '').length }
+
+    }
+
+    var m3 = s.match(/—{2,}|–{2,}|─{2,}|━{2,}/)
+
+    if (m3 && typeof m3.index === 'number') {
+
+      return { kind: 'dash', start: m3.index, end: m3.index + String(m3[0] || '').length }
+
+    }
+
+    return null
+
+  }
+
   function _findAnswerSlotInWindowText(text) {
 
     var s = String(text || '')
 
-    // Prefer empty-ish parentheses first, then underline blanks.
+    // Prefer empty-ish parentheses/brackets first, then underline/dash blanks.
 
     var p1 = _findParenSlot(s, '（', '）')
 
@@ -6962,9 +7090,21 @@ var BID = (function () {
 
     if (p2) return p2
 
+    var b1 = _findBracketSlot(s, '【', '】')
+
+    if (b1) return b1
+
+    var b2 = _findBracketSlot(s, '[', ']')
+
+    if (b2) return b2
+
     var u = _findUnderlineSlot(s)
 
     if (u) return u
+
+    var d = _findDashSlot(s)
+
+    if (d) return d
 
     return null
 
@@ -7370,13 +7510,13 @@ var BID = (function () {
 
     try { s = String(v || '') } catch (e) { s = '' }
 
-    // Word/WPS table cell text often ends with "\r\a" (\r + bell).
+    // Word/WPS table cell text often ends with "\\r\\a" (carriage return + bell).
 
-    try { s = s.replace(/\u0007/g, '') } catch (e0) { _diagPush('normalize_str', e0) }
+    try { s = s.replace(/\\u0007/g, '') } catch (e0) { _diagPush('normalize_str', e0) }
 
-    try { s = s.replace(/\r/g, '') } catch (e1) { _diagPush('normalize_str', e1) }
+    try { s = s.replace(/\\r/g, '') } catch (e1) { _diagPush('normalize_str', e1) }
 
-    try { s = s.replace(/\s+/g, ' ') } catch (e2) { _diagPush('normalize_str', e2) }
+    try { s = s.replace(/\\s+/g, ' ') } catch (e2) { _diagPush('normalize_str', e2) }
 
     try { s = String(s || '').trim() } catch (e3) { s = '' }
 
@@ -7678,7 +7818,7 @@ var BID = (function () {
 
 
 
-    var content = lines.join('\n')
+    var content = lines.join('\\n')
 
 
 
@@ -7710,7 +7850,7 @@ var BID = (function () {
 
   function _supportsTrackRevisions(doc) {
 
-    try { return typeof (doc && doc.TrackRevisions) !== 'undefined' } catch (e) { return false }
+    try { return typeof (doc && doc.TrackRevisions) !== 'undefined' } catch (e) { _diagPush('track_revisions_probe', e); return false }
 
   }
 
@@ -8860,7 +9000,7 @@ var BID = (function () {
 
   function _isCancelled() {
 
-    try { return !!(typeof window !== 'undefined' && window.__BID_CANCEL_MACRO) } catch (e) { return false }
+    try { return !!(typeof window !== 'undefined' && window.__BID_CANCEL_MACRO) } catch (e) { _diagPush('cancel_flag_probe', e); return false }
 
   }
 
@@ -9838,7 +9978,7 @@ var BID = (function () {
 
   function _isCancelled() {
 
-    try { return !!(typeof window !== 'undefined' && window.__BID_CANCEL_MACRO) } catch (e) { return false }
+    try { return !!(typeof window !== 'undefined' && window.__BID_CANCEL_MACRO) } catch (e) { _diagPush('cancel_flag_probe', e); return false }
 
   }
 
@@ -11985,6 +12125,3 @@ try { if (typeof window !== 'undefined') window.BID = BID } catch (e) { try { if
 // 创建全局实例
 
 export const jsMacroExecutor = new JSMacroExecutor()
-
-
-

@@ -10,7 +10,7 @@
     "group": "exam"
   },
   "delivery": {
-    "default_writeback": "plan"
+    "default_writeback": "direct"
   },
   "routing": {
     "hosts": [

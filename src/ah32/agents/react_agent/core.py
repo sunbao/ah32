@@ -28,7 +28,7 @@ from ah32.memory.manager import Ah32MemorySystem
 
 from ah32.core.prompts import get_react_system_prompt
 
-from ah32.services.docx_extract import maybe_extract_active_docx
+from ah32.services.docx_extract import maybe_extract_active_docx, maybe_extract_active_doc_text_full
 
 from ah32.plan.schema import PLAN_SCHEMA_ID
 
@@ -784,6 +784,40 @@ class ReActAgent:
 
         if not kept:
 
+            # Keep a lightweight debug summary even when RAG retrieval returns 0 hits.
+            try:
+                self._last_rag_debug = {
+                    "triggered": True,
+                    "raw": len(raw_results),
+                    "kept": 0,
+                    "queries": (queries or [])[:3],
+                    "query_rewrites": (query_rewrites or [])[:3],
+                    "retrieve_ms": retrieve_ms,
+                    "sources": [],
+                }
+            except Exception:
+                self._last_rag_debug = None
+
+            # Skill-scoped hint: only emit explicit "RAG 0-hit" signal when a selected
+            # skill declares it needs the hint (avoid polluting generic chats).
+            selected = getattr(self, "_selected_skills", None) or []
+            wants_hint = False
+            try:
+                for s in selected:
+                    if bool(getattr(s, "rag_missing_hint", False)):
+                        wants_hint = True
+                        break
+            except Exception:
+                wants_hint = False
+
+            if wants_hint:
+                return (
+                    "RAG检索结果：本轮未命中任何片段（0条）。\n"
+                    "提示：如果用户需要“合同/案例/模板/政策/法规”等资料支撑结论，请明确告知当前知识库未找到，"
+                    "并引导用户上传/导入资料入库，或提供网页URL以便后续抓取入库后再检索；"
+                    "若URL抓取失败/不可访问，请用户直接复制粘贴原文（纯文字）再继续。"
+                )
+
             return ""
 
 
@@ -922,7 +956,10 @@ class ReActAgent:
 
         lines = [
 
-            "RAG命中片段（来自知识库检索结果）：如果下面有片段，你必须优先基于片段回答，并在回答中引用对应source；不要声称“知识库/已打开文档均未包含相关信息”。"
+            "RAG命中片段（来自知识库检索结果）：如果下面有片段，你必须优先基于片段回答。"
+            "默认不要在正文/写回内容中展示 source/URL（避免影响排版）；仅当用户明确要求“出处/来源/引用/链接”时，"
+            "才在回答末尾用“来源：”列出最少必要的 source/URL。"
+            "不要声称“知识库/已打开文档均未包含相关信息”。"
 
         ]
 
@@ -1149,6 +1186,39 @@ class ReActAgent:
 
         tl = t.lower()
 
+        explicit_write_request = False
+        try:
+            verbs = (
+                "写到",
+                "写回",
+                "插入",
+                "追加",
+                "输出到",
+                "生成到",
+                "写入到",
+                "写进",
+                "填到",
+            )
+            targets = (
+                "文档",
+                "正文",
+                "光标",
+                "当前位置",
+                "此处",
+                "这里",
+                "表格",
+                "单元格",
+                "工作表",
+                "工作簿",
+                "幻灯片",
+                "ppt",
+                "slide",
+            )
+            explicit_write_request = any(v in tl for v in verbs) and any(x in tl for x in targets)
+        except Exception as e:
+            logger.debug("[writeback] explicit write request detect failed (ignored): %s", e, exc_info=True)
+            explicit_write_request = False
+
         # Explicitly non-writeback instructions.
         explicit_no_write = (
             "不要写回",
@@ -1165,34 +1235,209 @@ class ReActAgent:
         if any(k in t for k in explicit_no_write):
             return True
 
+        # "Text-only / do not create" instructions (common in PPT outline requests).
+        # Treat them as chat-only unless the user also explicitly asked to write into the document.
+        if not explicit_write_request:
+            try:
+                no_create_ppt = re.search(
+                    r"(不需要|不必|无需|不要|不用).{0,10}(直接)?(创建|生成|制作|做成).{0,10}(ppt|幻灯片|演示|slide)",
+                    tl,
+                    flags=re.IGNORECASE,
+                )
+                no_plan = re.search(r"(不需要|不必|无需|不要|不用).{0,10}(可执行)?\\s*(plan|json)", tl, flags=re.IGNORECASE)
+                if no_create_ppt or no_plan:
+                    return True
+            except Exception as e:
+                logger.debug("[writeback] chat-only no-create detect failed (ignored): %s", e, exc_info=True)
+
         # Tiny small-talk/ack turns should stay in chat mode.
+        # Normalize by stripping spaces/punctuation/emojis so "很好👍" also matches.
+        compact = ""
+        try:
+            compact = re.sub(r"[^0-9a-zA-Z\u4e00-\u9fff]+", "", tl)
+        except Exception as e:
+            logger.debug("[writeback] normalize chat-only ack failed (ignored): %s", e, exc_info=True)
+            compact = tl
+
         tiny_chat = {
-            "你好", "您好", "在吗", "谢谢", "辛苦了", "收到", "明白了", "懂了", "ok", "hi", "hello"
+            "你好",
+            "您好",
+            "在吗",
+            "谢谢",
+            "辛苦了",
+            "收到",
+            "明白了",
+            "懂了",
+            "ok",
+            "okay",
+            "好",
+            "好的",
+            "可以",
+            "行",
+            "很好",
+            "不错",
+            "棒",
+            "赞",
+            "完美",
+            "没问题",
+            "没事",
+            "hi",
+            "hello",
+            "nice",
+            "great",
+            "thanks",
+            "thankyou",
         }
-        if len(t) <= 12 and (t in tiny_chat or tl in tiny_chat):
+        if len(compact) <= 12 and compact in tiny_chat:
             return True
+        try:
+            # Multi-ack combos like "好的谢谢" / "okthanks".
+            ack_tokens = sorted([re.escape(x) for x in tiny_chat], key=len, reverse=True)
+            ack_re = r"^(?:%s)+$" % "|".join(ack_tokens)
+            if len(compact) <= 12 and re.fullmatch(ack_re, compact):
+                return True
+        except Exception as e:
+            logger.debug("[writeback] chat-only ack regex failed (ignored): %s", e, exc_info=True)
+
+        # Explanatory/QA turns should stay in chat mode by default (even if "文档/表格" is mentioned),
+        # unless the user explicitly asks to apply changes into the document.
+        has_question = ("?" in t) or ("？" in t)
+
+        explain_signals = (
+            "是什么",
+            "什么意思",
+            "怎么理解",
+            "为什么",
+            "介绍",
+            "解释",
+            "总结",
+            "区别",
+            "优缺点",
+            "原理",
+            "怎么回事",
+            "是否",
+        )
+        howto_signals = (
+            "如何",
+            "怎么",
+            "怎样",
+            "怎么做",
+        )
+
+        if any(k in t for k in explain_signals):
+            return True
+        if has_question or any(k in t for k in howto_signals):
+            return False if explicit_write_request else True
 
         # If user clearly asks for document actions, do not classify as chat-only.
         write_or_doc_signals = (
-            "写入", "写到", "写回", "插入", "追加", "替换", "更新", "应用", "生成", "创建", "输出",
-            "文档", "正文", "标题", "目录", "段落", "表格", "图表", "单元格", "工作表", "工作簿",
-            "wps", "excel", "sheet", "ppt", "slide",
+            "写入",
+            "写到",
+            "写回",
+            "插入",
+            "追加",
+            "替换",
+            "更新",
+            "应用",
+            "生成",
+            "创建",
+            "输出",
+            "文档",
+            "正文",
+            "标题",
+            "目录",
+            "段落",
+            "表格",
+            "图表",
+            "单元格",
+            "工作表",
+            "工作簿",
+            "wps",
+            "excel",
+            "sheet",
+            "ppt",
+            "slide",
         )
         if any(k in tl for k in write_or_doc_signals) or any(k in t for k in write_or_doc_signals):
             return False
 
-        # Typical explanatory/QA wording.
-        qa_signals = (
-            "是什么", "什么意思", "怎么理解", "为什么", "如何", "介绍", "解释", "总结", "提取", "翻译",
-            "区别", "优缺点", "原理", "建议", "怎么回事", "是否",
-        )
-        if any(k in t for k in qa_signals):
-            return True
+        return False
 
-        # Question turns without doc/action signals are treated as chat.
-        if "?" in t or "？" in t:
-            return True
+    def _force_chat_only_by_skill_tool_hints(self, message: str, selected_skills: list) -> bool:
+        """Force chat-only mode for background tasks declared by skill tool hints.
 
+        This keeps business "what/when to trigger" inside skill manifests, while the core
+        only implements a generic orchestration rule: background jobs should not go through
+        the writeback fast-path.
+        """
+        msg = (message or "").strip()
+        if not msg:
+            return False
+
+        # If user explicitly wants to write into the office document, do not force chat-only.
+        # Examples: "把结果写到文档/光标处/正文里"。
+        try:
+            verbs = (
+                "写到",
+                "写回",
+                "插入",
+                "追加",
+                "输出到",
+                "生成到",
+                "写入到",
+                "写进",
+                "填到",
+            )
+            targets = (
+                "文档",
+                "正文",
+                "光标",
+                "当前位置",
+                "此处",
+                "这里",
+                "表格",
+                "标题",
+                "目录",
+                "段落",
+            )
+            if any(v in msg for v in verbs) and any(t in msg for t in targets):
+                return False
+        except Exception:
+            logger.debug("[writeback] explicit write intent detect failed (ignored)", exc_info=True)
+
+        for s in (selected_skills or []):
+            if not s:
+                continue
+            tools = ()
+            try:
+                tools = getattr(s, "tools", None) or ()
+            except Exception:
+                tools = ()
+            for tool in tools or ():
+                hints = {}
+                try:
+                    hints = getattr(tool, "hints", None) or {}
+                except Exception:
+                    hints = {}
+                if not isinstance(hints, dict) or not hints:
+                    continue
+                mode = str(hints.get("turn_mode") or hints.get("mode") or "").strip().lower()
+                if mode not in ("background", "no_writeback", "chat_only"):
+                    continue
+                triggers = hints.get("triggers") or hints.get("trigger") or []
+                if isinstance(triggers, str):
+                    triggers = [triggers]
+                if not isinstance(triggers, list):
+                    triggers = []
+                for k in triggers:
+                    try:
+                        kk = str(k or "").strip()
+                    except Exception:
+                        kk = ""
+                    if not kk:
+                        continue
+                    if kk in msg:
+                        return True
         return False
 
     def _writeback_anchor(self, user_message: str) -> str:
@@ -1201,7 +1446,7 @@ class ReActAgent:
 
         t = (user_message or "").strip()
 
-        if re.search(r"(文末|末尾|最后|汇总|附录|资料引用|参考资料)", t):
+        if re.search(r"(文末|末尾|最后|汇总|附录|资料引用|参考资料|来源|出处)", t):
 
             return "end"
 
@@ -1253,6 +1498,7 @@ class ReActAgent:
                 "请输出一个可执行的 ```json``` Plan 代码块（仅包含 JSON，不要输出 HTML/解释文本）。",
                 f"schema_version 必须是 {PLAN_SCHEMA_ID}，host_app 必须与当前宿主一致。",
                 anchor_hint,
+                "仅写入用户明确要求的文档内容；不要把客套话/完成提示写入正文（例如：不客气、已完成、随时告诉我），除非用户明确要求写入。",
                 "要求：优先使用 op=upsert_block 保证幂等，并设置稳定 block_id；多段落用 \\n。",
             ]
         )
@@ -1791,43 +2037,145 @@ class ReActAgent:
 
     def _parse_tool_call(self, llm_response: str) -> Optional[Dict[str, Any]]:
 
-        """解析LLM返回的工具调用（处理双花括号格式）"""
+        """解析LLM返回的工具调用（处理双花括号格式）.
+
+        兼容两类格式：
+        1) 旧格式: {"action": "tool_name", "input": ...}
+        2) 新格式: {"name": "tool_name", "arguments": {...}}
+
+        安全策略：
+        - 优先仅在“整个响应就是 JSON 对象”时解析（避免把宏代码里的 `{...}` 误判为工具 JSON）。
+        - 若严格解析失败，再尝试从“响应末尾”提取最后一个工具 JSON（常见于模型先说一句话再给 JSON）。
+        """
 
         try:
 
             # 处理双花括号格式 {{...}}
 
-            cleaned = llm_response.strip()
+            cleaned = str(llm_response or "").strip()
 
             # 去掉外层花括号
 
             if cleaned.startswith("{{") and cleaned.endswith("}}"):
 
-                cleaned = cleaned[1:-1]
+                cleaned = cleaned[1:-1].strip()
 
 
 
-            # 仅当整个响应就是 JSON 对象时才尝试解析工具调用。
+            def _is_tool_call_obj(obj: Any) -> bool:
+                if not isinstance(obj, dict):
+                    return False
+                if "action" in obj and isinstance(obj.get("action"), str):
+                    return True
+                if "name" in obj and isinstance(obj.get("name"), str):
+                    return True
+                return False
+
+            def _get_tool_name(obj: Dict[str, Any]) -> str:
+                if "name" in obj and isinstance(obj.get("name"), str):
+                    return str(obj.get("name") or "").strip()
+                return str(obj.get("action") or "").strip()
+
+            def _is_known_tool(name: str) -> bool:
+                if not name:
+                    return False
+
+                # Built-in tools
+                try:
+                    tools = getattr(self, "tools", None)
+                    if isinstance(tools, dict) and name in tools:
+                        return True
+                except Exception:
+                    logger.debug("[tools] check built-in tools failed (ignored)", exc_info=True)
+
+                # Skill tools (declared by selected skills)
+                try:
+                    reg = getattr(self, "skills_registry", None)
+                    selected = getattr(self, "_selected_skills", None) or []
+                    if reg is not None and selected:
+                        for skill in selected:
+                            try:
+                                if reg.find_tool(skill.skill_id, name) is not None:
+                                    return True
+                            except Exception:
+                                continue
+                except Exception:
+                    logger.debug("[tools] check skill tools failed (ignored)", exc_info=True)
+                return False
+
+
+
+            # 1) 严格解析：仅当整个响应就是 JSON 对象时才尝试解析工具调用。
 
             # 否则像 JS 宏代码里的 `{ ... }`（for/try/catch 块）会被误识别为工具 JSON。
 
-            if not cleaned.startswith("{"):
+            if cleaned.startswith("{"):
 
+                try:
+                    tool_call = json.loads(cleaned)
+                except Exception as e:
+                    logger.debug(f"解析工具调用失败: {e}")
+                    tool_call = None
+
+                if _is_tool_call_obj(tool_call):
+                    tool_name = _get_tool_name(tool_call)
+                    if _is_known_tool(tool_name):
+                        return tool_call
+
+
+
+            # 2) 宽松解析：从响应末尾提取最后一个工具 JSON（常见于“先说一句再给 JSON”）。
+
+            # 仅接受：解析出的 JSON 必须是工具调用对象，且 JSON 之后只允许空白字符。
+
+            tail = cleaned[-10000:] if len(cleaned) > 10000 else cleaned
+            if "```" in tail:
+                # 避免从 fenced code block 中误提取
+                tail = self._strip_fenced_code_blocks(tail)
+
+            tool_start_re = re.compile(r'\{\s*"(?:name|action)"\s*:')
+            matches = list(tool_start_re.finditer(tail))
+            if not matches:
                 return None
 
+            def _is_ignorable_trailing_text(s: str) -> bool:
+                """Allow minor punctuation after a tool-call JSON.
 
+                Some models emit: `{...}。` or `{...}.` which is still clearly a tool call, but would
+                fail the strict "JSON must be the last token" rule.
+                """
+                try:
+                    rest = str(s or "")
+                except Exception:
+                    rest = ""
+                if not rest.strip():
+                    return True
+                # Only allow whitespace and common punctuation (including Chinese punctuation).
+                return bool(re.fullmatch(r"[\s\.,!\?;:\-–—、，。；：…（）()\[\]【】]*", rest))
 
-            tool_call = json.loads(cleaned)
+            decoder = json.JSONDecoder()
+            for m in reversed(matches):
+                start = m.start()
+                try:
+                    obj, end = decoder.raw_decode(tail[start:])
+                except json.JSONDecodeError:
+                    continue
+                except Exception:
+                    logger.debug("解析工具调用失败（宽松解析异常）", exc_info=True)
+                    continue
 
+                if not _is_tool_call_obj(obj):
+                    continue
 
+                # Ensure the extracted JSON is the last meaningful content.
+                # (Allow trailing punctuation like "。"/".", etc.)
+                if not _is_ignorable_trailing_text(tail[start + end :]):
+                    continue
 
-            # 1) 旧格式: {"action": "tool_name", "input": ...}
-            if "action" in tool_call and isinstance(tool_call.get("action"), str):
-                return tool_call
-
-            # 2) 新格式: {"name": "tool_name", "arguments": {...}}
-            if "name" in tool_call and isinstance(tool_call.get("name"), str):
-                return tool_call
+                tool_name = _get_tool_name(obj)
+                if _is_known_tool(tool_name):
+                    logger.debug("[tools] parsed tool call from tail: %s", tool_name)
+                    return obj
 
 
 
@@ -1838,6 +2186,24 @@ class ReActAgent:
 
 
         return None
+
+
+    def _looks_truncated_text(self, text: str) -> bool:
+        """Heuristic: detect frontend/backend capped document text markers."""
+        try:
+            s = str(text or "")
+            if not s:
+                return False
+            if "truncated_by_max_chars" in s:
+                return True
+            if "...(truncated)" in s:
+                return True
+            if s.rstrip().endswith("...(truncated)"):
+                return True
+            return False
+        except Exception:
+            logger.debug("[doc_text] truncated marker check failed (ignored)", exc_info=True)
+            return False
 
 
 
@@ -1883,6 +2249,110 @@ class ReActAgent:
 
             return self._tool_cache[cache_key]
 
+        # Remote-friendly: `read_document` can fall back to frontend-provided active doc text.
+        # Why: on remote backends, synced document paths often point to client-local Windows paths
+        # (e.g. C:\\Users\\...), which do not exist on the server.
+        #
+        # Privacy policy for chat:
+        # - Prefer *ephemeral* per-request active doc payload (active_doc_text_full/active_doc_text)
+        # - Do NOT fetch the active document content from RAG as an implicit "backup"
+        try:
+            if tool_name == "read_document":
+                requested = ""
+                if isinstance(tool_input, dict):
+                    requested = str(
+                        tool_input.get("file_path")
+                        or tool_input.get("path")
+                        or tool_input.get("source_path")
+                        or tool_input.get("query")
+                        or ""
+                    ).strip()
+                else:
+                    requested = str(tool_input or "").strip()
+
+                ctx = getattr(self, "_turn_frontend_context", None)
+                if requested and isinstance(ctx, dict):
+                    active = ctx.get("activeDocument") or ctx.get("document") or {}
+                    active_id = str(active.get("id") or active.get("docId") or active.get("doc_id") or "").strip()
+                    active_name = str(active.get("name") or "").strip()
+                    active_path = str(active.get("fullPath") or active.get("path") or "").strip()
+
+                    rc = ctx.get("run_context") or ctx.get("runContext") or {}
+                    doc_key = str(rc.get("doc_key") or rc.get("docKey") or "").strip()
+
+                    direct_text = (
+                        ctx.get("active_doc_text")
+                        or ctx.get("activeDocText")
+                        or ctx.get("active_document_text")
+                        or ctx.get("activeDocumentText")
+                    )
+                    direct_full = (
+                        ctx.get("active_doc_text_full")
+                        or ctx.get("activeDocTextFull")
+                        or ctx.get("active_document_text_full")
+                        or ctx.get("activeDocumentTextFull")
+                    )
+
+                    same_doc = requested in (active_id, active_name, active_path, doc_key)
+                    if not same_doc and doc_key:
+                        # Common case: requested="doc_xxx", doc_key="wps:doc_xxx"
+                        same_doc = doc_key.endswith(requested) or requested.endswith(doc_key)
+
+                    if same_doc:
+                        # Prefer full active doc payload when available (ephemeral per request).
+                        if isinstance(direct_full, str) and direct_full.strip():
+                            name = active_name or requested
+                            content_full = str(direct_full or "")
+                            # Cap tool output to avoid blowing up the LLM context.
+                            content = content_full
+                            if len(content) > 60_000:
+                                content = content[: 60_000 - 20] + "\n...(truncated)"
+                            char_count = len(content_full)
+                            line_count = content_full.count("\n") + 1 if content_full else 0
+
+                            rendered = "\n".join(
+                                [
+                                    f"=== 文档内容(前端提取): {name} ===\n",
+                                    f"【统计】字符: {char_count}, 行数: {line_count}",
+                                    "来源: frontend_context.active_doc_text_full\n",
+                                    "=" * 50,
+                                    "",
+                                    content,
+                                    "",
+                                    "=" * 50,
+                                    f"读取完成：{name}",
+                                ]
+                            )
+                            self._tool_cache[cache_key] = rendered
+                            return rendered
+
+                        # Fall back to frontend-provided text preview (bounded).
+                        if isinstance(direct_text, str) and direct_text.strip():
+                            doc_text = maybe_extract_active_docx(ctx, max_chars=60_000)
+                            if doc_text:
+                                name = active_name or requested
+                                content = str(doc_text or "")
+                                char_count = len(content)
+                                line_count = content.count("\n") + 1 if content else 0
+
+                                rendered = "\n".join(
+                                    [
+                                        f"=== 文档内容(前端提取): {name} ===\n",
+                                        f"【统计】字符: {char_count}, 行数: {line_count}",
+                                        "来源: frontend_context.active_doc_text\n",
+                                        "=" * 50,
+                                        "",
+                                        content,
+                                        "",
+                                        "=" * 50,
+                                        f"读取完成：{name}",
+                                    ]
+                                )
+                                self._tool_cache[cache_key] = rendered
+                                return rendered
+        except Exception as e:
+            logger.debug("[read_document] active_doc_text fast path failed (ignored): %s", e, exc_info=True)
+
 
 
         try:
@@ -1893,27 +2363,113 @@ class ReActAgent:
             # Then try skill-declared tools (name/arguments)
             if tool is None and self._skill_tool_executor is not None and self.skills_registry is not None:
                 selected = tuple(self._selected_skills or [])
+                matches = []
                 for skill in selected:
                     skill_tool = self.skills_registry.find_tool(skill.skill_id, tool_name)
-                    if skill_tool is None:
-                        continue
+                    if skill_tool is not None:
+                        matches.append((skill, skill_tool))
+
+                if len(matches) > 1:
+                    rendered = (
+                        "错误：技能工具名冲突（多个已选技能提供同名工具）。"
+                        f"tool={tool_name} candidates={','.join([s.skill_id for s, _ in matches])}"
+                    )
+                    self._tool_cache[cache_key] = rendered
+                    return rendered
+
+                if len(matches) == 1:
+                    _, skill_tool = matches[0]
                     try:
                         if not isinstance(tool_input, dict):
-                            return f"错误：技能工具 '{tool_name}' 的 arguments 必须是对象"
-                        ok, err = self._skill_tool_executor.validate_tool_arguments(skill_tool, tool_input)
+                            return f"错误：工具参数必须为对象（dict）。tool={tool_name}"
+
+                        tool_args = dict(tool_input)
+                        try:
+                            props = (
+                                skill_tool.parameters.get("properties")
+                                if isinstance(getattr(skill_tool, "parameters", None), dict)
+                                else {}
+                            )
+                            if isinstance(props, dict) and "doc_text" in props:
+                                if not str(tool_args.get("doc_text") or "").strip():
+                                    active_doc_text = str(getattr(self, "_turn_active_doc_text", "") or "")
+                                    # Ensure the tool call always includes doc_text when the schema declares it.
+                                    # Some skill tool scripts define `doc_text` as a positional arg without default;
+                                    # passing an empty string keeps execution deterministic and avoids TypeError.
+                                    use_text = active_doc_text if active_doc_text else ""
+
+                                    # If preview is truncated/missing, try to use the full active doc payload
+                                    # from frontend_context (ephemeral per request; not persisted).
+                                    if (not str(use_text or "").strip()) or self._looks_truncated_text(use_text):
+                                        try:
+                                            ctx = getattr(self, "_turn_frontend_context", None)
+                                            full_text = maybe_extract_active_doc_text_full(ctx)
+                                            if full_text and str(full_text).strip():
+                                                use_text = str(full_text or "")
+                                        except Exception as e:
+                                            logger.debug("[tools] inject doc_text from frontend_context failed (ignored): %s", e, exc_info=True)
+
+                                    tool_args["doc_text"] = use_text if use_text else ""
+
+                            # Inject active document path when the tool schema declares it.
+                            # This enables project-scoped ingestion APIs (derive project from contextDocumentPath).
+                            if isinstance(props, dict) and (
+                                ("context_document_path" in props) or ("contextDocumentPath" in props)
+                            ):
+                                snake_key = "context_document_path"
+                                camel_key = "contextDocumentPath"
+                                needs_snake = ("context_document_path" in props) and (not str(tool_args.get(snake_key) or "").strip())
+                                needs_camel = ("contextDocumentPath" in props) and (not str(tool_args.get(camel_key) or "").strip())
+                                if needs_snake or needs_camel:
+                                    try:
+                                        ctx = getattr(self, "_turn_frontend_context", None) or {}
+                                        active = (ctx or {}).get("activeDocument") or {}
+                                        p = (active.get("fullPath") or active.get("path") or "").strip()
+                                        if p:
+                                            if needs_snake:
+                                                tool_args[snake_key] = p
+                                            if needs_camel:
+                                                tool_args[camel_key] = p
+                                    except Exception as e:
+                                        logger.debug(
+                                            "[tools] inject context_document_path from frontend_context failed (ignored): %s",
+                                            e,
+                                            exc_info=True,
+                                        )
+                        except Exception as e:
+                            logger.debug(f"[tools] inject active doc text failed (ignored): {e}", exc_info=True)
+
+                        ok, err = self._skill_tool_executor.validate_tool_arguments(skill_tool, tool_args)
                         if not ok:
-                            return f"错误：技能工具参数校验失败: {err}"
-                        exec_result = self._skill_tool_executor.execute_tool(skill_tool, tool_input)
+                            return f"错误：工具参数校验失败。tool={tool_name} err={err}"
+                        # Run skill tools in a dedicated thread to avoid blocking the asyncio loop.
+                        # This is required for integrations like Playwright Sync API.
+                        from ah32.skills.tool_executor import get_skill_tool_thread_pool
+
+                        loop = asyncio.get_running_loop()
+                        exec_result = await loop.run_in_executor(
+                            get_skill_tool_thread_pool(),
+                            self._skill_tool_executor.execute_tool,
+                            skill_tool,
+                            tool_args,
+                        )
                         rendered = self._skill_tool_executor.render_tool_result_for_llm(skill_tool, exec_result)
                         self._tool_cache[cache_key] = rendered
                         return rendered
                     except Exception as e:
                         logger.error(f"执行技能工具 {tool_name} 失败: {e}", exc_info=True)
-                        return f"错误：执行技能工具 '{tool_name}' 失败 - {str(e)}"
+                        return f"错误：工具执行失败。tool={tool_name} err={str(e)}"
 
             if not tool:
 
                 return f"错误：未找到工具 '{tool_name}'"
+
+            tool_input_for_builtin = tool_input
+            if not isinstance(tool_input_for_builtin, str):
+                try:
+                    tool_input_for_builtin = json.dumps(tool_input_for_builtin, ensure_ascii=False)
+                except Exception:
+                    tool_input_for_builtin = str(tool_input_for_builtin)
 
 
 
@@ -1942,11 +2498,11 @@ class ReActAgent:
 
                 if hasattr(tool, "arun"):
 
-                    result = await tool.arun(tool_input, llm=self.llm)
+                    result = await tool.arun(tool_input_for_builtin, llm=self.llm)
 
                 else:
 
-                    result = tool.run(tool_input, llm=self.llm)
+                    result = tool.run(tool_input_for_builtin, llm=self.llm)
 
             else:
 
@@ -1954,11 +2510,11 @@ class ReActAgent:
 
                 if hasattr(tool, "arun"):
 
-                    result = await tool.arun(tool_input)
+                    result = await tool.arun(tool_input_for_builtin)
 
                 else:
 
-                    result = tool.run(tool_input)
+                    result = tool.run(tool_input_for_builtin)
 
 
 
@@ -2482,6 +3038,29 @@ class ReActAgent:
 
             normalized_message = normalized_message.split("\n---", 1)[0].strip()
 
+        # Per-turn writeback bookkeeping (used by output guard / repair).
+        # Keep these best-effort and never crash the main flow.
+        try:
+            self._turn_user_query = normalized_message
+        except Exception:
+            pass
+        try:
+            self._turn_rag_context = ""
+        except Exception:
+            pass
+        try:
+            self._turn_writeback_anchor = "cursor"
+        except Exception:
+            pass
+        try:
+            self._turn_writeback_delivery = ""
+        except Exception:
+            pass
+        try:
+            self._turn_writeback_repair_attempted = False
+        except Exception:
+            pass
+
 
 
         # 重置推理内容跟踪器
@@ -2507,6 +3086,13 @@ class ReActAgent:
         bench_mode = False
 
         if frontend_context:
+
+            # Keep raw frontend context for tool execution fallbacks (e.g. remote read_document).
+            # This is per-request; the agent instance is created per request in agentic_chat_api.
+            try:
+                self._turn_frontend_context = frontend_context if isinstance(frontend_context, dict) else None
+            except Exception:
+                self._turn_frontend_context = None
 
             try:
 
@@ -2700,9 +3286,30 @@ class ReActAgent:
 
                 import json as _json
 
+                # Privacy: never dump active document text into the prompt.
+                safe_frontend_context = frontend_context
+                try:
+                    if isinstance(frontend_context, dict):
+                        safe_frontend_context = dict(frontend_context)
+                        for k in (
+                            "active_doc_text",
+                            "activeDocText",
+                            "active_document_text",
+                            "activeDocumentText",
+                            "active_doc_text_full",
+                            "activeDocTextFull",
+                            "active_document_text_full",
+                            "activeDocumentTextFull",
+                            "active_et_meta",
+                            "activeEtMeta",
+                            "active_et_header_map",
+                            "activeEtHeaderMap",
+                        ):
+                            safe_frontend_context.pop(k, None)
+                except Exception:
+                    safe_frontend_context = frontend_context
 
-
-                compact = _json.dumps(frontend_context, ensure_ascii=False)
+                compact = _json.dumps(safe_frontend_context, ensure_ascii=False)
 
                 if len(compact) > 1500:
 
@@ -3004,6 +3611,15 @@ class ReActAgent:
 
                 try:
 
+                    # Cache active doc text for skill tools (auto-injected).
+                    #
+                    # IMPORTANT (privacy + token budget):
+                    # - Tools may need the full doc text to parse questions reliably.
+                    # - The LLM prompt should only receive a bounded preview.
+                    #
+                    # `self._turn_active_doc_text` is kept per-request (agent is per request in agentic_chat_api).
+                    self._turn_active_doc_text = ""
+
                     need_doc = [
 
                         s for s in (selected_skills or []) if getattr(s, "needs_active_doc_text", False)
@@ -3012,7 +3628,7 @@ class ReActAgent:
 
                     if frontend_context and need_doc:
 
-                        max_chars = 40_000
+                        preview_max_chars = 40_000
 
                         try:
 
@@ -3020,7 +3636,7 @@ class ReActAgent:
 
                             if cap_max > 0:
 
-                                max_chars = min(200_000, cap_max)
+                                preview_max_chars = min(200_000, cap_max)
 
                         except Exception as e:
                             logger.debug(
@@ -3029,11 +3645,20 @@ class ReActAgent:
                                 exc_info=True,
                             )
 
-                        doc_text = maybe_extract_active_docx(frontend_context, max_chars=max_chars)
+                        # Full text for tools (ephemeral; do NOT persist).
+                        full_text = maybe_extract_active_doc_text_full(frontend_context)
+                        if full_text:
+                            self._turn_active_doc_text = str(full_text or "")
 
-                        if doc_text:
+                        # Bounded preview for the LLM prompt.
+                        preview_text = maybe_extract_active_docx(frontend_context, max_chars=preview_max_chars)
+                        if not preview_text and full_text:
+                            preview_text = str(full_text)[:preview_max_chars]
+                            if len(str(full_text)) > preview_max_chars:
+                                preview_text = preview_text + "\n...(truncated)"
 
-                            context = f"{context}\n\n【当前文档内容】\n{doc_text}"
+                        if preview_text:
+                            context = f"{context}\n\n【当前文档内容】\n{preview_text}"
 
                 except Exception as e:
 
@@ -3222,6 +3847,11 @@ class ReActAgent:
             context = f"{context}\n\n{rag_context}"
 
         try:
+            self._turn_rag_context = str(rag_context or "")
+        except Exception:
+            pass
+
+        try:
 
             tsvc = get_telemetry()
 
@@ -3288,13 +3918,40 @@ class ReActAgent:
         except Exception as e:
             logger.debug(f"[writeback] chat-only detect failed (ignored): {e}", exc_info=True)
             chat_only_turn = False
+        # Skill tools may declare "background" tasks (e.g. crawling/ingestion). When the user intent
+        # matches those triggers, we should not go through the writeback Plan fast-path.
+        try:
+            if (not chat_only_turn) and is_office_host:
+                if self._force_chat_only_by_skill_tool_hints(normalized_message, selected_skills or []):
+                    chat_only_turn = True
+        except Exception as e:
+            logger.debug(f"[writeback] skill tool chat-only override failed (ignored): {e}", exc_info=True)
 
+        explicit_writeback_intent = False
+        try:
+            explicit_writeback_intent = self._is_writeback_intent(normalized_message, context=context)
+        except Exception as e:
+            logger.debug("[writeback] explicit intent detect failed (ignored): %s", e, exc_info=True)
+            explicit_writeback_intent = False
+
+        skill_default_writeback = ""
+        try:
+            skill_default_writeback = str(self._selected_default_writeback_delivery(selected_skills or []) or "").strip()
+        except Exception as e:
+            logger.debug("[writeback] skill default delivery detect failed (ignored): %s", e, exc_info=True)
+            skill_default_writeback = ""
+
+        # Routing rule (project invariant):
+        # - "Writeback" means: frontend JS will execute a Plan JSON to mutate the WPS document.
+        # - Default is CHAT (no writeback). Only write back when:
+        #   1) user explicitly asks to write into the document, OR
+        #   2) the selected skill declares a default writeback delivery.
         should_writeback = False
         if is_office_host:
-            # Office hosts default to writeback unless this is clearly a pure Q&A/chat turn.
-            should_writeback = not chat_only_turn
+            should_writeback = (not chat_only_turn) and (explicit_writeback_intent or bool(skill_default_writeback))
         else:
-            should_writeback = self._is_writeback_intent(normalized_message, context=context)
+            # Non-office hosts: never default-writeback; require explicit intent.
+            should_writeback = (not chat_only_turn) and bool(explicit_writeback_intent)
 
         if should_writeback:
 
@@ -3312,7 +3969,7 @@ class ReActAgent:
 
                 try:
 
-                    delivery = self._selected_default_writeback_delivery(selected_skills or [])
+                    delivery = skill_default_writeback or self._selected_default_writeback_delivery(selected_skills or [])
 
                 except Exception:
 
@@ -3349,10 +4006,12 @@ class ReActAgent:
                 logger.debug(f"[writeback] build writeback directive failed (ignored): {e}", exc_info=True)
 
         logger.debug(
-            "[writeback] decision host_app=%r office=%s chat_only=%s want=%s anchor=%s delivery=%s",
+            "[writeback] decision host_app=%r office=%s chat_only=%s explicit=%s skill_default=%s want=%s anchor=%s delivery=%s",
             host_app,
             is_office_host,
             chat_only_turn,
+            explicit_writeback_intent,
+            skill_default_writeback,
             want_writeback,
             writeback_anchor,
             writeback_delivery,
@@ -3361,6 +4020,14 @@ class ReActAgent:
         # Persist per-turn decision so downstream post-processing can reliably decide whether
         # to keep/strip executable fenced blocks from model output.
         self._turn_want_writeback = bool(want_writeback)
+        try:
+            self._turn_writeback_anchor = str(writeback_anchor or "cursor")
+        except Exception:
+            pass
+        try:
+            self._turn_writeback_delivery = str(writeback_delivery or "")
+        except Exception:
+            pass
 
         if show_rag_hits:
 
@@ -3526,7 +4193,12 @@ class ReActAgent:
 
         # Writeback guard: if we instructed the model to output a Plan but it did not,
         # retry once and/or surface an explicit hint (do not pretend success).
-        if want_writeback:
+        already_repaired = False
+        try:
+            already_repaired = bool(getattr(self, "_turn_writeback_repair_attempted", False))
+        except Exception:
+            already_repaired = False
+        if want_writeback and (not already_repaired):
             try:
                 host = host_app if host_app in ("wps", "et", "wpp") else "wps"
                 plan_obj, plan_err = self._extract_plan_from_text(final_response or "", host)
@@ -3901,7 +4573,7 @@ class ReActAgent:
         want_writeback = bool(getattr(self, "_turn_want_writeback", False))
 
         turn_directive = (
-            "【本轮输出模式】本轮不需要写回文档：只用自然语言回答（<=3条要点），不要输出任何 fenced 代码块（不要 ```json``` / ```javascript```）。"
+            "【本轮输出模式】本轮不需要写回文档：只用自然语言回答（简洁优先）；不要输出任何 fenced 代码块（不要 ```json``` / ```javascript```）；不要粘贴/复述文档原文（如需引用，最多1句且<=50字）。"
             if not want_writeback
             else f"【本轮输出模式】本轮需要写回文档：请只输出 1 个 ```json``` 代码块（仅 JSON），schema_version 必须是 {PLAN_SCHEMA_ID}；不要输出 JS 宏。"
         )
@@ -4088,7 +4760,7 @@ class ReActAgent:
 
                 messages.append(("assistant", response.content))
 
-                messages.append(("user", f"[工具执行结果]: {result}"))
+                messages.append(("user", f"TOOL_RESULT: {result}"))
 
 
 
@@ -4365,7 +5037,7 @@ class ReActAgent:
             logger.debug("[output-guard] infer writeback failed (ignored): %s", e, exc_info=True)
             inferred_writeback = False
         turn_directive = (
-            "【本轮输出模式】本轮不需要写回文档：只用自然语言回答，不要输出任何 fenced 代码块（不要 ```json``` / ```javascript```）。"
+            "【本轮输出模式】本轮不需要写回文档：只用自然语言回答；不要输出任何 fenced 代码块（不要 ```json``` / ```javascript```）；不要粘贴/复述文档原文（如需引用，最多1句且<=50字）。"
             if not inferred_writeback
             else f"【本轮输出模式】本轮需要写回文档：请只输出 1 个 ```json``` 代码块（仅 JSON），schema_version 必须是 {PLAN_SCHEMA_ID}；不要输出 JS 宏。"
         )
@@ -4492,14 +5164,203 @@ class ReActAgent:
             return s
         try:
             # Remove any fenced blocks (```...```), including language tags.
-            s2 = re.sub(r"```[a-zA-Z0-9_\\-]*\\s*[\\s\\S]*?```", "", s)
+            s2 = re.sub(r"```[\w.-]*\s*[\s\S]*?```", "", s)
             # If the model leaked stray fences, strip them too.
             s2 = s2.replace("```", "")
             # Normalize whitespace so the UI doesn't show large gaps.
-            s2 = re.sub(r"\\n{3,}", "\\n\\n", s2).strip()
+            s2 = re.sub(r"\n{3,}", "\n\n", s2).strip()
             return s2
         except Exception as e:
             logger.debug("[output-guard] strip fenced blocks failed (ignored): %s", e, exc_info=True)
+            return s
+
+    @staticmethod
+    def _keep_single_plan_fence(text: str) -> str:
+        """Keep only one executable Plan JSON fence in a response (best-effort).
+
+        Some models may emit multiple ```json``` fences. Frontend will detect and execute each fenced plan,
+        which can accidentally pollute the document (e.g., a second "reply user" plan inserting chatty text).
+        """
+        s = str(text or "")
+        if "```" not in s:
+            return s
+
+        try:
+            plan_re = re.compile(r"```(?:json|plan|ah32[-_.]?plan(?:\.v1)?)\s*([\s\S]*?)```", re.IGNORECASE)
+            matches = list(plan_re.finditer(s))
+            if len(matches) <= 1:
+                return s
+
+            def _is_plan_candidate(body: str) -> bool:
+                try:
+                    t = str(body or "").strip()
+                    if not t:
+                        return False
+
+                    # Handle malformed captures like "json\\n{...}" or accidental wrappers.
+                    nl = t.find("\n")
+                    if 0 < nl <= 20:
+                        first = t[:nl].strip().lower()
+                        rest = t[nl + 1 :].strip()
+                        if (
+                            first == "json" or first == "plan" or first.startswith("ah32")
+                        ) and rest.startswith("{"):
+                            t = rest
+
+                    try:
+                        obj = json.loads(t)
+                    except json.JSONDecodeError:
+                        obj = None
+                    except Exception as e:
+                        logger.debug(
+                            "[output-guard] json.loads(t) failed unexpectedly (ignored): %s",
+                            e,
+                            exc_info=True,
+                        )
+                        obj = None
+                    if isinstance(obj, dict) and obj.get("schema_version") == PLAN_SCHEMA_ID:
+                        return True
+
+                    fb = t.find("{")
+                    lb = t.rfind("}")
+                    if fb < 0 or lb <= fb:
+                        return False
+                    try:
+                        obj = json.loads(t[fb : lb + 1])
+                        return isinstance(obj, dict) and obj.get("schema_version") == PLAN_SCHEMA_ID
+                    except json.JSONDecodeError:
+                        return False
+                    except Exception as e:
+                        logger.debug(
+                            "[output-guard] json.loads(slice) failed unexpectedly (ignored): %s",
+                            e,
+                            exc_info=True,
+                        )
+                        return False
+                except Exception as e:
+                    logger.debug(
+                        "[output-guard] plan candidate scan failed (ignored): %s",
+                        e,
+                        exc_info=True,
+                    )
+                    return False
+
+            keep_idx = None
+            for idx, m in enumerate(matches):
+                if _is_plan_candidate(m.group(1)):
+                    keep_idx = idx
+                    break
+            if keep_idx is None:
+                keep_idx = 0
+
+            out_parts = []
+            cursor = 0
+            for idx, m in enumerate(matches):
+                out_parts.append(s[cursor : m.start()])
+                if idx == keep_idx:
+                    out_parts.append(s[m.start() : m.end()])
+                cursor = m.end()
+            out_parts.append(s[cursor:])
+            return "".join(out_parts).strip()
+        except Exception as e:
+            logger.debug("[output-guard] keep single plan fence failed (ignored): %s", e, exc_info=True)
+            return s
+
+    def _is_known_tool_name(self, name: str) -> bool:
+        """Best-effort: check if a tool name is known (built-in or selected-skill tool)."""
+        tool = str(name or "").strip()
+        if not tool:
+            return False
+        try:
+            tools = getattr(self, "tools", None)
+            if isinstance(tools, dict) and tool in tools:
+                return True
+        except Exception:
+            logger.debug("[tools] check built-in tools failed (ignored)", exc_info=True)
+
+        try:
+            reg = getattr(self, "skills_registry", None)
+            selected = getattr(self, "_selected_skills", None) or []
+            if reg is not None and selected:
+                for skill in selected:
+                    try:
+                        if reg.find_tool(skill.skill_id, tool) is not None:
+                            return True
+                    except Exception:
+                        continue
+        except Exception:
+            logger.debug("[tools] check skill tools failed (ignored)", exc_info=True)
+        return False
+
+    def _strip_internal_json_objects(self, text: str) -> str:
+        """Strip internal JSON payloads from user-visible output (best-effort).
+
+        We must never leak:
+        - Tool-call JSON objects (e.g. {"name": "read_document", ...})
+        - Plan JSON objects (schema_version=ah32.plan.v1) on non-writeback turns
+
+        This is a safety net; the primary mechanism is routing + tool parsing.
+        """
+        s = str(text or "")
+        if "{" not in s:
+            return s
+        try:
+            start_re = re.compile(r'\{\s*"(?:schema_version|name|action|error)"\s*:')
+            matches = list(start_re.finditer(s))
+            if not matches:
+                return s
+
+            decoder = json.JSONDecoder()
+            spans: list[tuple[int, int]] = []
+            for m in matches:
+                start = m.start()
+                try:
+                    obj, end = decoder.raw_decode(s[start:])
+                except json.JSONDecodeError:
+                    continue
+                except Exception as e:
+                    logger.debug("[output-guard] raw_decode internal json failed (ignored): %s", e, exc_info=True)
+                    continue
+
+                if not isinstance(obj, dict):
+                    continue
+
+                is_plan = obj.get("schema_version") == PLAN_SCHEMA_ID
+                is_tool_call = False
+                is_error = False
+                try:
+                    if "name" in obj and isinstance(obj.get("name"), str):
+                        is_tool_call = self._is_known_tool_name(obj.get("name"))
+                    elif "action" in obj and isinstance(obj.get("action"), str):
+                        is_tool_call = self._is_known_tool_name(obj.get("action"))
+                    elif "error" in obj:
+                        is_error = True
+                except Exception as e:
+                    logger.debug("[output-guard] check internal tool-call failed (ignored): %s", e, exc_info=True)
+                    is_tool_call = False
+
+                if is_plan or is_tool_call or is_error:
+                    spans.append((start, start + int(end)))
+
+            if not spans:
+                return s
+
+            # Merge overlapping spans (defensive).
+            spans.sort()
+            merged: list[tuple[int, int]] = []
+            for a, b in spans:
+                if not merged or a > merged[-1][1]:
+                    merged.append((a, b))
+                else:
+                    merged[-1] = (merged[-1][0], max(merged[-1][1], b))
+
+            out = s
+            for a, b in reversed(merged):
+                out = out[:a] + out[b:]
+            out = re.sub(r"\n{3,}", "\n\n", out).strip()
+            return out
+        except Exception as e:
+            logger.debug("[output-guard] strip internal json objects failed (ignored): %s", e, exc_info=True)
             return s
 
 
@@ -4523,6 +5384,14 @@ class ReActAgent:
 
         if not want_writeback:
             stripped = self._strip_fenced_code_blocks(full_response)
+            stripped2 = self._strip_internal_json_objects(stripped)
+            if stripped2 != (stripped or ""):
+                logger.info(
+                    "[output-guard] stripped internal json (non-writeback) session_id=%s len_before=%s len_after=%s",
+                    session_id,
+                    len(stripped or ""),
+                    len(stripped2 or ""),
+                )
             if stripped != (full_response or ""):
                 logger.info(
                     "[output-guard] stripped fenced blocks (non-writeback) session_id=%s len_before=%s len_after=%s",
@@ -4530,9 +5399,63 @@ class ReActAgent:
                     len(full_response or ""),
                     len(stripped or ""),
                 )
-            return stripped
+            return stripped2
 
-        return full_response
+        host_app = ""
+        try:
+            host_app = str(getattr(getattr(self, "_turn_run_context", None), "host_app", "") or "").strip().lower()
+        except Exception:
+            host_app = ""
+        host = host_app if host_app in ("wps", "et", "wpp") else "wps"
+
+        # Writeback invariant: return a single executable Plan JSON fence and nothing else.
+        plan = None
+        plan_err = ""
+        try:
+            plan, plan_err = self._extract_plan_from_text(full_response or "", host)
+            if plan is not None:
+                return f"```json\n{json.dumps(plan, ensure_ascii=False, default=str)}\n```"
+        except Exception as e:
+            logger.debug("[output-guard] extract plan for canonicalization failed (ignored): %s", e, exc_info=True)
+            plan = None
+            plan_err = f"invalid_plan:{e}"
+
+        # If we couldn't extract a valid plan, attempt one repair *before* streaming content.
+        # This prevents emitting an invalid Plan block and then appending a second repaired Plan later.
+        attempted = False
+        try:
+            attempted = bool(getattr(self, "_turn_writeback_repair_attempted", False))
+        except Exception:
+            attempted = False
+
+        if not attempted:
+            try:
+                self._turn_writeback_repair_attempted = True
+            except Exception:
+                pass
+            try:
+                user_query = str(getattr(self, "_turn_user_query", "") or "").strip()
+                rag_ctx = str(getattr(self, "_turn_rag_context", "") or "")
+                anchor = str(getattr(self, "_turn_writeback_anchor", "") or "cursor").strip() or "cursor"
+                delivery = str(getattr(self, "_turn_writeback_delivery", "") or "").strip()
+
+                repaired = await self._auto_repair_missing_writeback_plan(
+                    user_query=user_query,
+                    rag_context=rag_ctx,
+                    session_id=session_id,
+                    anchor=anchor,
+                    delivery=delivery,
+                    original_plan=plan,
+                    error_type="missing_plan" if (not plan_err or plan_err == "empty_plan_payload") else "invalid_plan",
+                    error_message=plan_err or "",
+                )
+                if repaired is not None:
+                    return f"```json\n{json.dumps(repaired, ensure_ascii=False, default=str)}\n```"
+            except Exception as e:
+                logger.error("[writeback] auto-repair (output-guard) failed: %s", e, exc_info=True)
+
+        # If repair still didn't produce a valid plan, avoid leaking invalid JSON to the frontend executor.
+        return "【系统提示】本轮需要写入文档，但未能生成可执行的 Plan JSON。请点击重试，或明确“只输出 Plan JSON”。"
 
     def _extract_self_check_result(self, response: str) -> Optional[Dict[str, Any]]:
 
@@ -4955,4 +5878,3 @@ class ReActAgent:
         logger.info("✅ 传统回退流程完成（无改动）")
 
         return response
-

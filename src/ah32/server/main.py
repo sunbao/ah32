@@ -9,8 +9,11 @@ import sys
 # 设置标准输出为UTF-8编码
 if sys.platform.startswith('win'):
     # Windows下设置控制台编码
-    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
-    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    try:
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    except Exception as e:
+        print(f"[boot] stdout/stderr reconfigure failed: {e}", file=sys.stderr)
 
 # 设置locale为UTF-8
 try:
@@ -66,17 +69,21 @@ log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
 log_level_value = getattr(logging, log_level, logging.INFO)
 
 # Ensure UTF-8 output even when launched directly (avoid mojibake in logs).
+_reconfigure_exc_info = None
 try:
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
 except Exception:
-    pass
+    _reconfigure_exc_info = sys.exc_info()
 
 logging.basicConfig(
     level=log_level_value,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+if _reconfigure_exc_info:
+    logger.warning("[boot] stdout/stderr reconfigure failed (ignored)", exc_info=_reconfigure_exc_info)
+    _reconfigure_exc_info = None
 
 # 记录日志级别配置（改为DEBUG级别，减少启动噪音）
 logger.debug(f"📊 日志级别配置: {log_level} (环境变量: LOG_LEVEL)")
@@ -202,10 +209,7 @@ if log_level.upper() == "DEBUG":
 
 # Even when LOG_LEVEL=DEBUG, keep LangSmith log spam down; tracing can still be enabled via env.
 _langsmith_log_level = os.environ.get("AH32_LANGSMITH_LOG_LEVEL", "WARNING").upper()
-try:
-    _langsmith_level_value = getattr(logging, _langsmith_log_level, logging.WARNING)
-except Exception:
-    _langsmith_level_value = logging.WARNING
+_langsmith_level_value = getattr(logging, _langsmith_log_level, logging.WARNING)
 logging.getLogger("langsmith").setLevel(_langsmith_level_value)
 logging.getLogger("langsmith.client").setLevel(_langsmith_level_value)
 
@@ -238,7 +242,7 @@ async def lifespan(app: FastAPI):
 
                 set_telemetry(None)
             except Exception:
-                pass
+                logger.error("[telemetry] disable failed", exc_info=True)
 
         # 验证安全配置
         security_report = settings.check_security_config()
@@ -303,6 +307,39 @@ async def lifespan(app: FastAPI):
             settings.embedding_model,
             embedding_dim=embedding_dim,
         )
+
+        # Skills routing vector store (persistent, separate from RAG/memory to avoid
+        # cross-workload contention). The SkillRegistry will use it for similarity
+        # routing and keep it in sync with hot-loaded skills.
+        try:
+            skills_collection_name = make_collection_name(
+                "skills",
+                settings.embedding_model,
+                embedding_dim=embedding_dim,
+            )
+            app.state._skills_vector_store = LocalVectorStore(
+                persist_path=settings.skills_vector_store_path,
+                embedding=app.state._embedding,
+                config={
+                    "collection_name": skills_collection_name,
+                    "collection_metadata": {
+                        "embedding_model": settings.embedding_model,
+                        "embedding_dim": embedding_dim,
+                        # Explicitly prefer cosine for short "routing_text" embeddings.
+                        "hnsw:space": "cosine",
+                    },
+                },
+            )
+            try:
+                if app.state._skills_registry is not None and hasattr(
+                    app.state._skills_registry, "set_routing_vector_store"
+                ):
+                    app.state._skills_registry.set_routing_vector_store(app.state._skills_vector_store)
+            except Exception as e:
+                logger.warning(f"[skills] attach routing vector store failed (ignored): {e}")
+        except Exception as e:
+            logger.warning(f"[skills] init routing vector store failed (ignored): {e}")
+
         app.state._vector_store = LocalVectorStore(
             persist_path=settings.embeddings_path,
             embedding=app.state._embedding,
@@ -325,7 +362,7 @@ async def lifespan(app: FastAPI):
         yield
         
     except Exception as e:
-        logger.error(f"Ah32服务启动失败: {e}")
+        logger.error(f"Ah32服务启动失败: {e}", exc_info=True)
         raise
     finally:
         logger.info("正在关闭Ah32服务...")
@@ -375,8 +412,10 @@ def _resolve_wps_plugin_dir() -> str | None:
                 if p.exists() and p.is_dir() and (p / "manifest.xml").exists():
                     return str(p)
             except Exception:
+                logger.debug("[wps-plugin] probe dir failed (ignored): %s", p, exc_info=True)
                 continue
     except Exception:
+        logger.warning("[wps-plugin] resolve dir failed (ignored)", exc_info=True)
         return None
     return None
 

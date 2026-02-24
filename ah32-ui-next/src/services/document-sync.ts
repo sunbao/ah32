@@ -15,7 +15,11 @@ const MAGIC_NUMBERS = {
   MAX_QUEUE_SIZE: 50,           // 最大队列长度
   LOG_INTERVAL: 1000,           // 限制日志发送间隔为1秒
   SYNC_INTERVAL: 10000,         // 10秒内不重复同步
-  DEFAULT_TIMEOUT: 5000,        // 默认超时时间（毫秒）
+  DEFAULT_TIMEOUT: 8000,        // 默认超时时间（毫秒）
+  FORCE_TIMEOUT: 12000,         // 强制同步超时时间（毫秒）
+  BACKOFF_BASE_MS: 1500,        // 同步失败退避基数（毫秒）
+  BACKOFF_MAX_MS: 60000,        // 同步失败退避上限（毫秒）
+  BACKOFF_LOG_INTERVAL_MS: 15000, // 退避跳过日志最小间隔（毫秒）
 } as const
 
 // 后端 API 地址
@@ -26,8 +30,84 @@ let logQueue: Array<{ message: string; level: 'info' | 'warning' | 'error'; time
 let lastLogTime = 0
 
 // 文档同步防抖
-let lastSyncTimestamp = 0
-let lastForceSyncTimestamp = 0
+let lastSyncAttemptTimestamp = 0
+let lastForceSyncAttemptTimestamp = 0
+
+// 同步单飞 + 抖动退避（避免 WPS WebView/网络波动导致刷爆请求和日志）
+let syncInFlight: Promise<boolean> | null = null
+let syncPendingDocs: Array<{ doc: WPSDocumentInfo }> | null = null
+let syncBackoffUntil = 0
+let syncFailureStreak = 0
+let lastBackoffLogAt = 0
+let lastSyncedSignature = ''
+let lastSyncSucceededAt = 0
+
+const getDocSyncTimeoutMs = (force: boolean): number => {
+  try {
+    const raw = Number((import.meta as any)?.env?.VITE_DOC_SYNC_TIMEOUT_MS)
+    if (Number.isFinite(raw) && raw > 0) {
+      return Math.min(60000, Math.max(1000, Math.round(raw)))
+    }
+  } catch (e) {
+    ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/document-sync.ts', e)
+  }
+  return force ? MAGIC_NUMBERS.FORCE_TIMEOUT : MAGIC_NUMBERS.DEFAULT_TIMEOUT
+}
+
+const coerceErrorMessage = (error: unknown): string => {
+  try {
+    if (error instanceof Error) return String(error.message || error.name || 'Error')
+    const msg = (error as any)?.message
+    if (typeof msg === 'string' && msg.trim()) return msg
+    if (typeof error === 'string') return error
+    if (error && typeof error === 'object') {
+      try { return JSON.stringify(error) } catch (_e) { return '[object ErrorPayload]' }
+    }
+    return String(error)
+  } catch (_e) {
+    return 'unknown error'
+  }
+}
+
+const describeAxiosError = (error: unknown): { kind: string; message: string; code?: string; status?: number } => {
+  try {
+    if (!axios.isAxiosError(error)) {
+      return { kind: 'error', message: coerceErrorMessage(error) }
+    }
+
+    const message = coerceErrorMessage(error)
+    const code = typeof error.code === 'string' ? error.code : undefined
+    const status = typeof error.response?.status === 'number' ? error.response.status : undefined
+    const kind = (
+      code === 'ECONNABORTED' || /\btimeout\b/i.test(message)
+        ? 'timeout'
+        : (status ? `http_${status}` : (code || 'network'))
+    )
+    return { kind, message, code, status }
+  } catch (e) {
+    return { kind: 'error', message: coerceErrorMessage(e) }
+  }
+}
+
+const computeDocsSignature = (documents: Array<{ doc: WPSDocumentInfo }>): string => {
+  try {
+    const stableKey = (d: WPSDocumentInfo) => {
+      const h = String(d.hostApp || '')
+      const p = String((d as any).fullPath || (d as any).fullName || '')
+      const id = String(d.id || '')
+      const n = String(d.name || '')
+      const a = d.isActive ? '1' : '0'
+      return `${h}|${p}|${id}|${n}|${a}`
+    }
+    return documents
+      .map(({ doc }) => stableKey(doc))
+      .sort((a, b) => a.localeCompare(b))
+      .join(';;')
+  } catch (e) {
+    ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/document-sync.ts', e)
+    return String(Date.now())
+  }
+}
 
 export function logToBackend(message: string, level: 'info' | 'warning' | 'error' = 'info') {
   // Convention: always forward logs to backend (throttled/batched below) so WPS issues remain traceable.
@@ -48,14 +128,20 @@ export function logToBackend(message: string, level: 'info' | 'warning' | 'error
     const batchLogs = logQueue.splice(0, logQueue.length)
     lastLogTime = now
     
+    const batchLevel = batchLogs.some((l) => l.level === 'error')
+      ? 'error'
+      : (batchLogs.some((l) => l.level === 'warning') ? 'warning' : 'info')
+
     // 批量发送日志
     const apiBase = getRuntimeConfig().apiBase || 'http://localhost:5123'
-    const batchMessage = batchLogs.map(log => `[${new Date(log.timestamp).toLocaleTimeString()}] ${log.message}`).join('\n')
+    const batchMessage = batchLogs
+      .map(log => `[${new Date(log.timestamp).toLocaleTimeString()}] [${log.level.toUpperCase()}] ${log.message}`)
+      .join('\n')
     
     axios.get(`${apiBase}/api/log`, {
       params: {
         message: `[BATCH:${batchLogs.length}] ${batchMessage.substring(0, 800)}`,
-        level: 'info'
+        level: batchLevel
       },
       timeout: 3000
     }).catch((error) => {
@@ -102,7 +188,7 @@ export const syncError = ref<string | null>(null)
 function getApiClient() {
   return axios.create({
     baseURL: API_BASE_URL,
-    timeout: MAGIC_NUMBERS.DEFAULT_TIMEOUT,
+    timeout: getDocSyncTimeoutMs(false),
     headers: {
       'Content-Type': 'application/json'
     }
@@ -112,49 +198,125 @@ function getApiClient() {
 /**
  * 同步所有 WPS 文档到后端（只同步元信息）
  */
-export async function syncAllDocuments(documents: Array<{ doc: WPSDocumentInfo }>): Promise<boolean> {
+export async function syncAllDocuments(
+  documents: Array<{ doc: WPSDocumentInfo }>,
+  opts?: { force?: boolean; reason?: string }
+): Promise<boolean> {
+  const reason = String(opts?.reason || 'unknown').slice(0, 80)
+  const force = !!opts?.force
+  const now = Date.now()
+
+  // Coalesce concurrent callers.
+  if (syncInFlight) {
+    syncPendingDocs = documents
+    return syncInFlight
+  }
+
+  // Backoff on repeated failures (network jitter, backend restarts, WPS WebView stalls).
+  // Forced sync (e.g. @ list / manual refresh) bypasses backoff so the UI can recover faster.
+  if (!force && now < syncBackoffUntil) {
+    const waitMs = syncBackoffUntil - now
+    if (now - lastBackoffLogAt >= MAGIC_NUMBERS.BACKOFF_LOG_INTERVAL_MS) {
+      lastBackoffLogAt = now
+      logToBackend(`syncAllDocuments 跳过：backoff=${waitMs}ms streak=${syncFailureStreak} reason=${reason}`, 'warning')
+    }
+    // Update attempt timestamp so detectAndSync won't spin.
+    lastSyncAttemptTimestamp = now
+    return false
+  }
+
   isSyncing.value = true
   syncError.value = null
+  lastSyncAttemptTimestamp = now
 
-  logToBackend('syncAllDocuments 开始同步，文档数: ' + documents.length)
+  const signature = computeDocsSignature(documents)
+  const startedAt = Date.now()
 
-  try {
-    const client = getApiClient()
-    const clientId = getClientId()
-    const hostApp = wpsBridge.getHostApp()
+  logToBackend(`syncAllDocuments 开始同步(reason=${reason})，文档数: ${documents.length}`)
 
-    // 只同步元信息，不读取内容
-    // path 使用 fullName（完整路径），便于后端直接读取
-    const syncedDocs = documents.map(({ doc }) => ({
-      id: doc.id,
-      name: doc.name,
-      path: doc.fullPath || doc.name,
-      isActive: doc.isActive,
-      hostApp: doc.hostApp || hostApp,
-      pageCount: doc.pageCount,
-      wordCount: doc.wordCount
-    }))
+  syncInFlight = (async () => {
+    try {
+      const client = axios.create({
+        baseURL: API_BASE_URL,
+        timeout: getDocSyncTimeoutMs(force),
+        headers: { 'Content-Type': 'application/json' }
+      })
+      const clientId = getClientId()
+      const hostApp = wpsBridge.getHostApp()
 
-    logToBackend('syncAllDocuments 发送同步请求，文档数: ' + syncedDocs.length)
+      // 只同步元信息，不读取内容
+      // path 使用 fullName（完整路径），便于后端直接读取
+      const syncedDocs = documents.map(({ doc }) => ({
+        id: doc.id,
+        name: doc.name,
+        path: doc.fullPath || doc.name,
+        isActive: doc.isActive,
+        hostApp: doc.hostApp || hostApp,
+        pageCount: doc.pageCount,
+        wordCount: doc.wordCount
+      }))
 
-    const apiBase = getRuntimeConfig().apiBase || 'http://localhost:5123'
-    await client.post(`${apiBase}/api/documents/sync`, {
-      client_id: clientId,
-      host_app: hostApp,
-      documents: syncedDocs
-    })
+      logToBackend(`syncAllDocuments 发送同步请求，文档数: ${syncedDocs.length}`)
 
-    lastSyncTime.value = new Date()
-    lastSyncTimestamp = Date.now() // 更新防抖时间戳
-    logToBackend('syncAllDocuments 同步成功: ' + syncedDocs.length + ' 个文档')
-    return true
-  } catch (error: any) {
-    syncError.value = error.message || '同步失败'
-    logToBackend('syncAllDocuments 同步失败: ' + error.message, 'error')
-    return false
-  } finally {
-    isSyncing.value = false
-  }
+      const apiBase = getRuntimeConfig().apiBase || 'http://localhost:5123'
+      await client.post(`${apiBase}/api/documents/sync`, {
+        client_id: clientId,
+        host_app: hostApp,
+        documents: syncedDocs
+      })
+
+      lastSyncTime.value = new Date()
+      lastSyncedSignature = signature
+      lastSyncSucceededAt = Date.now()
+      syncFailureStreak = 0
+      syncBackoffUntil = 0
+
+      const elapsed = Date.now() - startedAt
+      logToBackend(`syncAllDocuments 同步成功: ${syncedDocs.length} 个文档（${elapsed}ms）`)
+      return true
+    } catch (error: any) {
+      const d = describeAxiosError(error)
+      syncError.value = d.message || '同步失败'
+
+      syncFailureStreak += 1
+      const pow = Math.min(6, Math.max(0, syncFailureStreak - 1))
+      const jitter = Math.floor(Math.random() * 400)
+      const backoffMs = Math.min(
+        MAGIC_NUMBERS.BACKOFF_MAX_MS,
+        Math.max(MAGIC_NUMBERS.BACKOFF_BASE_MS, MAGIC_NUMBERS.BACKOFF_BASE_MS * Math.pow(2, pow)) + jitter
+      )
+      syncBackoffUntil = Date.now() + backoffMs
+
+      const elapsed = Date.now() - startedAt
+      logToBackend(
+        `syncAllDocuments 同步失败(kind=${d.kind} code=${d.code || ''} status=${d.status || ''}) `
+          + `streak=${syncFailureStreak} backoff_ms=${backoffMs} elapsed_ms=${elapsed} reason=${reason} msg=${d.message}`,
+        'warning'
+      )
+      return false
+    } finally {
+      isSyncing.value = false
+
+      const pending = syncPendingDocs
+      syncPendingDocs = null
+      syncInFlight = null
+
+      // If new callers arrived mid-flight, try once more (coalesced) when not in backoff.
+      if (pending) {
+        const pendingSig = computeDocsSignature(pending)
+        const shouldResync = pendingSig !== lastSyncedSignature || (Date.now() - lastSyncSucceededAt) > 2000
+        if (shouldResync && Date.now() >= syncBackoffUntil) {
+          setTimeout(() => {
+            syncAllDocuments(pending, { force: false, reason: `coalesced:${reason}` }).catch((e) => {
+              ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/document-sync.ts', e)
+            })
+          }, 0)
+        }
+      }
+    }
+  })()
+
+  return syncInFlight
 }
 
 /**
@@ -191,15 +353,15 @@ export async function clearSyncedDocuments(): Promise<boolean> {
  */
 export async function syncOpenDocumentsNow(): Promise<boolean> {
   const now = Date.now()
-  if (now - lastForceSyncTimestamp < 1000) return false
-  lastForceSyncTimestamp = now
+  if (now - lastForceSyncAttemptTimestamp < 1000) return false
+  lastForceSyncAttemptTimestamp = now
 
   const inWps = wpsBridge.isInWPSEnvironment()
   if (!inWps) return false
 
   const wpsDocs = wpsBridge.getAllOpenDocuments()
   // Sync empty list too, so closing documents immediately clears the snapshot for this host.
-  return syncAllDocuments(wpsDocs.map((doc) => ({ doc })))
+  return syncAllDocuments(wpsDocs.map((doc) => ({ doc })), { force: true, reason: 'sync_open_documents_now' })
 }
 
 /**
@@ -209,8 +371,8 @@ export async function detectAndSync(): Promise<boolean> {
   const now = Date.now()
 
   // 防抖：10秒内不重复同步
-  if (now - lastSyncTimestamp < MAGIC_NUMBERS.SYNC_INTERVAL) {
-    logToBackend(`[SYNC-防抖] 跳过重复同步，距离上次同步: ${(now - lastSyncTimestamp)/1000}秒`)
+  if (now - lastSyncAttemptTimestamp < MAGIC_NUMBERS.SYNC_INTERVAL) {
+    logToBackend(`[SYNC-防抖] 跳过重复同步，距离上次同步: ${(now - lastSyncAttemptTimestamp)/1000}秒`)
     return false
   }
 
@@ -239,5 +401,5 @@ export async function detectAndSync(): Promise<boolean> {
     documents.push({ doc: wpsDoc })
   }
 
-  return syncAllDocuments(documents)
+  return syncAllDocuments(documents, { force: false, reason: 'detect_and_sync' })
 }

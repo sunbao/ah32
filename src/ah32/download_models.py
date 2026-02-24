@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import logging
 import sys
-import sys
 
 logger = logging.getLogger(__name__)
 
@@ -50,12 +49,19 @@ def download_llm_model() -> bool:
 
 
 def main() -> int:
+    reconfigure_exc_info = None
     try:
         sys.stdout.reconfigure(encoding="utf-8")
         sys.stderr.reconfigure(encoding="utf-8")
     except Exception:
-        pass
+        reconfigure_exc_info = sys.exc_info()
     logging.basicConfig(level=logging.INFO)
+    if reconfigure_exc_info:
+        logger.warning(
+            "[download_models] stdout/stderr reconfigure failed (ignored)",
+            exc_info=reconfigure_exc_info,
+        )
+        reconfigure_exc_info = None
 
     if sys.version_info < (3, 11):
         logger.error("Python 3.11+ required")

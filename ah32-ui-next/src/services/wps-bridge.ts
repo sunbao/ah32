@@ -51,6 +51,32 @@ export interface WriteOptions {
   saveAfter?: boolean  // 写入后是否保存
 }
 
+// ET range read (structured preview; bounded)
+export interface EtRangeReadOptions {
+  sheet_name?: string
+  range_a1?: string
+  maxRows?: number
+  maxCols?: number
+  maxCells?: number
+}
+
+export interface EtRangeReadResult {
+  workbook?: string
+  sheet_name?: string
+  used_range_a1?: string
+  requested_range_a1?: string
+  read_range_a1?: string
+  requested_rows?: number
+  requested_cols?: number
+  read_rows?: number
+  read_cols?: number
+  truncated?: boolean
+  limit_rows?: number
+  limit_cols?: number
+  limit_cells?: number
+  values: Array<Array<string | number | boolean | null>>
+}
+
 /**
  * WPS 文档桥接类
  * 提供文档操作的核心功能
@@ -101,7 +127,8 @@ export class WPSDocumentBridge {
     try {
       const msg = String((error as any)?.message || error || '').toLowerCase()
       return msg.includes('execfunc') && (msg.includes('please execute') || msg.includes('wps api'))
-    } catch {
+    } catch (e) {
+      ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/wps-bridge.ts', e)
       return false
     }
   }
@@ -614,7 +641,10 @@ export class WPSDocumentBridge {
     try {
       const s = String(raw || '')
       if (!maxChars || maxChars <= 0) return s
-      return s.length > maxChars ? s.slice(0, maxChars) : s
+      if (s.length <= maxChars) return s
+      const suffix = '\n...(truncated_by_max_chars)'
+      const head = s.slice(0, Math.max(0, maxChars - suffix.length))
+      return head + suffix
     } catch (e) {
       ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/wps-bridge.ts', e)
       return ''
@@ -627,7 +657,7 @@ export class WPSDocumentBridge {
    */
   extractDocumentTextById(
     docId: string,
-    options?: { maxChars?: number; maxRows?: number; maxCols?: number }
+    options?: { maxChars?: number; maxRows?: number; maxCols?: number; maxCells?: number }
   ): string {
     const id = String(docId || '').trim()
     if (!id) return ''
@@ -639,6 +669,7 @@ export class WPSDocumentBridge {
     const maxChars = options?.maxChars ?? 200_000
     const maxRows = options?.maxRows ?? 200
     const maxCols = options?.maxCols ?? 50
+    const maxCells = options?.maxCells ?? Math.min(Math.max(1, maxRows) * Math.max(1, maxCols), 4000)
 
     try {
       if (host === 'wps') {
@@ -654,46 +685,176 @@ export class WPSDocumentBridge {
         return ''
       }
 
-      if (host === 'et') {
-        const wbs = app.Workbooks
-        if (!wbs) return ''
-        for (let i = 0; i < wbs.Count; i++) {
-          const wb = wbs.Item(i + 1)
-          if (!wb) continue
-          if (this.getDocId(wb) !== id) continue
+        if (host === 'et') {
+          const wbs = app.Workbooks
+          if (!wbs) return ''
+          for (let i = 0; i < wbs.Count; i++) {
+            const wb = wbs.Item(i + 1)
+            if (!wb) continue
+            if (this.getDocId(wb) !== id) continue
 
-          const sheet = wb.ActiveSheet || wb.Sheets?.Item?.(1)
-          if (!sheet) return ''
-          const used = sheet.UsedRange
-          if (!used) return ''
+            const sheet = wb.ActiveSheet || wb.Sheets?.Item?.(1)
+            if (!sheet) return ''
+            const used = sheet.UsedRange
+            if (!used) return ''
 
-          const values = (used as any).Value2
-          const lines: string[] = []
+            const lines: string[] = []
 
-          const pushRow = (row: any[]) => {
-            const cells = row
-              .slice(0, maxCols)
-              .map((v) => (v == null ? '' : String(v)))
-              .map((s) => s.replace(/\r?\n/g, ' ').trim())
-            lines.push(cells.join('\t'))
-          }
+            // Provide lightweight metadata to make deterministic ET plans easier (range selection, etc.).
+            // Tools should ignore lines starting with '#'. See skill tool `data_parser`.
+            try {
+              const wbName = String((wb as any)?.Name || '').trim()
+              if (wbName) lines.push(`#workbook=${wbName}`)
+            } catch (e) {
+              ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/wps-bridge.ts', e)
+            }
+            try {
+              const sheetName = String((sheet as any)?.Name || '').trim()
+              if (sheetName) lines.push(`#sheet=${sheetName}`)
+            } catch (e) {
+              ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/wps-bridge.ts', e)
+            }
+            const usedRows = Number((used as any)?.Rows?.Count || 0) || 0
+            const usedCols = Number((used as any)?.Columns?.Count || 0) || 0
+            try {
+              const addrFn = (used as any)?.Address
+              const usedAddr = typeof addrFn === 'function' ? String(addrFn.call(used, false, false) || '') : String(addrFn || '')
+              if (usedAddr) lines.push(`#used_range=${usedAddr}`)
+            } catch (e) {
+              ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/wps-bridge.ts', e)
+            }
+            if (usedRows > 0) lines.push(`#used_rows=${usedRows}`)
+            if (usedCols > 0) lines.push(`#used_cols=${usedCols}`)
 
-          if (Array.isArray(values)) {
-            if (values.length > 0 && Array.isArray(values[0])) {
-              for (let r = 0; r < Math.min(values.length, maxRows); r++) {
-                const row = values[r]
-                if (Array.isArray(row)) pushRow(row)
+            // Prefer reading a small selection when possible; otherwise read a preview from UsedRange.
+            let readSource: 'selection' | 'used_range' = 'used_range'
+            let selectionRows = 0
+            let selectionCols = 0
+            let selectionAddr = ''
+            let usedAddr = ''
+            try {
+              const usedA1 = (() => {
+                try {
+                  const addrFn = (used as any)?.Address
+                  return typeof addrFn === 'function' ? String(addrFn.call(used, false, false) || '') : String(addrFn || '')
+                } catch (e) {
+                  ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/wps-bridge.ts', e)
+                  return ''
+                }
+              })()
+              usedAddr = String(usedA1 || '').replace(/\$/g, '').trim()
+
+              const sel = (app as any)?.Selection
+              const selAddrFn = sel?.Address
+              if (typeof selAddrFn === 'function') selectionAddr = String(selAddrFn.call(sel, false, false) || '')
+              else if (selAddrFn != null) selectionAddr = String(selAddrFn || '')
+              if (!selectionAddr) {
+                const r = sel?.Range
+                const rAddrFn = r?.Address
+                if (typeof rAddrFn === 'function') selectionAddr = String(rAddrFn.call(r, false, false) || '')
+                else if (rAddrFn !=null) selectionAddr = String(rAddrFn || '')
+              }
+              selectionAddr = String(selectionAddr || '').replace(/\$/g, '').trim()
+              if (selectionAddr) lines.push(`#selection=${selectionAddr}`)
+
+              const selRange = sel?.Range || sel
+              selectionRows = Number((selRange as any)?.Rows?.Count || 0) || 0
+              selectionCols = Number((selRange as any)?.Columns?.Count || 0) || 0
+              if (selectionRows > 0) lines.push(`#selection_rows=${selectionRows}`)
+              if (selectionCols > 0) lines.push(`#selection_cols=${selectionCols}`)
+              const selectionCells = selectionRows > 0 && selectionCols > 0 ? selectionRows * selectionCols : 0
+              if (
+                selRange
+                && selectionRows > 0
+                && selectionCols > 0
+                && selectionRows <= maxRows
+                && selectionCols <= maxCols
+                && selectionCells <= maxCells
+              ) {
+                readSource = 'selection'
+              }
+            } catch (e) {
+              ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/wps-bridge.ts', e)
+            }
+
+            // Deterministic bounded read (structured)
+            const requestedA1 = readSource === 'selection' ? selectionAddr : usedAddr
+            const read = this.readEtRangeById(id, {
+              sheet_name: String((sheet as any)?.Name || '').trim(),
+              range_a1: requestedA1,
+              maxRows,
+              maxCols,
+              maxCells,
+            })
+
+            const cellMaxChars = 200
+            const capCell = (v: any) => {
+              const s = v == null ? '' : String(v).replace(/\r?\n/g, ' ').trim()
+              if (s.length <= cellMaxChars) return s
+              return s.slice(0, cellMaxChars - 3) + '...'
+            }
+
+            try {
+              lines.push(`#read_source=${readSource}`)
+              lines.push(`#max_chars=${maxChars}`)
+              lines.push(`#limit_rows=${maxRows}`)
+              lines.push(`#limit_cols=${maxCols}`)
+              lines.push(`#limit_cells=${maxCells}`)
+              lines.push(`#cell_max_chars=${cellMaxChars}`)
+
+              if (selectionRows > 0 && selectionCols > 0) {
+                const tooLarge = selectionRows > maxRows || selectionCols > maxCols || selectionRows * selectionCols > maxCells
+                if (tooLarge) lines.push('#selection_too_large=true')
+              }
+            } catch (e) {
+              ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/wps-bridge.ts', e)
+            }
+
+            if (read) {
+              try {
+                if (read.requested_range_a1) lines.push(`#requested_range=${read.requested_range_a1}`)
+                if (read.read_range_a1) lines.push(`#read_range=${read.read_range_a1}`)
+                if (typeof read.requested_rows === 'number') lines.push(`#requested_rows=${read.requested_rows}`)
+                if (typeof read.requested_cols === 'number') lines.push(`#requested_cols=${read.requested_cols}`)
+                if (typeof read.read_rows === 'number') lines.push(`#read_rows=${read.read_rows}`)
+                if (typeof read.read_cols === 'number') lines.push(`#read_cols=${read.read_cols}`)
+                lines.push(`#truncated=${read.truncated ? 'true' : 'false'}`)
+              } catch (e) {
+                ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/wps-bridge.ts', e)
+              }
+
+              const charBudget = Math.max(1000, maxChars - 200)
+              let currentLen = 0
+              for (const l of lines) currentLen += (l?.length || 0) + 1
+              let truncatedByBudget = false
+              const pushWithBudget = (line: string) => {
+                const s = String(line || '')
+                if (currentLen + s.length + 1 > charBudget) {
+                  if (!truncatedByBudget) {
+                    truncatedByBudget = true
+                    const flag = '#truncated_by_char_budget=true'
+                    // Only append the flag when it fits; otherwise we'll rely on _capText suffix.
+                    if (currentLen + flag.length + 1 <= charBudget) {
+                      lines.push(flag)
+                      currentLen += flag.length + 1
+                    }
+                  }
+                  return false
+                }
+                lines.push(s)
+                currentLen += s.length + 1
+                return true
+              }
+
+              for (const row of read.values || []) {
+                const cells = Array.isArray(row) ? row.slice(0, maxCols).map(capCell) : [capCell(row)]
+                if (!pushWithBudget(cells.join('\t'))) break
               }
             } else {
-              // 1-D array
-              for (let r = 0; r < Math.min(values.length, maxRows); r++) {
-                pushRow([values[r]])
-              }
+              // Fallback: keep metadata only
+              lines.push('#read_failed=true')
+              lines.push('#truncated=true')
             }
-          } else {
-            // Single cell
-            pushRow([values])
-          }
 
           return this._capText(lines.join('\n'), maxChars)
         }
@@ -803,100 +964,610 @@ export class WPSDocumentBridge {
    * 注意：不同宿主的对象模型不同；这里只做 best-effort。
    */
   activateDocumentById(docId: string): boolean {
-    const id = String(docId || '').trim()
-    if (!id) return false
+    return this.execWpsApi('activateDocumentById', () => {
+      const id = String(docId || '').trim()
+      if (!id) return false
 
-    const app = this.getApplication()
-    if (!app) return false
+      const app = this.getApplication()
+      if (!app) return false
+
+      const host = this.getHostApp()
+      try {
+        // Fast path: try activating the cached live object (avoids ID collisions / proxy identity changes).
+        try {
+          const obj = this.docObjById.get(id)
+          if (obj) {
+            try { if (typeof obj.Activate === 'function') obj.Activate() } catch (e) { (globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/wps-bridge.ts', e) }
+            try { if (obj.ActiveWindow && typeof obj.ActiveWindow.Activate === 'function') obj.ActiveWindow.Activate() } catch (e) { (globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/wps-bridge.ts', e) }
+            try { if (obj.Windows && obj.Windows.Count >= 1 && typeof obj.Windows.Item(1)?.Activate === 'function') obj.Windows.Item(1).Activate() } catch (e) { (globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/wps-bridge.ts', e) }
+            // Verify active matches requested id.
+            try {
+              const active = (host === 'wps') ? app.ActiveDocument : (host === 'et') ? app.ActiveWorkbook : (host === 'wpp') ? app.ActivePresentation : null
+              if (active && this.getDocId(active) === id) return true
+            } catch (e) {
+              ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/wps-bridge.ts', e)
+            }
+          }
+        } catch (e) {
+          ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/wps-bridge.ts', e)
+        }
+
+        if (host === 'wps') {
+          const docs = app.Documents
+          if (!docs) return false
+          for (let i = 0; i < docs.Count; i++) {
+            const d = docs.Item(i + 1)
+            if (d && this.getDocId(d) === id) {
+              try { if (typeof d.Activate === 'function') d.Activate() } catch (e) { (globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/wps-bridge.ts', e) }
+              try { if (d.ActiveWindow && typeof d.ActiveWindow.Activate === 'function') d.ActiveWindow.Activate() } catch (e) { (globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/wps-bridge.ts', e) }
+              // Verify: avoid writing macros into the wrong active document.
+              try {
+                const active = app.ActiveDocument
+                if (active && this.getDocId(active) === id) return true
+              } catch (e) {
+                ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/wps-bridge.ts', e)
+              }
+              return false
+            }
+          }
+          return false
+        }
+
+        if (host === 'et') {
+          const wbs = app.Workbooks
+          if (!wbs) return false
+          for (let i = 0; i < wbs.Count; i++) {
+            const wb = wbs.Item(i + 1)
+            if (wb && this.getDocId(wb) === id) {
+              try { if (typeof wb.Activate === 'function') wb.Activate() } catch (e) { (globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/wps-bridge.ts', e) }
+              try { if (wb.Windows && wb.Windows.Count >= 1 && typeof wb.Windows.Item(1)?.Activate === 'function') wb.Windows.Item(1).Activate() } catch (e) { (globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/wps-bridge.ts', e) }
+              try {
+                const active = app.ActiveWorkbook
+                if (active && this.getDocId(active) === id) return true
+              } catch (e) {
+                ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/wps-bridge.ts', e)
+              }
+              return false
+            }
+          }
+          return false
+        }
+
+        if (host === 'wpp') {
+          const pres = app.Presentations
+          if (!pres) return false
+          for (let i = 0; i < pres.Count; i++) {
+            const p = pres.Item(i + 1)
+            if (p && this.getDocId(p) === id) {
+              // WPP activation APIs vary; try common window activation patterns.
+              try { if (typeof p.Activate === 'function') p.Activate() } catch (e) { (globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/wps-bridge.ts', e) }
+              try { if (p.Windows && p.Windows.Count >= 1 && typeof p.Windows.Item(1)?.Activate === 'function') p.Windows.Item(1).Activate() } catch (e) { (globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/wps-bridge.ts', e) }
+              try {
+                const active = app.ActivePresentation
+                if (active && this.getDocId(active) === id) return true
+              } catch (e) {
+                ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/wps-bridge.ts', e)
+              }
+              return false
+            }
+          }
+          return false
+        }
+      } catch (e) {
+        ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/wps-bridge.ts', e)
+        return false
+      }
+
+      return false
+    }, false)
+  }
+
+  /**
+   * Extract compact ET metadata for the active workbook/sheet (range addresses, sizes).
+   * This is meant for LLM prompting without shipping the full table.
+   */
+  extractEtMetaById(docId: string): Record<string, any> | null {
+    const id = String(docId || '').trim()
+    if (!id) return null
 
     const host = this.getHostApp()
+    if (host !== 'et') return null
+
+    const app = this.getApplication()
+    if (!app) return null
+
+    const normalize = (raw: any) => {
+      let s = String(raw || '').trim()
+      if (!s) return { sheet: '', addr: '' }
+      s = s.replace(/\$/g, '')
+      const bang = s.indexOf('!')
+      if (bang > 0) {
+        const sheet = s.slice(0, bang).trim().replace(/^'/, '').replace(/'$/, '')
+        const addr = s.slice(bang + 1).trim()
+        return { sheet, addr }
+      }
+      return { sheet: '', addr: s }
+    }
+
     try {
-      // Fast path: try activating the cached live object (avoids ID collisions / proxy identity changes).
+      const wbs = app.Workbooks
+      if (!wbs) return null
+      for (let i = 0; i < wbs.Count; i++) {
+        const wb = wbs.Item(i + 1)
+        if (!wb) continue
+        if (this.getDocId(wb) !== id) continue
+
+        const sheet = wb.ActiveSheet || wb.Sheets?.Item?.(1)
+        if (!sheet) return null
+
+        const meta: any = {}
+        try {
+          meta.workbook = String((wb as any)?.Name || '').trim() || undefined
+        } catch (e) {
+          ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/wps-bridge.ts', e)
+        }
+        try {
+          meta.sheet_name = String((sheet as any)?.Name || '').trim() || undefined
+        } catch (e) {
+          ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/wps-bridge.ts', e)
+        }
+
+        try {
+          const used = (sheet as any).UsedRange
+          if (used) {
+            const addrFn = (used as any)?.Address
+            const usedAddr = typeof addrFn === 'function' ? String(addrFn.call(used, false, false) || '') : String(addrFn || '')
+            const n = normalize(usedAddr)
+            meta.used_range_a1 = n.addr || undefined
+            if (!meta.sheet_name && n.sheet) meta.sheet_name = n.sheet
+            meta.used_rows = Number((used as any)?.Rows?.Count || 0) || undefined
+            meta.used_cols = Number((used as any)?.Columns?.Count || 0) || undefined
+          }
+        } catch (e) {
+          ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/wps-bridge.ts', e)
+        }
+
+        try {
+          const sel = (app as any)?.Selection
+          if (sel) {
+            let selAddr = ''
+            const selAddrFn = sel?.Address
+            if (typeof selAddrFn === 'function') selAddr = String(selAddrFn.call(sel, false, false) || '')
+            else if (selAddrFn != null) selAddr = String(selAddrFn || '')
+            if (!selAddr) {
+              const r = sel?.Range
+              const rAddrFn = r?.Address
+              if (typeof rAddrFn === 'function') selAddr = String(rAddrFn.call(r, false, false) || '')
+              else if (rAddrFn != null) selAddr = String(rAddrFn || '')
+            }
+            if (selAddr) {
+              const n = normalize(selAddr)
+              meta.selection_a1 = n.addr || undefined
+              if (!meta.sheet_name && n.sheet) meta.sheet_name = n.sheet
+            }
+          }
+        } catch (e) {
+          ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/wps-bridge.ts', e)
+        }
+
+        return Object.keys(meta).length ? meta : null
+      }
+      return null
+    } catch (e) {
+      ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/wps-bridge.ts', e)
+      return null
+    }
+  }
+
+  /**
+   * Read a specific ET range into a bounded 2-D array (best-effort; deterministic limits).
+   *
+   * Notes:
+   * - This is meant for *preview / prompting*, not for shipping entire workbooks into context.
+   * - When the requested range is larger than limits, it returns the top-left preview and sets truncated=true.
+   */
+  readEtRangeById(docId: string, options?: EtRangeReadOptions): EtRangeReadResult | null {
+    const id = String(docId || '').trim()
+    if (!id) return null
+
+    const host = this.getHostApp()
+    if (host !== 'et') return null
+
+    const app = this.getApplication()
+    if (!app) return null
+
+    const clampInt = (v: any, min: number, max: number, fallback: number) => {
+      const n = Math.floor(Number(v))
+      if (!Number.isFinite(n)) return fallback
+      return Math.max(min, Math.min(max, n))
+    }
+
+    const limitRows = clampInt(options?.maxRows, 1, 2000, 100)
+    const limitCols = clampInt(options?.maxCols, 1, 200, 30)
+    const defaultCells = Math.min(limitRows * limitCols, 4000)
+    const limitCells = clampInt(options?.maxCells, 1, 200_000, defaultCells)
+
+    const normalizeAddr = (raw: any) => {
+      let s = String(raw || '').trim()
+      if (!s) return { sheet: '', addr: '' }
+      s = s.replace(/\$/g, '')
+      const bang = s.indexOf('!')
+      if (bang > 0) {
+        const sheet = s.slice(0, bang).trim().replace(/^'/, '').replace(/'$/, '')
+        const addr = s.slice(bang + 1).trim()
+        return { sheet, addr }
+      }
+      return { sheet: '', addr: s }
+    }
+
+    const toCell = (v: any): string | number | boolean | null => {
+      if (v == null) return null
+      if (typeof v === 'number' || typeof v === 'boolean') return v
+      return String(v).replace(/\r?\n/g, ' ').trim()
+    }
+
+    const tryGetAddrA1 = (range: any): string => {
       try {
-        const obj = this.docObjById.get(id)
-        if (obj) {
-          try { if (typeof obj.Activate === 'function') obj.Activate() } catch (e) { (globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/wps-bridge.ts', e) }
-          try { if (obj.ActiveWindow && typeof obj.ActiveWindow.Activate === 'function') obj.ActiveWindow.Activate() } catch (e) { (globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/wps-bridge.ts', e) }
-          try { if (obj.Windows && obj.Windows.Count >= 1 && typeof obj.Windows.Item(1)?.Activate === 'function') obj.Windows.Item(1).Activate() } catch (e) { (globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/wps-bridge.ts', e) }
-          // Verify active matches requested id.
+        const addrFn = range?.Address
+        const addr = typeof addrFn === 'function' ? String(addrFn.call(range, false, false) || '') : String(addrFn || '')
+        return String(addr || '').trim().replace(/\$/g, '')
+      } catch (e) {
+        ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/wps-bridge.ts', e)
+        return ''
+      }
+    }
+
+    const resolveRange = (sheet: any, addr: string): any | null => {
+      const a1 = String(addr || '').trim().replace(/\$/g, '')
+      if (!a1) return null
+      try {
+        if (typeof (sheet as any)?.Range === 'function') return (sheet as any).Range(a1)
+      } catch (e) {
+        ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/wps-bridge.ts', e)
+      }
+      // Fallback: Range(A1, D10)
+      try {
+        const parts = a1.split(':').map(s => s.trim()).filter(Boolean)
+        if (parts.length === 2 && typeof (sheet as any)?.Range === 'function') return (sheet as any).Range(parts[0], parts[1])
+      } catch (e) {
+        ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/wps-bridge.ts', e)
+      }
+      return null
+    }
+
+    try {
+      const wbs = app.Workbooks
+      if (!wbs) return null
+      for (let i = 0; i < wbs.Count; i++) {
+        const wb = wbs.Item(i + 1)
+        if (!wb) continue
+        if (this.getDocId(wb) !== id) continue
+
+        let workbookName: string | undefined
+        try {
+          workbookName = String((wb as any)?.Name || '').trim() || undefined
+        } catch (e) {
+          ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/wps-bridge.ts', e)
+        }
+
+        const requested = normalizeAddr(options?.range_a1 || '')
+        const preferredSheetName = String(requested.sheet || options?.sheet_name || '').trim()
+
+        let sheet: any = null
+        try {
+          if (preferredSheetName && wb.Sheets && typeof wb.Sheets.Item === 'function') {
+            sheet = wb.Sheets.Item(preferredSheetName)
+          }
+        } catch (e) {
+          ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/wps-bridge.ts', e)
+          sheet = null
+        }
+        if (!sheet) sheet = wb.ActiveSheet || wb.Sheets?.Item?.(1)
+        if (!sheet) return null
+
+        let sheetName: string | undefined
+        try {
+          sheetName = String((sheet as any)?.Name || '').trim() || undefined
+        } catch (e) {
+          ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/wps-bridge.ts', e)
+        }
+
+        // UsedRange meta (best-effort)
+        let usedAddrA1: string | undefined
+        try {
+          const used = (sheet as any).UsedRange
+          const addr = used ? tryGetAddrA1(used) : ''
+          if (addr) usedAddrA1 = normalizeAddr(addr).addr || undefined
+        } catch (e) {
+          ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/wps-bridge.ts', e)
+        }
+
+        // Determine target range: explicit -> current selection -> UsedRange
+        let requestedRangeA1 = String(requested.addr || '').trim()
+        if (!requestedRangeA1) {
           try {
-            const active = (host === 'wps') ? app.ActiveDocument : (host === 'et') ? app.ActiveWorkbook : (host === 'wpp') ? app.ActivePresentation : null
-            if (active && this.getDocId(active) === id) return true
+            const sel = (app as any)?.Selection
+            const selAddr = sel ? tryGetAddrA1(sel?.Range || sel) : ''
+            if (selAddr) requestedRangeA1 = normalizeAddr(selAddr).addr
           } catch (e) {
             ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/wps-bridge.ts', e)
           }
         }
-      } catch (e) {
-        ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/wps-bridge.ts', e)
-      }
-
-      if (host === 'wps') {
-        const docs = app.Documents
-        if (!docs) return false
-        for (let i = 0; i < docs.Count; i++) {
-          const d = docs.Item(i + 1)
-          if (d && this.getDocId(d) === id) {
-            try { if (typeof d.Activate === 'function') d.Activate() } catch (e) { (globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/wps-bridge.ts', e) }
-            try { if (d.ActiveWindow && typeof d.ActiveWindow.Activate === 'function') d.ActiveWindow.Activate() } catch (e) { (globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/wps-bridge.ts', e) }
-            // Verify: avoid writing macros into the wrong active document.
-            try {
-              const active = app.ActiveDocument
-              if (active && this.getDocId(active) === id) return true
-            } catch (e) {
-              ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/wps-bridge.ts', e)
-            }
-            return false
+        if (!requestedRangeA1) {
+          try {
+            const used = (sheet as any).UsedRange
+            const usedA1 = used ? tryGetAddrA1(used) : ''
+            if (usedA1) requestedRangeA1 = normalizeAddr(usedA1).addr
+          } catch (e) {
+            ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/wps-bridge.ts', e)
           }
         }
-        return false
-      }
+        if (!requestedRangeA1) return null
 
-      if (host === 'et') {
-        const wbs = app.Workbooks
-        if (!wbs) return false
-        for (let i = 0; i < wbs.Count; i++) {
-          const wb = wbs.Item(i + 1)
-          if (wb && this.getDocId(wb) === id) {
-            try { if (typeof wb.Activate === 'function') wb.Activate() } catch (e) { (globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/wps-bridge.ts', e) }
-            try { if (wb.Windows && wb.Windows.Count >= 1 && typeof wb.Windows.Item(1)?.Activate === 'function') wb.Windows.Item(1).Activate() } catch (e) { (globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/wps-bridge.ts', e) }
-            try {
-              const active = app.ActiveWorkbook
-              if (active && this.getDocId(active) === id) return true
-            } catch (e) {
-              ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/wps-bridge.ts', e)
+        const rng = resolveRange(sheet, requestedRangeA1)
+        if (!rng) return null
+
+        const requestedRows = Number((rng as any)?.Rows?.Count || 0) || 0
+        const requestedCols = Number((rng as any)?.Columns?.Count || 0) || 0
+        const safeRequestedRows = requestedRows > 0 ? requestedRows : 1
+        const safeRequestedCols = requestedCols > 0 ? requestedCols : 1
+
+        let readCols = Math.max(1, Math.min(safeRequestedCols, limitCols))
+        let readRows = Math.max(1, Math.min(safeRequestedRows, limitRows))
+        const maxRowsByCells = Math.max(1, Math.floor(limitCells / readCols))
+        if (readRows > maxRowsByCells) readRows = maxRowsByCells
+
+        let preview: any = rng
+        const needsResize = readRows !== safeRequestedRows || readCols !== safeRequestedCols
+        if (needsResize) {
+          try {
+            if (typeof (rng as any)?.Resize === 'function') preview = (rng as any).Resize(readRows, readCols)
+            else {
+              const cells = (rng as any).Cells
+              if (typeof cells === 'function') {
+                const firstCell = cells.call(rng, 1, 1)
+                if (firstCell && typeof firstCell.Resize === 'function') preview = firstCell.Resize(readRows, readCols)
+              } else if (cells && typeof cells.Item === 'function') {
+                const firstCell = cells.Item(1, 1)
+                if (firstCell && typeof firstCell.Resize === 'function') preview = firstCell.Resize(readRows, readCols)
+              }
             }
-            return false
+          } catch (e) {
+            try {
+              const msg = e instanceof Error ? e.message : String(e)
+              logToBackend(`[WPSBridge] extractEtRangeReadById: resize fallback: ${msg}`, 'warning')
+            } catch (e2) {
+              ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/wps-bridge.ts', e2)
+            }
+            preview = rng
           }
         }
-        return false
-      }
 
-      if (host === 'wpp') {
-        const pres = app.Presentations
-        if (!pres) return false
-        for (let i = 0; i < pres.Count; i++) {
-          const p = pres.Item(i + 1)
-          if (p && this.getDocId(p) === id) {
-            // WPP activation APIs vary; try common window activation patterns.
-            try { if (typeof p.Activate === 'function') p.Activate() } catch (e) { (globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/wps-bridge.ts', e) }
-            try { if (p.Windows && p.Windows.Count >= 1 && typeof p.Windows.Item(1)?.Activate === 'function') p.Windows.Item(1).Activate() } catch (e) { (globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/wps-bridge.ts', e) }
-            try {
-              const active = app.ActivePresentation
-              if (active && this.getDocId(active) === id) return true
-            } catch (e) {
-              ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/wps-bridge.ts', e)
-            }
-            return false
-          }
+        const readAddrA1 = normalizeAddr(tryGetAddrA1(preview)).addr || undefined
+        const truncated = safeRequestedRows > readRows || safeRequestedCols > readCols
+
+        const valuesRaw = (preview as any).Value2
+        const out: Array<Array<string | number | boolean | null>> = []
+
+        const pushRow = (row: any[]) => {
+          const cells: Array<string | number | boolean | null> = []
+          for (let c = 0; c < Math.min(row.length, readCols); c++) cells.push(toCell(row[c]))
+          // Ensure rectangular output.
+          while (cells.length < readCols) cells.push(null)
+          out.push(cells)
         }
-        return false
+
+        if (Array.isArray(valuesRaw)) {
+          if (valuesRaw.length > 0 && Array.isArray(valuesRaw[0])) {
+            for (let r = 0; r < Math.min(valuesRaw.length, readRows); r++) {
+              const row = valuesRaw[r]
+              if (Array.isArray(row)) pushRow(row)
+              else pushRow([row])
+            }
+          } else {
+            for (let r = 0; r < Math.min(valuesRaw.length, readRows); r++) pushRow([valuesRaw[r]])
+          }
+        } else {
+          pushRow([valuesRaw])
+        }
+
+        // Ensure row count matches readRows (when host returns smaller arrays for sparse ranges).
+        while (out.length < readRows) {
+          const empty: Array<string | number | boolean | null> = []
+          while (empty.length < readCols) empty.push(null)
+          out.push(empty)
+        }
+
+        return {
+          workbook: workbookName,
+          sheet_name: sheetName,
+          used_range_a1: usedAddrA1,
+          requested_range_a1: requestedRangeA1,
+          read_range_a1: readAddrA1,
+          requested_rows: safeRequestedRows,
+          requested_cols: safeRequestedCols,
+          read_rows: readRows,
+          read_cols: readCols,
+          truncated,
+          limit_rows: limitRows,
+          limit_cols: limitCols,
+          limit_cells: limitCells,
+          values: out,
+        }
       }
+      return null
     } catch (e) {
-      ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/wps-bridge.ts', e)
-      return false
+      try {
+        const msg = e instanceof Error ? e.message : String(e)
+        logToBackend(`[WPSBridge] extractEtRangeReadById failed: ${msg}`, 'warning')
+      } catch (e2) {
+        ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/wps-bridge.ts', e2)
+      }
+      return null
+    }
+  }
+
+  /**
+   * Extract a compact header map for ET, to help deterministic range planning.
+   * Returns sheet name + used range + header row values + column letters.
+   */
+  extractEtHeaderMapById(docId: string, options?: { maxCols?: number }): Record<string, any> | null {
+    const id = String(docId || '').trim()
+    if (!id) return null
+
+    const host = this.getHostApp()
+    if (host !== 'et') return null
+
+    const app = this.getApplication()
+    if (!app) return null
+
+    const maxCols = Math.max(1, Math.min(100, Number(options?.maxCols || 50) || 50))
+
+    const colToLetters = (n: number) => {
+      let x = Math.max(1, Math.floor(Number(n) || 1))
+      let s = ''
+      while (x > 0) {
+        const m = (x - 1) % 26
+        s = String.fromCharCode(65 + m) + s
+        x = Math.floor((x - 1) / 26)
+      }
+      return s
     }
 
-    return false
+    const normalizeAddr = (raw: any) => {
+      let s = String(raw || '').trim()
+      if (!s) return { sheet: '', addr: '' }
+      s = s.replace(/\$/g, '')
+      const bang = s.indexOf('!')
+      if (bang > 0) {
+        const sheet = s.slice(0, bang).trim().replace(/^'/, '').replace(/'$/, '')
+        const addr = s.slice(bang + 1).trim()
+        return { sheet, addr }
+      }
+      return { sheet: '', addr: s }
+    }
+
+    try {
+      const wbs = app.Workbooks
+      if (!wbs) return null
+      for (let i = 0; i < wbs.Count; i++) {
+        const wb = wbs.Item(i + 1)
+        if (!wb) continue
+        if (this.getDocId(wb) !== id) continue
+
+        const sheet = wb.ActiveSheet || wb.Sheets?.Item?.(1)
+        if (!sheet) return null
+        const used = (sheet as any).UsedRange
+        if (!used) return null
+
+        const usedCols = Number((used as any)?.Columns?.Count || 0) || 0
+        const usedRows = Number((used as any)?.Rows?.Count || 0) || 0
+        const startRow = Number((used as any)?.Row || 0) || 0
+        const startCol = Number((used as any)?.Column || 0) || 0
+
+        const addrFn = (used as any)?.Address
+        const usedAddr = typeof addrFn === 'function' ? String(addrFn.call(used, false, false) || '') : String(addrFn || '')
+        const n = normalizeAddr(usedAddr)
+
+        const colCount = Math.max(1, Math.min(maxCols, usedCols || maxCols))
+        let headerRange: any = null
+        try {
+          const warn = (label: string, e: unknown) => {
+            try {
+              const msg = e instanceof Error ? e.message : String(e)
+              logToBackend(`[WPSBridge] extractEtHeaderMapById: ${label} failed: ${msg}`, 'warning')
+            } catch (e2) {
+              ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/wps-bridge.ts', e2)
+            }
+          }
+ 
+          const trySet = (label: string, fn: () => any) => {
+            if (headerRange) return
+            try {
+              const v = fn()
+              if (v) headerRange = v
+            } catch (e) {
+              warn(label, e)
+            }
+          }
+ 
+          // Prefer Resize on UsedRange, then Rows(1), then Cells(1,1).Resize(...)
+          trySet('UsedRange.Resize', () => {
+            return typeof (used as any).Resize === 'function' ? (used as any).Resize(1, colCount) : null
+          })
+          trySet('UsedRange.Rows(1)', () => {
+            const rows = (used as any).Rows
+            if (typeof rows === 'function') return rows.call(used, 1)
+            if (rows && typeof rows.Item === 'function') return rows.Item(1)
+            return null
+          })
+          trySet('UsedRange.Cells(1,1).Resize', () => {
+            const cells = (used as any).Cells
+            if (typeof cells === 'function') {
+              const firstCell = cells.call(used, 1, 1)
+              if (firstCell && typeof firstCell.Resize === 'function') return firstCell.Resize(1, colCount)
+              return null
+            }
+            if (cells && typeof cells.Item === 'function') {
+              const firstCell = cells.Item(1, 1)
+              if (firstCell && typeof firstCell.Resize === 'function') return firstCell.Resize(1, colCount)
+              return null
+            }
+            return null
+          })
+        } catch (e) {
+          try {
+            const msg = e instanceof Error ? e.message : String(e)
+            logToBackend(`[WPSBridge] extractEtHeaderMapById: failed to resolve header range: ${msg}`, 'warning')
+          } catch (e2) {
+            ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/wps-bridge.ts', e2)
+          }
+          headerRange = null
+        }
+
+        const values = headerRange ? (headerRange as any).Value2 : null
+        const headers: string[] = []
+        const push = (v: any) => headers.push(v == null ? '' : String(v).replace(/\r?\n/g, ' ').trim())
+        if (Array.isArray(values)) {
+          if (values.length > 0 && Array.isArray(values[0])) {
+            // 2-D, take first row
+            for (let c = 0; c < Math.min(values[0].length, colCount); c++) push(values[0][c])
+          } else {
+            // 1-D
+            for (let c = 0; c < Math.min(values.length, colCount); c++) push(values[c])
+          }
+        } else if (values != null) {
+          push(values)
+        }
+
+        const columns: string[] = []
+        const baseCol = startCol > 0 ? startCol : 1
+        for (let c = 0; c < colCount; c++) columns.push(colToLetters(baseCol + c))
+
+        const baseRow = startRow > 0 ? startRow : 1
+        const headerRangeA1 = `${colToLetters(baseCol)}${baseRow}:${colToLetters(baseCol + colCount - 1)}${baseRow}`
+
+        return {
+          workbook: String((wb as any)?.Name || '').trim() || undefined,
+          sheet_name: String((sheet as any)?.Name || '').trim() || undefined,
+          used_range_a1: n.addr || undefined,
+          used_rows: usedRows || undefined,
+          used_cols: usedCols || undefined,
+          header_range_a1: headerRangeA1,
+          header_columns: columns,
+          header_values: headers,
+        }
+      }
+      return null
+    } catch (e) {
+      try {
+        const msg = e instanceof Error ? e.message : String(e)
+        logToBackend(`[WPSBridge] extractEtHeaderMapById failed: ${msg}`, 'warning')
+      } catch (e2) {
+        ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/wps-bridge.ts', e2)
+      }
+      return null
+    }
   }
 
   /**
@@ -904,48 +1575,50 @@ export class WPSDocumentBridge {
    * This reduces "写到了错误文档" risks when multiple documents are open.
    */
   activateDocumentByContext(ctx?: { docId?: string; fullPath?: string; name?: string } | null): boolean {
-    try {
-      const docId = String((ctx as any)?.docId || '').trim()
-      const fullPath = String((ctx as any)?.fullPath || '').trim()
-      const name = String((ctx as any)?.name || '').trim()
-      const normPath = (p: string) => String(p || '').replace(/\//g, '\\').trim().toLowerCase()
-      const normName = (n: string) => String(n || '').trim().toLowerCase()
+    return this.execWpsApi('activateDocumentByContext', () => {
+      try {
+        const docId = String((ctx as any)?.docId || '').trim()
+        const fullPath = String((ctx as any)?.fullPath || '').trim()
+        const name = String((ctx as any)?.name || '').trim()
+        const normPath = (p: string) => String(p || '').replace(/\//g, '\\').trim().toLowerCase()
+        const normName = (n: string) => String(n || '').trim().toLowerCase()
 
-      if (docId) {
-        if (this.activateDocumentById(docId)) return true
+        if (docId) {
+          if (this.activateDocumentById(docId)) return true
+        }
+
+        const docs = this.getAllOpenDocuments({ includeStats: false })
+        if (!docs || docs.length <= 0) return false
+
+        // Prefer exact fullPath match (most stable across sessions).
+        if (fullPath) {
+          const fp = normPath(fullPath)
+          const matches = docs.filter((d) => normPath(String(d.fullPath || '')) === fp)
+          if (matches.length === 1 && matches[0]?.id) {
+            return this.activateDocumentById(String(matches[0]!.id))
+          }
+        }
+
+        // Fall back to name only when it's unambiguous.
+        if (name) {
+          const nm = normName(name)
+          const matches = docs.filter((d) => normName(String(d.name || '')) === nm)
+          if (matches.length === 1 && matches[0]?.id) {
+            return this.activateDocumentById(String(matches[0]!.id))
+          }
+          // If ambiguous, prefer current active doc when it matches the name (safer than "first match").
+          if (matches.length > 1) {
+            const active = matches.find((d: any) => !!d?.isActive && !!d?.id)
+            if (active?.id) return this.activateDocumentById(String(active.id))
+          }
+        }
+      } catch (e) {
+        ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/wps-bridge.ts', e)
+        return false
       }
 
-      const docs = this.getAllOpenDocuments({ includeStats: false })
-      if (!docs || docs.length <= 0) return false
-
-      // Prefer exact fullPath match (most stable across sessions).
-      if (fullPath) {
-        const fp = normPath(fullPath)
-        const matches = docs.filter((d) => normPath(String(d.fullPath || '')) === fp)
-        if (matches.length === 1 && matches[0]?.id) {
-          return this.activateDocumentById(String(matches[0]!.id))
-        }
-      }
-
-      // Fall back to name only when it's unambiguous.
-      if (name) {
-        const nm = normName(name)
-        const matches = docs.filter((d) => normName(String(d.name || '')) === nm)
-        if (matches.length === 1 && matches[0]?.id) {
-          return this.activateDocumentById(String(matches[0]!.id))
-        }
-        // If ambiguous, prefer current active doc when it matches the name (safer than "first match").
-        if (matches.length > 1) {
-          const active = matches.find((d: any) => !!d?.isActive && !!d?.id)
-          if (active?.id) return this.activateDocumentById(String(active.id))
-        }
-      }
-    } catch (e) {
-      ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/wps-bridge.ts', e)
       return false
-    }
-
-    return false
+    }, false)
   }
 
   /**

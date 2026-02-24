@@ -1,4 +1,4 @@
-// Node-side macro runner used by scripts/macro_bench_30.py.
+// Node-side macro runner (legacy JS-macro benchmark helper).
 //
 // This is NOT WPS. It is a pragmatic smoke test that:
 // - Parses code via `new Function(...)` (catches SyntaxError early).
@@ -172,4 +172,3 @@ function main() {
 }
 
 main()
-

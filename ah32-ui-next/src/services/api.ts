@@ -20,16 +20,61 @@ const runtime = () => getRuntimeConfig()
 // - Optional: set VITE_STREAM_IDLE_TIMEOUT_MS to abort only when the server is silent for too long.
 const STREAM_IDLE_TIMEOUT_MS = Number(import.meta.env.VITE_STREAM_IDLE_TIMEOUT_MS || '0')
 
+let _lastSseJsonParseWarning = { key: '', at: 0 }
+let _activeDocTextCache: { key: string; at: number; text: string | null } = { key: '', at: 0, text: null }
+const ACTIVE_DOC_TEXT_CACHE_TTL_MS = 15_000
+
+const capText = (raw: string | null, maxChars: number): string | null => {
+  try {
+    const s = String(raw || '')
+    if (!s.trim()) return null
+    if (!maxChars || maxChars <= 0) return s
+    if (s.length <= maxChars) return s
+    const suffix = '\n...(truncated_by_max_chars)'
+    const head = s.slice(0, Math.max(0, maxChars - suffix.length))
+    return head + suffix
+  } catch (e) {
+    ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/api.ts', e)
+    return null
+  }
+}
+
+const maybeLogSseJsonParseFailure = (raw: string, error: unknown) => {
+  try {
+    const s = String(raw || '').trim()
+    if (!s) return
+    const looksJsonish =
+      (s.startsWith('{') && s.endsWith('}')) ||
+      (s.startsWith('[') && s.endsWith(']'))
+    if (!looksJsonish) return
+
+    const msg = String((error as any)?.message || error || '').slice(0, 400)
+    const key = `${msg}::${s.slice(0, 200)}`
+    const now = Date.now()
+    if (_lastSseJsonParseWarning.key === key && now - _lastSseJsonParseWarning.at < 8000) return
+    _lastSseJsonParseWarning = { key, at: now }
+
+    logToBackend(
+      `[SSE] JSON.parse failed: ${msg}; head=${s.slice(0, 200)}`,
+      'warning',
+    )
+  } catch (e) {
+    ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/api.ts', e)
+  }
+}
+
 const parseSsePayloadSafely = (raw: string): any | null => {
   const original = String(raw ?? '')
   const normalized = original.replace(/^\uFEFF/, '').replace(/\u0000/g, '').trim()
   const attempts = [original, normalized]
+  let lastError: unknown = null
 
   for (const candidate of attempts) {
     if (!candidate) continue
     try {
       return JSON.parse(candidate)
-    } catch {
+    } catch (e) {
+      lastError = e
       // try next strategy
     }
   }
@@ -40,11 +85,13 @@ const parseSsePayloadSafely = (raw: string): any | null => {
     const body = normalized.slice(firstBrace, lastBrace + 1)
     try {
       return JSON.parse(body)
-    } catch {
+    } catch (e) {
+      lastError = e
       // final fallback below
     }
   }
 
+  if (lastError) maybeLogSseJsonParseFailure(normalized, lastError)
   return null
 }
 
@@ -94,10 +141,74 @@ function collectDocumentContext() {
     const activeDoc = docs.find(doc => doc.isActive)
     const hostApp = wpsBridge.getHostApp()
     const capabilities = wpsBridge.getCapabilities(false)
+
+    // Optional: attach active doc text for skill tools (backend will only use it when needed).
+    // Keep it lightweight: hard-cap by chars/rows/cols to avoid bloating requests.
+    // `active_doc_text` is a bounded preview for the LLM prompt.
+    // `active_doc_text_full` is the full text payload for tool execution (ephemeral per request).
+    let activeDocText: string | null = null
+    let activeDocTextFull: string | null = null
+    let activeEtMeta: Record<string, any> | null = null
+    let activeEtHeaderMap: Record<string, any> | null = null
+    try {
+      const activeId = activeDoc ? String(activeDoc.id || '').trim() : ''
+      const cacheKey = activeDoc && activeId ? `${hostApp}:${activeId}` : ''
+      const now = Date.now()
+
+      // Cache active doc text briefly to avoid repeated heavy extraction across consecutive chat turns.
+      const allowCache = hostApp !== 'wps'
+      if (allowCache && cacheKey && _activeDocTextCache.key === cacheKey && now - _activeDocTextCache.at < ACTIVE_DOC_TEXT_CACHE_TTL_MS) {
+        activeDocText = _activeDocTextCache.text
+      } else if (activeDoc && activeId && (hostApp === 'et' || hostApp === 'wps')) {
+        if (hostApp === 'wps') {
+          // Strict mode: always upload the full document text each turn (ephemeral; do NOT persist on server).
+          // Keep the prompt lightweight by sending a bounded preview separately.
+          activeDocTextFull = wpsBridge.extractDocumentTextById(activeId, { maxChars: 0 })
+          activeDocText = capText(activeDocTextFull, 40_000)
+        } else {
+          // ET: keep it lightweight (structured preview is often enough).
+          activeDocText = wpsBridge.extractDocumentTextById(activeId, {
+            maxChars: 60_000,
+            maxRows: 120,
+            maxCols: 40,
+            maxCells: 2400,
+          })
+        }
+
+        if (activeDocText && !String(activeDocText).trim()) activeDocText = null
+        if (activeDocTextFull && !String(activeDocTextFull).trim()) activeDocTextFull = null
+
+        // Only cache the preview; full text must reflect live edits.
+        if (allowCache) {
+          _activeDocTextCache = { key: cacheKey, at: now, text: activeDocText }
+        } else {
+          _activeDocTextCache = { key: '', at: 0, text: null }
+        }
+      }
+
+      if (activeDoc && hostApp === 'et' && activeId) {
+        activeEtMeta = wpsBridge.extractEtMetaById(activeId)
+        activeEtHeaderMap = wpsBridge.extractEtHeaderMapById(activeId, { maxCols: 50 })
+      }
+    } catch (e) {
+      try {
+        const msg = e instanceof Error ? e.message : String(e)
+        logToBackend(`[API] collectDocumentContext: active doc text/meta best-effort failed: ${msg}`, 'warning')
+      } catch (e2) {
+        ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/api.ts', e2)
+      }
+      activeDocText = null
+      activeEtMeta = null
+      activeEtHeaderMap = null
+    }
     
     return {
       host_app: hostApp,
       capabilities,
+      active_doc_text: activeDocText,
+      active_doc_text_full: activeDocTextFull,
+      active_et_meta: activeEtMeta,
+      active_et_header_map: activeEtHeaderMap,
       documents: docs.map(doc => ({
         id: doc.id,
         name: doc.name,

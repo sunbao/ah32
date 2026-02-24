@@ -40,6 +40,7 @@ def load_rule_files(paths: Iterable[Path], max_total_chars: int = 12000) -> List
         try:
             path = _resolve_path(Path(raw).expanduser())
         except Exception:
+            logger.debug("[rules] resolve path failed (ignored): %s", raw, exc_info=True)
             continue
 
         if not path.exists() or not path.is_file():
@@ -64,7 +65,7 @@ def load_rule_files(paths: Iterable[Path], max_total_chars: int = 12000) -> List
                 logger.warning(f"[rules] unsupported type: {path}")
                 continue
         except Exception as e:
-            logger.warning(f"[rules] failed to read {path}: {e}")
+            logger.warning("[rules] failed to read %s: %s", path, e, exc_info=True)
             continue
 
         text = (text or "").strip()

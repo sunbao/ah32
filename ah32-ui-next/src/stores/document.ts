@@ -92,14 +92,6 @@ export const useDocumentStore = defineStore('document', () => {
         documents.value = []
         return
       }
-
-      // 同步到后端，添加错误处理
-      if (documents.value.length > 0) {
-        logger.info('开始同步文档到后端...')
-        syncToBackend().catch(error => {
-          logger.error('同步文档到后端失败:', error)
-        })
-      }
     } catch (error) {
       logger.error('刷新文档列表失败:', error)
       documents.value = []
@@ -131,7 +123,6 @@ export const useDocumentStore = defineStore('document', () => {
       setTimeout(() => {
         refreshDocuments().catch((e) => { (globalThis as any).__ah32_reportError?.('ah32-ui-next/src/stores/document.ts', e) })
       }, 150)
-      syncToBackend().catch((e) => { (globalThis as any).__ah32_reportError?.('ah32-ui-next/src/stores/document.ts', e) })
     }
   }
 

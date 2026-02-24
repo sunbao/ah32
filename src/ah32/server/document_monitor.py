@@ -76,6 +76,7 @@ def _ttl_seconds() -> int:
         v = int(os.environ.get("AH32_DOC_SYNC_TTL_SEC") or "30")
         return max(5, min(v, 3600))
     except Exception:
+        logger.debug("[documents] ttl parse failed; default=30", exc_info=True)
         return 30
 
 
@@ -120,6 +121,7 @@ def _load_store() -> Dict[str, Any]:
     try:
         data = json.loads(SYNC_FILE.read_text(encoding="utf-8") or "{}")
     except Exception:
+        logger.debug("[documents] load store failed; defaulting empty", exc_info=True)
         return {"version": 2, "updated_at": _now(), "clients": {}}
 
     # v1 legacy: file was a list of docs
@@ -156,7 +158,7 @@ def _save_store(store: Dict[str, Any]) -> None:
         SYNC_DIR.mkdir(parents=True, exist_ok=True)
         SYNC_FILE.write_text(json.dumps(store, ensure_ascii=False, indent=2), encoding="utf-8")
     except Exception as e:
-        logger.warning(f"保存同步文档失败: {e}")
+        logger.warning(f"保存同步文档失败: {e}", exc_info=True)
 
 
 def _update_snapshot(store: Dict[str, Any], key: _SnapshotKey, docs: List[Dict[str, Any]]) -> int:

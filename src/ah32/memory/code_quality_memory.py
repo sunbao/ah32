@@ -241,7 +241,7 @@ class CodeQualityMemory:
                 self.average_attempts = float(stats.get("average_attempts") or self.average_attempts)
                 self.average_success_rate = float(stats.get("average_success_rate") or self.average_success_rate)
         except Exception as e:
-            logger.warning(f"[code_quality_memory] load failed: {e}")
+            logger.warning(f"[code_quality_memory] load failed: {e}", exc_info=True)
 
     def _save_to_disk(self) -> None:
         p = self._persist_path
@@ -253,7 +253,7 @@ class CodeQualityMemory:
             tmp.write_text(json.dumps(self._to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
             tmp.replace(p)
         except Exception as e:
-            logger.warning(f"[code_quality_memory] save failed: {e}")
+            logger.warning(f"[code_quality_memory] save failed: {e}", exc_info=True)
 
     def _mark_dirty(self) -> None:
         if not self._persist_path:
@@ -272,7 +272,7 @@ class CodeQualityMemory:
             self._save_timer.start()
         except Exception:
             # Best-effort; do not block app execution.
-            pass
+            logger.warning("[code_quality_memory] schedule save timer failed (ignored)", exc_info=True)
 
     def _flush_dirty(self) -> None:
         with self._lock:

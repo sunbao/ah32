@@ -1,0 +1,38 @@
+{
+  "schema_version": "ah32.skill.v1",
+  "meta": {
+    "id": "et-visualizer",
+    "name": "Excel(ET) 可视化图表助手",
+    "version": "0.1.0",
+    "enabled": true,
+    "priority": 31,
+    "description": "将当前 ET 表格（选区/已用区域）的可视化需求落地为可执行 Plan（优先输出 ah32.plan.v1 / host_app=et），自动生成透视表/排序筛选/插入图表（尽量用显式 sheet_name + source_range，避免依赖 UI 选区）。",
+    "group": "et"
+  },
+  "delivery": {
+    "default_writeback": "direct"
+  },
+  "routing": {
+    "hosts": ["et"],
+    "tags": ["Excel", "ET", "可视化", "图表", "chart", "visualize", "pivot"],
+    "intents": ["et_visualize", "chart", "visualization", "pivot"],
+    "triggers": ["图表", "可视化", "趋势", "占比", "对比", "分布", "透视", "pivot", "chart", "visualize", "visualization"],
+    "examples": [
+      "把这张表做成趋势图，按月份汇总并加趋势线",
+      "做一个占比饼图，按产品类别汇总销售额",
+      "对比各部门业绩，做柱状图并排序"
+    ]
+  },
+  "capabilities": {
+    "active_doc_text": true,
+    "active_doc_max_chars": 60000
+  },
+  "output": {
+    "markers": ["可执行Plan", "图表", "可视化", "透视表"],
+    "output_schema": "输出必须且只能是可执行 Plan JSON（schema_version=ah32.plan.v1, host_app=et），包含可直接在 ET 执行的 actions（create_pivot_table/sort_range/filter_range/set_* / insert_table / insert_chart_from_selection / upsert_block 等）。若信息不足，用 meta.todo 写清待确认项，不要编造数据。",
+    "max_chars": 4000
+  },
+  "entry": {
+    "system_prompt": "SYSTEM.md"
+  }
+}

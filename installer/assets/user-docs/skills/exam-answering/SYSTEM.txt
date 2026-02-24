@@ -18,9 +18,7 @@
 - 支持多空题检测（如 ______北京______上海______）
 
 调用示例：
-```
-TOOL_CALL: {"name": "fill_blank_detector", "arguments": {"doc_text": "1. ______北京______是首都，______是政治中心。"}}
-```
+{"name":"fill_blank_detector","arguments":{"doc_text":"1. ______北京______是首都，______是政治中心。"}}
 
 ## question_parser - 题干解析工具
 解析结构化文档时使用：

@@ -1,0 +1,46 @@
+{
+  "schema_version": "ah32.skill.v1",
+  "meta": {
+    "id": "doc-analyzer",
+    "name": "文档结构分析助手（Writer）",
+    "version": "0.1.0",
+    "enabled": true,
+    "priority": 29,
+    "description": "分析文档结构与问题，输出结构报告与可执行 Plan（块级写回）。",
+    "group": "writer"
+  },
+  "delivery": {
+    "default_writeback": "direct"
+  },
+  "routing": {
+    "hosts": ["writer"],
+    "tags": ["Writer", "结构", "检查", "大纲", "问题清单", "一致性"],
+    "intents": ["doc_analyze", "structure_review"],
+    "triggers": ["结构分析", "检查结构", "大纲", "章节", "逻辑", "一致性", "审阅"],
+    "examples": [
+      "分析这份文档结构是否完整，输出问题清单并写回一个报告块",
+      "把全文梳理成结构大纲，并列出缺口与待补材料",
+      "检查编号层级、术语一致性，并给出整改清单"
+    ]
+  },
+  "capabilities": {
+    "active_doc_text": true,
+    "active_doc_max_chars": 80000
+  },
+  "output": {
+    "markers": ["Plan JSON", "结构报告", "问题清单", "缺口清单", "自检清单"],
+    "output_schema": "输出必须且只能是可执行 Plan JSON（schema_version=ah32.plan.v1, host_app=wps），用 upsert_block 在文末生成“结构报告/问题清单/缺口清单/自检”块。",
+    "max_chars": 3600,
+    "styleSpecHints": {
+      "writer": {
+        "font": { "body": { "name": "微软雅黑", "size": 12 } },
+        "table": { "header": { "bold": true, "fill": "#f1f5f9" } }
+      },
+      "group": "writer",
+      "schema": "ah32.styleSpecHints.v1"
+    }
+  },
+  "entry": {
+    "system_prompt": "SYSTEM.md"
+  }
+}

@@ -18,7 +18,7 @@ from typing import Optional, Dict, Any
 
 from pydantic import Field
 
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from pydantic import field_validator, ValidationInfo
 
@@ -44,6 +44,8 @@ def _env_file_has_key(env_file: Path, key: str) -> bool:
     try:
         for raw_line in env_file.read_text(encoding="utf-8").splitlines():
             line = raw_line.strip()
+            # Handle UTF-8 BOM emitted by some Windows editors/Out-File encodings.
+            line = line.lstrip("\ufeff")
             if not line or line.startswith("#"):
                 continue
             if line.startswith("export "):
@@ -66,7 +68,8 @@ if not env_file.exists():
 if not _env_file_has_key(env_file, "AH32_EMBEDDING_MODEL"):
     raise RuntimeError("AH32_EMBEDDING_MODEL is missing in .env; please configure it.")
 
-load_dotenv(env_file, override=True)
+# Use utf-8-sig to gracefully handle BOM written by some Windows editors.
+load_dotenv(env_file, override=True, encoding="utf-8-sig")
 
 
 def _default_user_documents_dir() -> Path:
@@ -101,6 +104,7 @@ def _default_user_documents_dir() -> Path:
 
         except Exception:
 
+            logger.debug("[config] probe documents dir failed (ignored): %s", p, exc_info=True)
             continue
 
     return home
@@ -134,6 +138,13 @@ class Ah32Settings(BaseSettings):
     uploads_dirname: str = Field(default="uploads")
 
     embeddings_dirname: str = Field(default="embeddings")
+
+    # Persisted vector stores (kept as sibling folders under storage_root).
+    #
+    # NOTE: We keep separate persist directories for RAG / memory / skills to
+    # avoid SQLite write-lock contention and lifecycle coupling.
+    skills_vector_dirname: str = Field(default="skills_vector_store")
+    memory_vector_dirname: str = Field(default="memory_vector_store")
 
     logs_dirname: str = Field(default="logs")
 
@@ -532,9 +543,7 @@ class Ah32Settings(BaseSettings):
 
 
 
-    class Config:
-
-        env_prefix = "AH32_"
+    model_config = SettingsConfigDict(env_prefix="AH32_")
 
 
 
@@ -689,6 +698,14 @@ class Ah32Settings(BaseSettings):
 
         return self.storage_root / self.embeddings_dirname
 
+    @property
+    def skills_vector_store_path(self) -> Path:
+        return self.storage_root / self.skills_vector_dirname
+
+    @property
+    def memory_vector_store_path(self) -> Path:
+        return self.storage_root / self.memory_vector_dirname
+
 
 
     @property
@@ -777,7 +794,14 @@ class Ah32Settings(BaseSettings):
 
         """Create storage directories if they don't exist."""
 
-        for path in (self.storage_root, self.uploads_path, self.embeddings_path, self.logs_path):
+        for path in (
+            self.storage_root,
+            self.uploads_path,
+            self.embeddings_path,
+            self.skills_vector_store_path,
+            self.memory_vector_store_path,
+            self.logs_path,
+        ):
 
             path.mkdir(parents=True, exist_ok=True)
 
@@ -801,7 +825,11 @@ class Ah32Settings(BaseSettings):
 
             # Don't block startup on a non-critical folder.
 
-            pass
+            logger.warning(
+                "[config] create skills_dir failed (ignored): %s",
+                self.skills_dir,
+                exc_info=True,
+            )
 
 
 
@@ -815,7 +843,11 @@ class Ah32Settings(BaseSettings):
 
         except Exception:
 
-            pass
+            logger.warning(
+                "[config] create telemetry_sqlite_path parent failed (ignored): %s",
+                self.telemetry_sqlite_path,
+                exc_info=True,
+            )
 
 
 
@@ -865,6 +897,7 @@ class Ah32Settings(BaseSettings):
 
                 except Exception:
 
+                    logger.debug("[config] probe rule file failed (ignored): %s", p, exc_info=True)
                     continue
 
             return existing
@@ -881,6 +914,7 @@ class Ah32Settings(BaseSettings):
 
             except Exception:
 
+                logger.debug("[config] parse rule file path failed (ignored): %s", p, exc_info=True)
                 continue
 
         return out

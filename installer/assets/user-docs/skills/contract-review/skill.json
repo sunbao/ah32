@@ -54,6 +54,10 @@
       "重点审阅付款、验收、违约责任、责任上限与数据/保密条款，输出风险台账"
     ]
   },
+  "capabilities": {
+    "active_doc_text": true,
+    "active_doc_max_chars": 60000
+  },
   "delivery": {
     "default_writeback": "compare_table"
   },
@@ -89,5 +93,32 @@
   },
   "entry": {
     "system_prompt": "SYSTEM.docx"
-  }
+  },
+  "tools": [
+    {
+      "name": "clause_extractor",
+      "description": "按关键字提取合同核心条款段落（默认读取当前文档，无需传 doc_text）",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "doc_text": { "type": "string", "description": "合同全文（可省略，默认使用当前文档）" },
+          "max_chars_per_clause": { "type": "integer", "description": "每类条款返回的最大字符数" }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "risk_detector",
+      "description": "基于规则检测不利措辞/责任过重/缺失保护条款等风险信号（默认读取当前文档，无需传 doc_text）",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "doc_text": { "type": "string", "description": "合同全文（可省略，默认使用当前文档）" },
+          "context_chars": { "type": "integer", "description": "匹配位置前后文窗口大小" },
+          "max_results": { "type": "integer", "description": "最多返回多少条风险项" }
+        },
+        "required": []
+      }
+    }
+  ]
 }

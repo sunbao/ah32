@@ -74,5 +74,31 @@
   },
   "entry": {
     "system_prompt": "SYSTEM.docx"
-  }
+  },
+  "tools": [
+    {
+      "name": "consistency_checker",
+      "description": "检查 PPT 文本中的口径/术语/指标一致性（可传 slides 或 doc_text/ppt_text）",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "doc_text": { "type": "string", "description": "PPT 文本（可省略，默认使用当前文档）" },
+          "ppt_text": { "type": "string", "description": "PPT 文本（与 doc_text 等价，二选一）" },
+          "slides": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "title": { "type": "string" },
+                "body": { "type": "string" }
+              },
+              "required": []
+            }
+          },
+          "max_issues": { "type": "integer", "description": "最多返回多少条问题" }
+        },
+        "required": []
+      }
+    }
+  ]
 }

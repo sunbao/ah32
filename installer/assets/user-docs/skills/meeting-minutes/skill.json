@@ -45,6 +45,10 @@
       "把分歧点记录清楚，并给出下一步拍板机制与DDL"
     ]
   },
+  "capabilities": {
+    "active_doc_text": true,
+    "active_doc_max_chars": 60000
+  },
   "output": {
     "markers": [
       "结论摘要",
@@ -77,5 +81,32 @@
   },
   "entry": {
     "system_prompt": "SYSTEM.docx"
-  }
+  },
+  "tools": [
+    {
+      "name": "speaker_extractor",
+      "description": "从聊天记录中提取发言人/时间戳/消息列表（默认读取当前文档，无需传 doc_text）",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "doc_text": { "type": "string", "description": "聊天记录全文（可省略，默认使用当前文档）" },
+          "max_messages": { "type": "integer", "description": "最多返回多少条消息" },
+          "merge_continuations": { "type": "boolean", "description": "是否把无前缀行合并到上一条消息" }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "decision_detector",
+      "description": "检测会议决议/结论/确认点（默认读取当前文档，无需传 doc_text）",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "doc_text": { "type": "string", "description": "聊天记录全文（可省略，默认使用当前文档）" },
+          "max_results": { "type": "integer", "description": "最多返回多少条决议" }
+        },
+        "required": []
+      }
+    }
+  ]
 }

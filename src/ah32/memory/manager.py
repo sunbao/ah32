@@ -94,7 +94,9 @@ def _get_vector_store():
 
 def _get_storage_path():
     """获取向量存储路径"""
-    return settings.memory_root / "vector_store"
+    # 开发阶段规则：不做向后兼容，始终使用最新规范目录（与 rag/skills 同层）：
+    #   storage/memory_vector_store
+    return settings.memory_vector_store_path
 
 
 class Ah32MemorySystem:

@@ -3,6 +3,7 @@
 from typing import ClassVar
 from langchain.tools import BaseTool as LangChainBaseTool
 from pydantic import BaseModel, Field
+import json
 import re
 from pathlib import Path
 
@@ -36,6 +37,23 @@ class ReadDocumentTool(BaseTool):
     def _run(self, query: str = "") -> str:
         """同步执行 - 读取文档内容"""
         file_path = query.strip()
+        # Support tool-call JSON input:
+        # {"path": "..."} / {"file_path": "..."} / {"query": "..."}.
+        if file_path.startswith("{") and file_path.endswith("}"):
+            try:
+                params = json.loads(file_path)
+                if isinstance(params, dict):
+                    candidate = (
+                        params.get("path")
+                        or params.get("file_path")
+                        or params.get("source_path")
+                        or params.get("query")
+                    )
+                    if isinstance(candidate, str) and candidate.strip():
+                        file_path = candidate.strip()
+            except Exception:
+                # Best-effort: fall back to raw input string.
+                logger.warning("[read_document] parse tool-call json failed; fallback to raw query", exc_info=True)
 
         # 空输入时显示使用说明
         if not file_path:

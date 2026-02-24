@@ -12,8 +12,18 @@ const _setWindowFlagBestEffort = (value: boolean) => {
     } catch (e2) {
       try {
         console.warn('[MacroCancel] reportError failed', e2)
-      } catch {
+      } catch (e3) {
         // Final best-effort fallback: diagnostics must never crash macro cancellation.
+        try {
+          if (typeof localStorage !== 'undefined') {
+            localStorage.setItem(
+              'ah32_last_error_internal',
+              JSON.stringify({ scope: 'macro-cancel:reportError', error: String(e3) }),
+            )
+          }
+        } catch (e4) {
+          void e4
+        }
       }
     }
   }
@@ -35,8 +45,18 @@ export const macroCancel = {
       } catch (e2) {
         try {
           console.warn('[MacroCancel] cancel diagnostics failed', e2)
-        } catch {
+        } catch (e3) {
           // Final best-effort fallback.
+          try {
+            if (typeof localStorage !== 'undefined') {
+              localStorage.setItem(
+                'ah32_last_error_internal',
+                JSON.stringify({ scope: 'macro-cancel:cancel', error: String(e3) }),
+              )
+            }
+          } catch (e4) {
+            void e4
+          }
         }
       }
     }

@@ -19,8 +19,15 @@ from pathlib import Path
 DEFAULT_PATTERNS = [
     "MacroQueue",
     "PlanExecutor",
+    "plan_generate",
+    "plan_repair",
     "[audit]",
     "/agentic/audit/record",
+    "/agentic/plan/generate",
+    "/agentic/plan/repair",
+    "/agentic/js-plan/vibe-coding/stream",
+    "/telemetry/",
+    "[telemetry]",
     "document_context_missing",
     "document_not_active_or_closed",
     "document_activate_failed",
@@ -106,4 +113,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

@@ -3,10 +3,10 @@
   "meta": {
     "id": "ppt-outline",
     "name": "PPT大纲与讲稿助手",
-    "version": "0.2.0",
+    "version": "0.3.0",
     "enabled": true,
     "priority": 28,
-    "description": "PPT大纲与讲稿：叙事主线、逐页大纲表、讲稿、素材/数据需求与版式建议。",
+    "description": "PPT大纲与讲稿：叙事主线、逐页大纲表、讲稿、素材/数据需求与版式建议；支持在用户明确要求时输出可执行 Plan 直接创建 PPT。",
     "group": "ppt"
   },
   "routing": {
@@ -25,7 +25,8 @@
     "intents": [
       "ppt_outline",
       "speaker_notes",
-      "storyline"
+      "storyline",
+      "create_ppt"
     ],
     "triggers": [
       "ppt",
@@ -39,15 +40,24 @@
       "讲稿",
       "逐页",
       "结构",
-      "金字塔"
+      "金字塔",
+      "创建",
+      "制作",
+      "生成",
+      "一键",
+      "自动"
     ],
     "examples": [
       "给我做一份10页的汇报PPT大纲，并写逐页讲稿（每页1分钟）",
-      "把这份方案整理成路演PPT结构：问题-方案-价值-落地-风险"
+      "把这份方案整理成路演PPT结构：问题-方案-价值-落地-风险",
+      "把下面材料直接生成一份PPT（给出可执行Plan）"
     ]
   },
   "output": {
     "markers": [
+      "Plan JSON",
+      "add_slide",
+      "add_textbox",
       "逐页大纲表",
       "讲稿",
       "叙事主线",
@@ -55,7 +65,7 @@
       "主题与版式建议",
       "颜色"
     ],
-    "output_schema": "输出必须包含：1) 目标与受众假设；2) 整体叙事主线；3) 逐页大纲表（标题/目的/要点/图示建议/讲稿/数据需求/风险提示）；4) 主题与版式建议；5) 自检清单。",
+    "output_schema": "两种模式：A) 纯文字模式：输出必须包含 目标与受众假设/叙事主线/逐页大纲表(含讲稿)/主题与版式建议/自检清单；B) 自动模式（用户明确要求创建/生成PPT）：只输出可执行 Plan JSON（schema_version=ah32.plan.v1, host_app=wpp），用 add_slide/add_textbox/add_image/add_chart/add_table 等 action 直接创建PPT。",
     "max_chars": 3800,
     "styleSpecHints": {
       "wpp": {
@@ -74,7 +84,7 @@
     }
   },
   "entry": {
-    "system_prompt": "SYSTEM.docx"
+    "system_prompt": "SYSTEM.md"
   },
   "tools": [
     {

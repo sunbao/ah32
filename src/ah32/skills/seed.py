@@ -118,6 +118,111 @@ def seed_builtin_skills(dest_dir: Path) -> int:
                 except Exception as e:
                     logger.debug(f"[skills] merge v1 manifest extras failed (ignored): {dst_manifest} err={e}", exc_info=True)
 
+                # Merge capabilities (e.g., active_doc_text flags) when the user manifest doesn't have them yet.
+                try:
+                    src_caps = src_data.get("capabilities") if isinstance(src_data, dict) else None
+                    dst_caps = dst_data.get("capabilities") if isinstance(dst_data, dict) else None
+                    if isinstance(src_caps, dict) and src_caps:
+                        if not isinstance(dst_caps, dict):
+                            dst_caps = {}
+                        for key in ("active_doc_text", "active_doc_max_chars"):
+                            want = src_caps.get(key)
+                            if want is None:
+                                continue
+                            if key not in dst_caps:
+                                dst_caps[key] = want
+                                changed = True
+                        if changed:
+                            dst_data["capabilities"] = dst_caps
+                except Exception as e:
+                    logger.debug(f"[skills] merge v1 capabilities failed (ignored): {dst_manifest} err={e}", exc_info=True)
+
+                # Merge tools list (append missing tools only; never overwrite existing tool configs).
+                try:
+                    src_tools = src_data.get("tools") if isinstance(src_data, dict) else None
+                    dst_tools = dst_data.get("tools") if isinstance(dst_data, dict) else None
+                    if isinstance(src_tools, list) and src_tools:
+                        if not isinstance(dst_tools, list):
+                            dst_tools = []
+                        existing_names = set()
+                        dst_by_name: dict[str, dict] = {}
+                        dst_idx_by_name: dict[str, int] = {}
+                        for i, item in enumerate(dst_tools):
+                            if isinstance(item, str):
+                                name = item.strip()
+                                if name:
+                                    existing_names.add(name)
+                                    dst_idx_by_name.setdefault(name, i)
+                            elif isinstance(item, dict):
+                                name = str(item.get("name") or "").strip()
+                                if name:
+                                    existing_names.add(name)
+                                    dst_by_name[name] = item
+                                    dst_idx_by_name.setdefault(name, i)
+                        for item in src_tools:
+                            name = ""
+                            if isinstance(item, str):
+                                name = item.strip()
+                            elif isinstance(item, dict):
+                                name = str(item.get("name") or "").strip()
+                            if not name or name in existing_names:
+                                # Non-destructive merge for existing tool entries (best-effort):
+                                # - Upgrade string tool entry to dict form (adds metadata like hints)
+                                # - Merge missing `hints` keys (do not overwrite user edits)
+                                if isinstance(item, dict) and name:
+                                    dst_item = dst_by_name.get(name)
+                                    # Upgrade "string tool entry" -> dict tool entry when present.
+                                    if dst_item is None:
+                                        try:
+                                            idx = dst_idx_by_name.get(name)
+                                            if idx is not None and isinstance(dst_tools[idx], str):
+                                                dst_tools[idx] = dict(item)
+                                                dst_by_name[name] = dst_tools[idx]
+                                                dst_item = dst_by_name.get(name)
+                                                changed = True
+                                        except Exception:
+                                            logger.debug(
+                                                "[skills] upgrade string tool entry failed (ignored): %s",
+                                                name,
+                                                exc_info=True,
+                                            )
+                                    # Merge tool.hints
+                                    try:
+                                        if isinstance(dst_item, dict):
+                                            src_hints = item.get("hints")
+                                            if isinstance(src_hints, dict) and src_hints:
+                                                dst_hints = dst_item.get("hints")
+                                                if not isinstance(dst_hints, dict):
+                                                    dst_hints = {}
+                                                merged_hints = dict(dst_hints)
+                                                for k, v in src_hints.items():
+                                                    if k in merged_hints:
+                                                        # Merge list-like triggers without overwriting.
+                                                        if k in ("triggers", "trigger") and isinstance(merged_hints.get(k), list) and isinstance(v, list):
+                                                            cur = list(merged_hints.get(k) or [])
+                                                            for x in v:
+                                                                if x not in cur:
+                                                                    cur.append(x)
+                                                            merged_hints[k] = cur
+                                                        continue
+                                                    merged_hints[k] = v
+                                                if merged_hints != dst_hints:
+                                                    dst_item["hints"] = merged_hints
+                                                    changed = True
+                                    except Exception:
+                                        logger.debug(
+                                            "[skills] merge tool hints failed (ignored): %s",
+                                            name,
+                                            exc_info=True,
+                                        )
+                                continue
+                            dst_tools.append(item)
+                            existing_names.add(name)
+                            changed = True
+                        dst_data["tools"] = dst_tools
+                except Exception as e:
+                    logger.debug(f"[skills] merge v1 tools failed (ignored): {dst_manifest} err={e}", exc_info=True)
+
                 if changed:
                     ts = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
                     backup = target / f"skill.json.upgrade.{ts}.bak"
@@ -133,6 +238,13 @@ def seed_builtin_skills(dest_dir: Path) -> int:
                         logger.info(f"[skills] upgraded v1 manifest (non-destructive): {dst_manifest} (backup={backup.name})")
                     except Exception as e:
                         logger.warning(f"[skills] write upgraded v1 manifest failed: {dst_manifest} err={e}")
+
+                # Always copy missing files from built-in skill folder (e.g., new scripts/* tools),
+                # without overwriting user edits.
+                try:
+                    _copy_missing_files(child, target)
+                except Exception as e:
+                    logger.debug(f"[skills] sync missing v1 skill files failed (ignored): {child} -> {target} err={e}", exc_info=True)
                 continue
 
             # Keep a timestamped backup next to the file for human recovery.
@@ -150,3 +262,30 @@ def seed_builtin_skills(dest_dir: Path) -> int:
         except Exception as e:
             logger.warning(f"[skills] upgrade legacy manifest failed: {child} -> {target} err={e}")
     return created
+
+
+def _copy_missing_files(src_dir: Path, dst_dir: Path) -> None:
+    """Copy missing files from src_dir to dst_dir (non-destructive)."""
+    src_dir = Path(src_dir)
+    dst_dir = Path(dst_dir)
+    if not src_dir.exists() or not src_dir.is_dir():
+        return
+    if not dst_dir.exists() or not dst_dir.is_dir():
+        return
+
+    for path in src_dir.rglob("*"):
+        target: Path | None = None
+        try:
+            if not path.is_file():
+                continue
+            rel = path.relative_to(src_dir)
+            target = dst_dir / rel
+            if target.exists():
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, target)
+        except Exception as e:
+            logger.debug(
+                f"[skills] copy missing file failed (ignored): {path} -> {target} err={e}",
+                exc_info=True,
+            )

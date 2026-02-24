@@ -1,0 +1,20 @@
+# Keep LF line endings for files edited by automation tools on Windows.
+# This prevents mixed CRLF/LF newlines (which can break patch application and diffs).
+.gitattributes text eol=lf
+ah32-ui-next/src/services/plan-executor.ts text eol=lf
+ah32-ui-next/src/services/wps-bridge.ts text eol=lf
+
+# Backend / repo meta edited by automation tools
+.gitignore text eol=lf
+src/ah32/agents/react_agent/core.py text eol=lf
+src/ah32/agents/react_agent/tool_execution.py text eol=lf
+src/ah32/config.py text eol=lf
+src/ah32/download_models.py text eol=lf
+src/ah32/launcher.py text eol=lf
+src/ah32/server/document_monitor.py text eol=lf
+src/ah32/server/main.py text eol=lf
+src/ah32/services/conversation_rules.py text eol=lf
+src/ah32/services/docx_extract.py text eol=lf
+qa/checklists/wps-regression.md text eol=lf
+qa/cases/plan-fixtures/*.json text eol=lf
+qa/cases/plan-fixtures/README.md text eol=lf

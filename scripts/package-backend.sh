@@ -72,7 +72,7 @@ rm -rf build "dist/$app_name" || true
 "$python_exe" -m PyInstaller -y \
   --name "$app_name" \
   --paths src \
-  "src/ah32/launcher.py"
+  -m ah32.launcher
 
 py_dist="$repo_root/dist/$app_name"
 if [[ ! -d "$py_dist" ]]; then

@@ -49,6 +49,10 @@
       "按收入/费用/采购/现金流四条链路给出取证与核验步骤"
     ]
   },
+  "capabilities": {
+    "active_doc_text": true,
+    "active_doc_max_chars": 60000
+  },
   "output": {
     "markers": [
       "异常/差异清单表",
@@ -81,5 +85,35 @@
   },
   "entry": {
     "system_prompt": "SYSTEM.docx"
-  }
+  },
+  "tools": [
+    {
+      "name": "data_parser",
+      "description": "解析表格/CSV/TSV/Markdown 表格为结构化预览（默认读取当前文档，无需传 doc_text）",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "doc_text": { "type": "string", "description": "表格文本（可省略，默认使用当前文档）" },
+          "max_preview_rows": { "type": "integer", "description": "最多返回多少行预览" },
+          "max_cols": { "type": "integer", "description": "最多解析多少列" },
+          "delimiter": { "type": "string", "description": "强制分隔符（\\t 或 ,），为空则自动" }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "anomaly_detector",
+      "description": "基于规则检测数值异常（负数/零值/离群/大额）（默认读取当前文档，无需传 doc_text）",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "doc_text": { "type": "string", "description": "表格文本（可省略，默认使用当前文档）" },
+          "numeric_columns": { "type": "array", "items": { "type": "string" }, "description": "指定要检查的列名；为空则自动推断" },
+          "amount_threshold": { "type": "number", "description": "大额阈值（abs(value) >= threshold）" },
+          "max_results": { "type": "integer", "description": "最多返回多少条异常" }
+        },
+        "required": []
+      }
+    }
+  ]
 }

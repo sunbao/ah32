@@ -17,7 +17,7 @@ export type MacroBenchCase = {
   host: MacroBenchHost
   // Display name
   name: string
-  // User query for /agentic/js-macro/generate
+  // User query for /agentic/plan/generate
   query: string
   // Optional tags for filtering.
   tags?: string[]

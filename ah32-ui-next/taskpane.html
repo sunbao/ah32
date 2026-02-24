@@ -88,6 +88,8 @@
 
       try {
         window.__ah32_reportTaskpaneError = reportTaskpaneError
+        // Back-compat: some later script tags call `reportTaskpaneError(...)` directly.
+        window.reportTaskpaneError = reportTaskpaneError
       } catch (e5) {
         reportTaskpaneError('bind_global_reporter', e5, 'warning')
       }

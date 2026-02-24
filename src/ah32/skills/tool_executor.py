@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import atexit
 import importlib.util
 import json
 import logging
+import sys
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Tuple
@@ -13,6 +16,42 @@ from typing import Any, Callable, Dict, Optional, Tuple
 from .registry import SkillTool
 
 logger = logging.getLogger(__name__)
+
+_SKILL_TOOL_THREAD_POOL: Optional[ThreadPoolExecutor] = None
+_SKILL_TOOL_THREAD_POOL_LOCK = threading.Lock()
+
+
+def get_skill_tool_thread_pool() -> ThreadPoolExecutor:
+    """Return a shared single-thread pool for running skill tools.
+
+    Why: some integrations (e.g., Playwright sync API) cannot run inside the
+    server's asyncio event loop thread.
+    """
+    global _SKILL_TOOL_THREAD_POOL
+    if _SKILL_TOOL_THREAD_POOL is None:
+        with _SKILL_TOOL_THREAD_POOL_LOCK:
+            if _SKILL_TOOL_THREAD_POOL is None:
+                _SKILL_TOOL_THREAD_POOL = ThreadPoolExecutor(
+                    max_workers=1,
+                    thread_name_prefix="ah32-skill-tools",
+                )
+    return _SKILL_TOOL_THREAD_POOL
+
+
+def _shutdown_skill_tool_thread_pool() -> None:
+    global _SKILL_TOOL_THREAD_POOL
+    pool = _SKILL_TOOL_THREAD_POOL
+    if pool is None:
+        return
+    try:
+        pool.shutdown(wait=False, cancel_futures=True)
+    except Exception:
+        logger.debug("[tools] skill tool thread pool shutdown failed", exc_info=True)
+    finally:
+        _SKILL_TOOL_THREAD_POOL = None
+
+
+atexit.register(_shutdown_skill_tool_thread_pool)
 
 
 @dataclass(frozen=True)
@@ -90,21 +129,32 @@ class ToolExecutor:
 
     def _get_tool_func(self, tool: SkillTool) -> Optional[Callable]:
         """Load and cache a tool function from its script."""
-        cache_key = f"{tool.script_path}"
+        cache_key = f"{tool.script_path}:{tool.name}"
 
         with self._lock:
             if cache_key in self._tool_cache:
                 return self._tool_cache[cache_key]
 
             try:
-                spec = importlib.util.spec_from_file_location(
-                    f"tool_{tool.name}", tool.script_path
-                )
+                # Use a unique module name per script to avoid collisions across skills/tools,
+                # and register it in sys.modules before exec_module so that decorators like
+                # @dataclass can resolve module globals correctly.
+                module_name = f"ah32_skilltool_{tool.name}_{abs(hash(str(tool.script_path))) % 1_000_000_000}"
+                spec = importlib.util.spec_from_file_location(module_name, tool.script_path)
                 if spec is None or spec.loader is None:
                     logger.warning(f"[tools] cannot load spec for {tool.script_path}")
                     return None
 
                 module = importlib.util.module_from_spec(spec)
+                try:
+                    sys.modules[module_name] = module
+                except Exception:
+                    # Best-effort; exec_module will still run.
+                    logger.warning(
+                        "[tools] failed to register tool module in sys.modules: %s",
+                        module_name,
+                        exc_info=True,
+                    )
                 spec.loader.exec_module(module)
 
                 # Look for function with same name as tool
@@ -122,7 +172,10 @@ class ToolExecutor:
                 return func
 
             except Exception as e:
-                logger.warning(f"[tools] failed to load tool from {tool.script_path}: {e}")
+                logger.warning(
+                    f"[tools] failed to load tool from {tool.script_path}: {e}",
+                    exc_info=True,
+                )
                 return None
 
     def render_tool_result_for_llm(self, tool: SkillTool, result: ToolResult) -> str:
@@ -136,22 +189,15 @@ class ToolExecutor:
             Formatted string for LLM.
         """
         if not result.success:
-            return (
-                f"【工具调用失败】\n"
-                f"工具: {tool.name}\n"
-                f"错误: {result.error}\n"
-                f"耗时: {result.execution_ms}ms\n"
-                f"建议: 记录错误并继续，不要反复重试。"
-            )
+            payload = {
+                "error": {
+                    "message": str(result.error or "tool execution failed"),
+                }
+            }
+            return json.dumps(payload, ensure_ascii=False)
 
-        result_json = json.dumps(result.result, ensure_ascii=False, indent=2)
-        return (
-            f"【工具调用结果】\n"
-            f"工具: {tool.name}\n"
-            f"状态: 成功\n"
-            f"耗时: {result.execution_ms}ms\n"
-            f"结果:\n{result_json}\n"
-        )
+        payload = {"result": {"data": result.result if isinstance(result.result, dict) else {"value": result.result}}}
+        return json.dumps(payload, ensure_ascii=False)
 
     def parse_tool_calls_from_response(self, response_text: str) -> list[Dict[str, Any]]:
         """Parse tool calls from LLM response text.

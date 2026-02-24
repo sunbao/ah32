@@ -244,7 +244,8 @@ export const useImportStore = defineStore('import', () => {
         }
 
         task.currentStep = `读取文档内容（上传入库）：${d.name}`
-        const text = wpsBridge.extractDocumentTextById(String(d.id || '').trim(), { maxChars: 200_000 })
+        // Upload-to-RAG should not truncate large documents. Keep chat-context bounded separately.
+        const text = wpsBridge.extractDocumentTextById(String(d.id || '').trim(), { maxChars: 0 })
         if (!text || !text.trim()) {
           throw new Error(`无法读取文档内容用于上传入库：${d.name}\n提示：请先确保文档可编辑且包含文本内容。`)
         }

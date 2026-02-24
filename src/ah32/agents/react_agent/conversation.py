@@ -407,12 +407,13 @@ class ConversationManager:
 
                     # 记录工具调用
                     from .core import ToolCall
-                    call = ToolCall(tool_call["action"], tool_call, result)
+                    tool_name = str(tool_call.get("action") or tool_call.get("name") or "unknown")
+                    call = ToolCall(tool_name, tool_call, result)
                     self.agent.tool_calls.append(call)
 
                     # 添加到消息历史
                     messages.append(("assistant", response.content))
-                    messages.append(("user", f"[工具执行结果] {result}"))
+                    messages.append(("user", f"TOOL_RESULT: {result}"))
 
                 else:
                     # 没有更多工具调用，返回最终响应

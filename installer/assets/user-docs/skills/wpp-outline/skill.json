@@ -3,11 +3,14 @@
   "meta": {
     "id": "wpp-outline",
     "name": "WPP版式助手",
-    "version": "0.2.0",
+    "version": "0.3.0",
     "enabled": true,
     "priority": 50,
-    "description": "根据幻灯片内容推荐 WPP 版式ID，生成占位区域映射，支持标题页、目录页、内容页等多种场景。",
+    "description": "根据幻灯片内容推荐 WPP 版式ID，生成占位区域映射，并输出可直接执行的 Plan JSON（创建幻灯片、设置版式、添加文本框等操作）。",
     "group": "wpp"
+  },
+  "delivery": {
+    "default_writeback": "direct"
   },
   "routing": {
     "hosts": [
@@ -19,12 +22,15 @@
       "版式",
       "WPP",
       "演示",
-      "模板"
+      "模板",
+      "创建PPT",
+      "制作PPT"
     ],
     "intents": [
       "wpp_layout",
       "slide_design",
-      "outline"
+      "create_ppt",
+      "make_slides"
     ],
     "triggers": [
       "版式",
@@ -35,22 +41,28 @@
       "模板",
       "标题页",
       "目录页",
-      "内容页"
+      "内容页",
+      "创建",
+      "制作",
+      "生成"
     ],
     "examples": [
       "推荐一个适合产品介绍PPT的版式",
       "根据这个标题推荐合适的WPP版式",
-      "帮我设计一个项目汇报的幻灯片版式"
+      "帮我设计一个项目汇报的幻灯片版式",
+      "帮我创建一个10页的PPT",
+      "制作一个产品介绍PPT"
     ]
   },
   "output": {
     "markers": [
-      "版式ID",
-      "占位区域",
-      "推荐理由"
+      "Plan JSON",
+      "add_slide",
+      "set_slide_layout",
+      "add_textbox"
     ],
-    "output_schema": "输出必须是可执行 Plan JSON（schema_version=ah32.plan.v1, host_app=wpp），推荐1-3个版式ID并说明理由。",
-    "max_chars": 2000,
+    "output_schema": "输出必须是可执行 Plan JSON（schema_version=ah32.plan.v1, host_app=wpp），包含具体的add_slide、set_slide_layout、add_textbox等action，可直接在WPS PPT中执行。",
+    "max_chars": 4000,
     "styleSpecHints": {
       "wpp": {
         "layout_recommendation": true

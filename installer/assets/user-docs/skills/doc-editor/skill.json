@@ -1,0 +1,46 @@
+{
+  "schema_version": "ah32.skill.v1",
+  "meta": {
+    "id": "doc-editor",
+    "name": "文档改写助手（Writer）",
+    "version": "0.1.0",
+    "enabled": true,
+    "priority": 31,
+    "description": "面向改写/补写/润色：以对照表+修订稿块的方式交付，可执行 Plan 幂等写回。",
+    "group": "writer"
+  },
+  "delivery": {
+    "default_writeback": "compare_table"
+  },
+  "routing": {
+    "hosts": ["writer"],
+    "tags": ["Writer", "改写", "润色", "修订", "对照表", "可追溯"],
+    "intents": ["doc_edit", "rewrite", "revise"],
+    "triggers": ["改写", "润色", "改得更专业", "修订", "替换", "重写", "优化表达", "补写"],
+    "examples": [
+      "把这段话改得更专业，并给出可执行Plan写回到文末",
+      "输出对照表（原文要点/建议改写/理由/是否应用）并生成修订稿块",
+      "补齐缺失章节并生成修订稿块"
+    ]
+  },
+  "capabilities": {
+    "active_doc_text": true,
+    "active_doc_max_chars": 80000
+  },
+  "output": {
+    "markers": ["Plan JSON", "对照表", "修订稿", "自检清单"],
+    "output_schema": "输出必须且只能是可执行 Plan JSON（schema_version=ah32.plan.v1, host_app=wps）。默认不要直接改原文：用 upsert_block 在文末生成“对照表 + 修订稿/替换段落”块（可追溯、可回退）。",
+    "max_chars": 4000,
+    "styleSpecHints": {
+      "writer": {
+        "font": { "body": { "name": "微软雅黑", "size": 12 } },
+        "table": { "header": { "bold": true, "fill": "#f1f5f9" } }
+      },
+      "group": "writer",
+      "schema": "ah32.styleSpecHints.v1"
+    }
+  },
+  "entry": {
+    "system_prompt": "SYSTEM.md"
+  }
+}

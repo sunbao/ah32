@@ -25,11 +25,12 @@ from ah32.runtime_paths import runtime_root
 
 
 # 设置日志
+_reconfigure_exc_info = None
 try:
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
 except Exception:
-    pass
+    _reconfigure_exc_info = sys.exc_info()
 
 logging.basicConfig(
     level=logging.INFO,
@@ -41,6 +42,12 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
+
+if _reconfigure_exc_info:
+    logger.warning(
+        "[launcher] stdout/stderr reconfigure failed (ignored)", exc_info=_reconfigure_exc_info
+    )
+    _reconfigure_exc_info = None
 
 
 
@@ -68,6 +75,7 @@ def can_interact():
 
     except Exception:
 
+        logger.debug("[launcher] can_interact probe failed (ignored)", exc_info=True)
         return False
 
 
@@ -86,7 +94,7 @@ def wait_for_user_exit(message="按回车键退出..."):
 
         except Exception as e:
 
-            logger.debug(f"等待用户输入失败: {e}")
+            logger.debug(f"等待用户输入失败: {e}", exc_info=True)
 
     else:
 
@@ -171,7 +179,7 @@ def load_config_and_check_model():
 
     except Exception as e:
 
-        logger.error(f"[模型检查] 嵌入模型解析失败: {e}")
+        logger.error(f"[模型检查] 嵌入模型解析失败: {e}", exc_info=True)
 
         return False
 
@@ -190,7 +198,7 @@ def main():
         env_file = load_env_strict()
         logger.info(f"[启动器] 已加载配置: {env_file}")
     except Exception as e:
-        logger.error(f"[启动器] .env 加载失败: {e}")
+        logger.error(f"[启动器] .env 加载失败: {e}", exc_info=True)
         wait_for_user_exit()
         return
 
@@ -251,7 +259,7 @@ def main():
 
     except Exception as e:
 
-        logger.error(f"[启动器] 启动主程序时发生错误: {e}")
+        logger.error(f"[启动器] 启动主程序时发生错误: {e}", exc_info=True)
 
         wait_for_user_exit()
 

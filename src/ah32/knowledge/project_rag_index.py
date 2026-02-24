@@ -181,7 +181,11 @@ class ProjectRagIndex:
                 self.index_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
             except Exception:
                 # Best-effort; this is a local-only optimization.
-                pass
+                logger.warning(
+                    "[project_rag_index] save index failed path=%s",
+                    str(self.index_path),
+                    exc_info=True,
+                )
 
     def is_empty(self) -> bool:
         """Return True if the index has no global sources and no project sources.

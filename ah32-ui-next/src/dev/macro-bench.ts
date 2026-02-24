@@ -466,7 +466,7 @@ export const runMacroBenchCurrentHost = async (opts?: RunBenchOptions): Promise<
         }
         return false
       }
-      try { if (Array.isArray(cloned.actions)) walk(cloned.actions) } catch (e) {}
+      try { if (Array.isArray(cloned.actions)) walk(cloned.actions) } catch (e) { ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench.ts', e) }
       return cloned
     }
 

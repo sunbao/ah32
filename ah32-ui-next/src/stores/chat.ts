@@ -1451,6 +1451,10 @@ export const useChatStore = defineStore('chat', () => {
             const sid = normalizeSessionId(job?.sessionId || '')
             const dc = job?.docContext || null
             const docName = String(dc?.name || '').trim()
+            const hostHint = String(dc?.hostApp || '').trim() || String(wpsBridge.getHostApp() || '').trim()
+
+            const looksLikeNoPlanBlock = errCode === 'no_plan_block'
+            const looksLikeJsWritebackRequired = errCode === 'json_writeback_required'
 
             const looksLikeLegacyParamsPlan = (() => {
                 // Backend strict schema errors when LLM returns { op:'upsert_block', params:{...} }.
@@ -1461,6 +1465,21 @@ export const useChatStore = defineStore('chat', () => {
                 const t = err.toLowerCase()
                 return t.includes('syntaxerror') && (t.includes('invalid or unexpected token') || t.includes('unexpected token'))
             })()
+            const looksLikeHostAppMismatch = (() => {
+                const t = err.toLowerCase()
+                return t.includes('host_app mismatch') || t.includes('hostapp mismatch')
+            })()
+            const looksLikeUpsertBlockMissingActions = (() => {
+                const t = err.toLowerCase()
+                return (
+                    t.includes('upsert_block')
+                    && (
+                        t.includes('requires non-empty actions')
+                        || t.includes('actions is not iterable')
+                        || t.includes('not iterable')
+                    )
+                )
+            })()
             const looksLikePlanExecutorNotAvailable = (() => {
                 const t = err.toLowerCase()
                 return (
@@ -1470,6 +1489,18 @@ export const useChatStore = defineStore('chat', () => {
                     t.includes('加载plan执行器失败')
                 )
             })()
+            const looksLikeInvalidPlan = (() => {
+                const t = err.toLowerCase()
+                return t.includes('invalid plan')
+            })()
+            const looksLikeBackendNormalizeBug = (() => {
+                const t = err.toLowerCase()
+                return (
+                    t.includes('_normalize_action') ||
+                    t.includes('normalize_plan_payload') ||
+                    t.includes('missing 1 required keyword-only argument')
+                )
+            })()
 
             const dedupKey = `${sid}::${blockId}::${errCode || err}`.slice(0, 220)
             const now = Date.now()
@@ -1477,25 +1508,56 @@ export const useChatStore = defineStore('chat', () => {
             if (now - last < 2500) return
             _macroErrorNotifyDedup.set(dedupKey, now)
 
-            const extraHint = looksLikeLegacyParamsPlan
+            let extraHint = looksLikeLegacyParamsPlan
                 ? "\n提示：检测到 Plan 使用了 params/content/format 这类非 schema 字段，通常是后端未更新或未重启；请先重启后端再重试写回。"
-                : looksLikeUnexpectedToken
-                  ? "\n提示：该错误通常由“智能引号/全角标点/不可见字符”导致；新版前端会在执行前自动清洗。请刷新任务窗格/更新插件后重试。"
-                  : looksLikePlanExecutorNotAvailable
-                    ? "\n提示：Plan 执行器未加载，通常是前端资源未完整加载（代码分割 chunk 丢失/缓存损坏/版本不一致）。请先刷新任务窗格或更新插件；仍不行请重启 WPS 后再试。"
-                  : ""
-            const chatText = `【写回失败】${docName ? `文档：${docName}；` : ''}块：${blockId}。\n原因：${err}\n建议：确认目标文档仍打开并处于前台，然后点击“应用写回”重试；必要时截图反馈。${extraHint}`
+                : looksLikeNoPlanBlock
+                  ? `\n提示：当前消息里没有可执行的 Plan JSON。请让模型只输出 Plan JSON（schema_version=\"ah32.plan.v1\"${hostHint ? `, host_app=\"${hostHint}\"` : ''}），然后再点击“应用写回”。`
+                  : looksLikeJsWritebackRequired
+                    ? "\n提示：检测到 JS 宏代码块；当前分支仅支持 Plan JSON 写回。请让模型输出 ah32.plan.v1 的 Plan JSON。"
+                    : looksLikeUnexpectedToken
+                      ? "\n提示：该错误通常由“智能引号/全角标点/不可见字符”导致；新版前端会在执行前自动清洗。请刷新任务窗格/更新插件后重试。"
+                      : looksLikePlanExecutorNotAvailable
+                        ? "\n提示：Plan 执行器未加载，通常是前端资源未完整加载（代码分割 chunk 丢失/缓存损坏/版本不一致）。请先刷新任务窗格或更新插件；仍不行请重启 WPS 后再试。"
+                        : ""
+            if (!extraHint && looksLikeBackendNormalizeBug) {
+                extraHint =
+                    "\n提示：该错误更像后端 Plan 归一化/校验代码异常（版本不一致或未重启）。请先更新并重启后端后再试。"
+            }
+            if (!extraHint && looksLikeHostAppMismatch) {
+                extraHint = "\n提示：Plan.host_app 与当前宿主不一致（wps/et/wpp）。请让模型输出正确的 host_app 后再写回，或确保当前前台就是目标文档。"
+            } else if (!extraHint && looksLikeUpsertBlockMissingActions) {
+                extraHint = "\n提示：upsert_block 必须提供非空 actions: [...]；不要把写回内容塞到 content/options 这类旧字段里。请让模型按 ah32.plan.v1 输出 upsert_block.actions。"
+            }
+            const suggestion = looksLikeInvalidPlan
+                ? "建议：该错误属于 Plan 归一化/校验失败（通常与文档前台无关）。请让模型按错误信息修复 Plan JSON 或重新生成后再写回。"
+                : "建议：确认目标文档仍打开并处于前台，然后点击“应用写回”重试；必要时截图反馈。"
+            const chatText = `【写回失败】${docName ? `文档：${docName}；` : ''}块：${blockId}。\n原因：${err}\n${suggestion}${extraHint}`
             _addSystemMessageToSessionBucketSafe(sid || currentSessionId.value || '__default__', chatText, dc || undefined)
 
             const shortErr = err.length > 280 ? `${err.slice(0, 260)}...` : err
-            const toastHint = looksLikeLegacyParamsPlan
+            let toastHint = looksLikeLegacyParamsPlan
                 ? "\n提示：请重启后端。"
-                : looksLikeUnexpectedToken
-                  ? "\n提示：刷新任务窗格/更新插件。"
-                  : looksLikePlanExecutorNotAvailable
-                    ? "\n提示：刷新任务窗格/更新插件；必要时重启 WPS。"
-                    : ""
-            const toastMsg = `${docName ? `文档：${docName}\n` : ''}块：${blockId}\n原因：${shortErr}\n建议：确认目标文档仍打开并处于前台，然后重试写回。${toastHint}`
+                : looksLikeNoPlanBlock
+                  ? "\n提示：请让模型输出 Plan JSON 后再写回。"
+                  : looksLikeJsWritebackRequired
+                    ? "\n提示：请改为输出 Plan JSON。"
+                    : looksLikeUnexpectedToken
+                      ? "\n提示：刷新任务窗格/更新插件。"
+                      : looksLikePlanExecutorNotAvailable
+                        ? "\n提示：刷新任务窗格/更新插件；必要时重启 WPS。"
+                        : ""
+            if (!toastHint && looksLikeBackendNormalizeBug) {
+                toastHint = "\n提示：重启后端。"
+            }
+            if (!toastHint && looksLikeHostAppMismatch) {
+                toastHint = "\n提示：host_app 不一致。"
+            } else if (!toastHint && looksLikeUpsertBlockMissingActions) {
+                toastHint = "\n提示：upsert_block 缺少 actions。"
+            }
+            const toastSuggestion = looksLikeInvalidPlan
+                ? "建议：请修复/重新生成 Plan JSON 后再写回。"
+                : "建议：确认目标文档仍打开并处于前台，然后重试写回。"
+            const toastMsg = `${docName ? `文档：${docName}\n` : ''}块：${blockId}\n原因：${shortErr}\n${toastSuggestion}${toastHint}`
             _uiNotify({ type: 'error', title: '写回失败', message: toastMsg, durationMs: 0 })
 
             try {
@@ -1746,7 +1808,21 @@ export const useChatStore = defineStore('chat', () => {
             }
 
             const prevActiveUnsaved = prevUnsaved.find(m => m.isActive)
+            const currActiveUnsaved = metas.find(m => !!m.isActive && !String(m.path || '').trim())
             const currActiveSaved = metas.find(m => !!m.isActive && !!String(m.path || '').trim())
+
+            // Handle "Save As" / rename while still unsaved:
+            // some WPS builds update the document Name (and thus docId/docKey) before FullName/Path becomes available.
+            // If we don't migrate at this stage, the UI may bind to a fresh session id and the original chat history
+            // appears "lost" after rename/save.
+            if (prevActiveUnsaved && currActiveUnsaved && prevActiveUnsaved.hostApp === currActiveUnsaved.hostApp) {
+                const prevUnsavedCount = prevUnsaved.length
+                const currUnsavedCount = metas.filter(m => !String(m.path || '').trim()).length
+                if (prevUnsavedCount === 1 && currUnsavedCount === 1) {
+                    if (migratePair(prevActiveUnsaved, currActiveUnsaved, 'active_rename')) return
+                }
+            }
+
             if (prevActiveUnsaved && currActiveSaved && prevActiveUnsaved.hostApp === currActiveSaved.hostApp) {
                 if (migratePair(prevActiveUnsaved, currActiveSaved, 'active_save')) return
             }
@@ -2292,8 +2368,17 @@ export const useChatStore = defineStore('chat', () => {
 
                 try {
                     const parsed = JSON.parse(text)
-                    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && (parsed as any).schema_version === 'ah32.plan.v1') {
-                        return parsed
+                    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                        const schemaVersion = String(
+                            (parsed as any).schema_version
+                            || (parsed as any).schemaVersion
+                            || (parsed as any).schema
+                            || ''
+                        ).trim()
+                        if (schemaVersion === 'ah32.plan.v1') {
+                            if (!(parsed as any).schema_version) (parsed as any).schema_version = schemaVersion
+                            return parsed
+                        }
                     }
                 } catch (e) {
                     // Expected: most fenced blocks are not plans. Keep it debug-only and do not crash.
@@ -2305,8 +2390,17 @@ export const useChatStore = defineStore('chat', () => {
                 if (firstBrace < 0 || lastBrace <= firstBrace) return null
                 try {
                     const parsed = JSON.parse(text.slice(firstBrace, lastBrace + 1))
-                    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && (parsed as any).schema_version === 'ah32.plan.v1') {
-                        return parsed
+                    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                        const schemaVersion = String(
+                            (parsed as any).schema_version
+                            || (parsed as any).schemaVersion
+                            || (parsed as any).schema
+                            || ''
+                        ).trim()
+                        if (schemaVersion === 'ah32.plan.v1') {
+                            if (!(parsed as any).schema_version) (parsed as any).schema_version = schemaVersion
+                            return parsed
+                        }
                     }
                 } catch (e) {
                     logger.debug('[MacroQueue] parsePlanCandidate brace-extract parse failed', e)
@@ -2401,7 +2495,15 @@ export const useChatStore = defineStore('chat', () => {
             pushPlanCandidate(body)
         }
 
-        if (!planCandidates.length && content.includes('"schema_version"') && content.includes('ah32.plan.v1')) {
+        if (
+            !planCandidates.length
+            && content.includes('ah32.plan.v1')
+            && (
+                content.includes('"schema_version"')
+                || content.includes('"schemaVersion"')
+                || content.includes('"schema"')
+            )
+        ) {
             pushPlanCandidate(content)
             if (!planCandidates.length) {
                 const jsonObjects = extractBalancedJsonObjects(content)
@@ -2559,6 +2661,12 @@ export const useChatStore = defineStore('chat', () => {
             if (opts?.excludeConfirm) {
                 blocks = blocks.filter((b) => !b.confirm)
             }
+            // Safety: auto-writeback (no explicit blockId selection) should execute at most one plan block.
+            // LLMs may output multiple fenced plans (e.g. an extra "reply user" plan). Keep the rest visible
+            // for manual apply, but don't auto-run them to avoid polluting the document.
+            if (!onlyIds.length && opts?.excludeConfirm && blocks.length > 1) {
+                blocks = blocks.slice(0, 1)
+            }
             if (!blocks.length) return
 
             // Mark blocks as queued so UI can reflect "排队/执行中/成功/失败" without relying on component-local state.
@@ -2677,7 +2785,9 @@ export const useChatStore = defineStore('chat', () => {
                 macroJobActiveSessionId.value = normalizeSessionId(job.sessionId)
                 const docContext = job.docContext || null
                 const docId = String(docContext?.docId || '').trim()
-                const host = String(docContext?.hostApp || wpsBridge.getHostApp() || '').trim()
+                const hostFromRuntime = String(wpsBridge.getHostApp() || '').trim()
+                const hostFromContext = String(docContext?.hostApp || '').trim()
+                const host = (hostFromRuntime && hostFromRuntime !== 'unknown') ? hostFromRuntime : hostFromContext
 
                 // Plan repair needs stable context (session/doc/host).
                 try {
@@ -2831,12 +2941,45 @@ export const useChatStore = defineStore('chat', () => {
                             continue
                         }
 
-                        // Execute + repair loop (strict: no fallback to JS macros).
-                        let currentPlan: any = plan
-                        let executed = false
-                        let lastErr = ''
-                        let didRepair = false
-                        for (let attempt = 1; attempt <= 2; attempt++) {
+                         // Execute + repair loop (strict: no fallback to JS macros).
+                         let currentPlan: any = plan
+                         let executed = false
+                         let lastErr = ''
+                         let didRepair = false
+                        // Preflight: normalize + validate (fast-path only) before touching WPS runtime.
+                        // This avoids wasting a first execution attempt on obviously invalid plans.
+                        try {
+                            const preflight = await planClient.repairPlan(
+                                currentPlan,
+                                'preflight_validate',
+                                'preflight_validate',
+                                0
+                            )
+                            if (preflight.success && preflight.plan) {
+                                currentPlan = preflight.plan
+                            } else if (preflight.error) {
+                                const pe = String(preflight.error || '')
+                                if (pe.toLowerCase().includes('invalid plan')) {
+                                    didRepair = true
+                                    const repaired0 = await planClient.repairPlan(currentPlan, 'invalid_plan', pe, 1)
+                                    if (!repaired0.success || !repaired0.plan) {
+                                        lastErr = String(repaired0.error || pe || 'plan_repair_failed')
+                                    } else {
+                                        currentPlan = repaired0.plan
+                                    }
+                                } else {
+                                    try {
+                                        logToBackend?.(`[MacroQueue] plan.preflight skipped: ${pe}`)
+                                    } catch (e) {
+                                        ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/stores/chat.ts', e)
+                                    }
+                                }
+                            }
+                        } catch (e: any) {
+                            ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/stores/chat.ts', e)
+                        }
+
+                        for (let attempt = 1; attempt <= 2 && !lastErr; attempt++) {
                             try {
                                 const opsHint = (() => {
                                     try {

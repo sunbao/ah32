@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 import logging
 import math
@@ -23,6 +24,7 @@ class SkillTool:
     name: str
     description: str = ""
     parameters: Dict[str, Any] = field(default_factory=dict)
+    hints: Dict[str, Any] = field(default_factory=dict)
     script_path: Path = Path(".")
 
 
@@ -52,6 +54,9 @@ class Skill:
     # Capability flags (optional, loaded from skill.json:capabilities).
     needs_active_doc_text: bool = False
     active_doc_max_chars: Optional[int] = None
+    # Whether the agent should inject an explicit "RAG 0-hit" hint for this skill.
+    # Skill decides via skill.json:capabilities; core only supports emitting the signal.
+    rag_missing_hint: bool = False
     tools: Tuple[SkillTool, ...] = ()
     root: Path = Path(".")
     prompt_path: Optional[Path] = None
@@ -130,6 +135,9 @@ class SkillRegistry:
         self._prompt_text_cache: Dict[str, str] = {}
         self._routing_text_cache: Dict[str, str] = {}
         self._routing_vec_cache: Dict[str, List[float]] = {}
+        # Optional persistent routing index (e.g. Chroma) for fast similarity search.
+        self._routing_vector_store: Any = None
+        self._routing_vector_store_needs_sync: bool = False
         # Lazy activation metrics
         self._lazy_activation_calls: int = 0
         self._lazy_activation_cache_hits: int = 0
@@ -139,6 +147,17 @@ class SkillRegistry:
     def list_skills(self) -> List[Skill]:
         self._reload_if_changed()
         return list(self._skills)
+
+    def set_routing_vector_store(self, store: Any) -> None:
+        """Attach a persistent vector store for skill routing.
+
+        The store is expected to implement the ChromaDB-like interface used in this
+        repo: `similarity_search`, `add_documents`, `delete_by_filter`, and
+        `get_all_metadatas` (best-effort).
+        """
+        with self._lock:
+            self._routing_vector_store = store
+            self._routing_vector_store_needs_sync = True
 
     def render_for_prompt(self, selected: Optional[Iterable[Skill]] = None) -> str:
         """Render enabled skills (or a selected subset) into a compact system-instruction block."""
@@ -290,6 +309,24 @@ class SkillRegistry:
                 if not tt:
                     continue
                 if tt in needle:
+                    # Negation-aware routing: avoid selecting "creator" skills when user explicitly
+                    # says "不要/不需要/不用/无需 ..." around a trigger phrase.
+                    #
+                    # Example: "不需要直接创建PPT" contains trigger "创建PPT" but should not route to ppt-creator.
+                    neg_words = ("不需要", "不要", "不用", "无需", "不必", "别", "勿", "不想", "不打算")
+                    ok_hit = False
+                    start = 0
+                    while True:
+                        idx = needle.find(tt, start)
+                        if idx < 0:
+                            break
+                        prefix = needle[max(0, idx - 10) : idx]
+                        if not any(n in prefix for n in neg_words):
+                            ok_hit = True
+                            break
+                        start = idx + max(1, len(tt))
+                    if not ok_hit:
+                        continue
                     hits += 1
                     score += 0.45
                 if hits >= 6:
@@ -308,6 +345,58 @@ class SkillRegistry:
             # Small priority bias for stable ordering (not a main signal).
             score += min(0.15, max(0.0, float(s.priority) / 1000.0))
             return score
+
+        # Try persistent vector-store routing first (avoids re-embedding on restart).
+        try:
+            store = self._routing_vector_store
+            if store is not None and hasattr(store, "similarity_search"):
+                allow = {s.skill_id for s in enabled}
+                k_search = max(12, k * 6)
+                k_search = min(max(12, k_search), max(12, len(enabled)))
+
+                best_dist: Dict[str, float] = {}
+                raw = store.similarity_search(msg, k=k_search)
+                for item in raw or []:
+                    if not isinstance(item, tuple) or len(item) != 2:
+                        continue
+                    doc, dist = item
+                    try:
+                        meta = getattr(doc, "metadata", None) or {}
+                        sid = str(meta.get("skill_id") or "").strip()
+                    except Exception:
+                        sid = ""
+                    if not sid or sid not in allow:
+                        continue
+                    try:
+                        d = float(dist)
+                    except Exception:
+                        continue
+                    prev = best_dist.get(sid)
+                    if prev is None or d < prev:
+                        best_dist[sid] = d
+
+                if best_dist:
+                    scored_vs: List[Dict[str, Any]] = []
+                    for s in enabled:
+                        dist = best_dist.get(s.skill_id)
+                        emb01 = 0.0
+                        if dist is not None:
+                            # Chroma returns a distance (lower is better). Map to 0..1.
+                            emb01 = 1.0 / (1.0 + max(0.0, float(dist)))
+                        lex = _lex_score(s)
+                        lex01 = max(0.0, min(1.0, lex / 2.5))
+                        score = 0.72 * emb01 + 0.28 * lex01
+                        scored_vs.append({"skill": s, "score": score, "score_emb": emb01, "score_lex": lex01})
+
+                    scored_vs.sort(
+                        key=lambda x: (x["score"], x["skill"].priority, x["skill"].skill_id),
+                        reverse=True,
+                    )
+                    kept_vs = [x for x in scored_vs if x["score"] >= float(min_score)]
+                    if kept_vs:
+                        return _apply_group_mutex(kept_vs)[:k]
+        except Exception as e:
+            logger.debug(f"[skills] vector store router failed, fallback. err={e}", exc_info=True)
 
         # Try embedding-based routing first (uses routing_text, not full prompt).
         try:
@@ -422,22 +511,142 @@ class SkillRegistry:
     def _reload_if_changed(self) -> None:
         with self._lock:
             fp = self._compute_fingerprint()
-            if fp == self._fingerprint:
+            fp_changed = fp != self._fingerprint
+            needs_sync = bool(self._routing_vector_store_needs_sync)
+            if not fp_changed and not needs_sync:
                 return
-            self._fingerprint = fp
-            self._manifest_tools_by_skill = {}
-            self._resolved_tools_by_skill = {}
-            self._skills = self._load_skills()
-            self._prompt_text_cache = {}
-            self._routing_text_cache = {}
-            self._routing_vec_cache = {}
-            declared_tools = sum(len(s.tools) for s in self._skills)
+
+            if fp_changed:
+                self._fingerprint = fp
+                self._manifest_tools_by_skill = {}
+                self._resolved_tools_by_skill = {}
+                self._skills = self._load_skills()
+                self._prompt_text_cache = {}
+                self._routing_text_cache = {}
+                self._routing_vec_cache = {}
+
+                declared_tools = sum(len(s.tools) for s in self._skills)
+                logger.info(
+                    "[skills] loaded=%s enabled=%s declared_tools=%s root=%s",
+                    len(self._skills),
+                    len([s for s in self._skills if s.enabled]),
+                    declared_tools,
+                    self.root_dir,
+                )
+
+            try:
+                if self._routing_vector_store is not None and (fp_changed or needs_sync):
+                    self._sync_routing_vector_store()
+            finally:
+                self._routing_vector_store_needs_sync = False
+
+    def _sync_routing_vector_store(self) -> None:
+        """Best-effort sync of skills routing_text -> vector store.
+
+        This enables persistent, embedding-based routing without re-embedding all
+        skills on every backend restart.
+
+        The store is expected to be dedicated for skills routing (no RAG chunks),
+        so we can safely delete by `skill_id`.
+        """
+        store = self._routing_vector_store
+        if store is None:
+            return
+
+        try:
+            from langchain_core.documents import Document
+        except Exception:  # pragma: no cover - legacy langchain fallback
+            from langchain.documents import Document  # type: ignore
+
+        desired: Dict[str, Dict[str, Any]] = {}
+        for s in self._skills:
+            if not s.enabled or not s.prompt_path:
+                continue
+            try:
+                t = self._get_routing_text_cached(s, max_chars=2000)
+            except Exception:
+                t = ""
+            if not t:
+                continue
+            h = hashlib.sha1(t.encode("utf-8")).hexdigest()
+            desired[s.skill_id] = {"hash": h, "text": t, "skill": s}
+
+        existing: Dict[str, str] = {}
+        try:
+            if hasattr(store, "get_all_metadatas"):
+                metas = store.get_all_metadatas()
+            else:
+                metas = []
+            if isinstance(metas, list):
+                for meta in metas:
+                    if not isinstance(meta, dict):
+                        continue
+                    sid = str(meta.get("skill_id") or "").strip()
+                    if not sid or sid in existing:
+                        continue
+                    existing[sid] = str(meta.get("routing_hash") or "").strip()
+        except Exception as e:
+            logger.debug(f"[skills] vector store list metadatas failed (ignored): {e}", exc_info=True)
+            existing = {}
+
+        # Delete stale skill entries (removed/disabled).
+        for sid in list(existing.keys()):
+            if sid not in desired:
+                try:
+                    if hasattr(store, "delete_by_filter"):
+                        store.delete_by_filter({"skill_id": sid})
+                except Exception as e:
+                    logger.debug(f"[skills] vector store delete stale failed (ignored): {sid} err={e}", exc_info=True)
+
+        to_add: List[Any] = []
+        updated = 0
+        skipped = 0
+        for sid, meta in desired.items():
+            h = str(meta.get("hash") or "")
+            if existing.get(sid) == h:
+                skipped += 1
+                continue
+
+            try:
+                if hasattr(store, "delete_by_filter"):
+                    store.delete_by_filter({"skill_id": sid})
+            except Exception as e:
+                logger.debug(f"[skills] vector store delete old failed (ignored): {sid} err={e}", exc_info=True)
+
+            s = meta.get("skill")
+            t = str(meta.get("text") or "")
+            doc_meta = {
+                "skill_id": sid,
+                "routing_hash": h,
+                "skill_name": str(getattr(s, "name", "") or ""),
+                "skill_version": str(getattr(s, "version", "") or ""),
+                "skill_group": str(getattr(s, "group", "") or ""),
+                "hosts": ",".join(getattr(s, "hosts", ()) or ()),
+            }
+            to_add.append(Document(page_content=t, metadata=doc_meta))
+            updated += 1
+
+            if len(to_add) >= 32:
+                try:
+                    store.add_documents(to_add)
+                except Exception as e:
+                    logger.warning(f"[skills] vector store add_documents failed (ignored): {e}", exc_info=True)
+                    return
+                to_add = []
+
+        if to_add:
+            try:
+                store.add_documents(to_add)
+            except Exception as e:
+                logger.warning(f"[skills] vector store add_documents failed (ignored): {e}", exc_info=True)
+                return
+
+        if updated or skipped:
             logger.info(
-                "[skills] loaded=%s enabled=%s declared_tools=%s root=%s",
-                len(self._skills),
-                len([s for s in self._skills if s.enabled]),
-                declared_tools,
-                self.root_dir,
+                "[skills] routing vector store sync done: updated=%s skipped=%s total=%s",
+                updated,
+                skipped,
+                len(desired),
             )
 
     def render_tools_for_prompt(self, skills: Tuple[Skill, ...]) -> str:
@@ -458,27 +667,79 @@ class SkillRegistry:
         if not all_tools:
             return ""
 
-        blocks = ["【可用工具】以下是本轮对话可调用的工具（由 Skills 提供）：\n"]
+        def _type_short(t: Any) -> str:
+            tt = t
+            if isinstance(tt, list) and tt:
+                tt = next((x for x in tt if x != "null"), tt[0])
+            m = {
+                "string": "str",
+                "integer": "int",
+                "number": "num",
+                "boolean": "bool",
+                "array": "list",
+                "object": "obj",
+            }
+            if isinstance(tt, str):
+                return m.get(tt, tt)
+            return "any"
 
+        def _render_signature(schema: Any) -> str:
+            if not isinstance(schema, dict):
+                return ""
+            props = schema.get("properties")
+            if not isinstance(props, dict):
+                props = {}
+            required = schema.get("required")
+            required_list = [str(x) for x in required] if isinstance(required, list) else []
+            required_set = set(required_list)
+
+            def _one_param(name: str) -> str:
+                spec = props.get(name)
+                if not isinstance(spec, dict):
+                    spec = {}
+                typ = _type_short(spec.get("type"))
+                items = spec.get("items")
+                if typ == "list" and isinstance(items, dict):
+                    typ = f"list[{_type_short(items.get('type'))}]"
+                default = spec.get("default") if isinstance(spec, dict) else None
+                if default is not None:
+                    try:
+                        dv = json.dumps(default, ensure_ascii=False)
+                    except Exception:
+                        dv = str(default)
+                    return f"{name}:{typ}={dv}"
+                return f"{name}:{typ}"
+
+            parts: List[str] = []
+            for n in sorted(required_set):
+                parts.append(_one_param(n))
+            for n in sorted(set(props.keys()) - required_set):
+                parts.append(_one_param(n))
+            return ", ".join(parts)
+
+        lines: List[str] = []
+        lines.append("【可用工具】（仅用于确定性操作；按需调用）")
+        lines.append('调用格式：{"name":"tool_name","arguments":{...}}（只用 name/arguments；不要输出 tool_calls 数组）')
+        lines.append("工具列表：")
+
+        all_tools.sort(key=lambda x: (str(x.get("skill_id") or ""), str(x.get("name") or "")))
         for t in all_tools:
-            params_json = json.dumps(t["parameters"], ensure_ascii=False, indent=4)
-            blocks.append(
-                f"--- 工具: {t['name']} ---\n"
-                f"所属 Skill: {t['skill_name']} (id={t['skill_id']})\n"
-                f"描述: {t['description']}\n"
-                f"参数 (JSON Schema):\n{params_json}\n"
-                f"调用格式: {{\"name\": \"{t['name']}\", \"arguments\": {{}}}}\n"
-            )
+            name = str(t.get("name") or "").strip()
+            if not name:
+                continue
+            sig = _render_signature(t.get("parameters"))
+            desc = str(t.get("description") or "").strip()
+            if len(desc) > 120:
+                desc = desc[:120] + "…"
+            sid = str(t.get("skill_id") or "").strip()
+            sig_text = f"({sig})" if sig else ""
+            if desc:
+                lines.append(f"- {name}{sig_text} — {desc} @{sid}")
+            else:
+                lines.append(f"- {name}{sig_text} @{sid}")
 
-        blocks.append(
-            "\n【使用规则】\n"
-            "1. 仅当需要执行确定性操作时调用工具\n"
-            "2. 工具调用必须包含 name 和 arguments\n"
-            "3. 收到工具结果后，继续推理并输出最终答案\n"
-            "4. 若工具调用失败，记录错误并继续\n"
-        )
-
-        return "\n".join(blocks)
+        lines.append("返回结果：工具返回 JSON；你应基于结果继续推理并完成最终输出。")
+        return "\n".join(lines)
 
     def get_tools_for_skill(self, skill_id: str) -> Tuple[SkillTool, ...]:
         """Get tools for a specific skill by ID."""
@@ -529,6 +790,9 @@ class SkillRegistry:
                         continue
                     description = str(item.get("description") or "").strip()
                     parameters = item.get("parameters")
+                    hints = item.get("hints")
+                    if not isinstance(hints, dict):
+                        hints = {}
                     builtin = bool(item.get("builtin", False))
                     if not builtin and name.startswith("builtin:"):
                         builtin = True
@@ -539,6 +803,7 @@ class SkillRegistry:
                         "name": name,
                         "description": description,
                         "parameters": parameters,
+                        "hints": hints,
                         "builtin": builtin,
                     }
             except Exception as e:
@@ -769,8 +1034,26 @@ class SkillRegistry:
                     continue
                 script_map[p.stem] = p.resolve()
 
-        declared = dict(registry_tools)
-        declared.update(manifest_tools)
+        declared: Dict[str, Dict[str, Any]] = {}
+        if manifest_tools:
+            # Manifest tools are authoritative: only expose names declared in skill.json.tools.
+            for name, cfg in manifest_tools.items():
+                merged: Dict[str, Any] = {}
+                reg_cfg = registry_tools.get(name)
+                if isinstance(reg_cfg, dict):
+                    merged.update(reg_cfg)
+                if isinstance(cfg, dict):
+                    merged.update(cfg)
+                # If manifest omits description/parameters, reuse registry metadata.
+                if not str(merged.get("description") or "").strip() and isinstance(reg_cfg, dict):
+                    merged["description"] = str(reg_cfg.get("description") or "").strip()
+                if not isinstance(merged.get("parameters"), dict) and isinstance(reg_cfg, dict):
+                    if isinstance(reg_cfg.get("parameters"), dict):
+                        merged["parameters"] = reg_cfg.get("parameters")
+                declared[name] = merged
+        else:
+            declared = dict(registry_tools)
+
         # If no declaration at all, fallback to simple mode (scripts/*.py => tool names)
         if not declared:
             declared = {
@@ -796,11 +1079,15 @@ class SkillRegistry:
             parameters = cfg.get("parameters")
             if not isinstance(parameters, dict):
                 parameters = {"type": "object", "properties": {}}
+            hints = cfg.get("hints")
+            if not isinstance(hints, dict):
+                hints = {}
             tools.append(
                 SkillTool(
                     name=name,
                     description=description,
                     parameters=parameters,
+                    hints=hints,
                     script_path=script_path,
                 )
             )
@@ -942,6 +1229,7 @@ class SkillRegistry:
                 # Capability flags (best-effort; callers decide what to do with them).
                 needs_active_doc_text = False
                 active_doc_max_chars = None
+                rag_missing_hint = False
                 if isinstance(caps, dict) and caps:
                     needs_active_doc_text = bool(
                         caps.get("active_doc_text")
@@ -953,6 +1241,11 @@ class SkillRegistry:
                         active_doc_max_chars = int(raw_max) if raw_max is not None else None
                     except Exception:
                         active_doc_max_chars = None
+                    rag_missing_hint = bool(
+                        caps.get("rag_missing_hint")
+                        or caps.get("emit_rag_missing_hint")
+                        or caps.get("needs_rag_missing_hint")
+                    )
 
                 entry_prompt = entry.get("system_prompt") or entry.get("prompt")
                 if entry_prompt:
@@ -984,6 +1277,7 @@ class SkillRegistry:
                     style_spec_hints=style_spec_hints,
                     needs_active_doc_text=needs_active_doc_text,
                     active_doc_max_chars=active_doc_max_chars,
+                    rag_missing_hint=rag_missing_hint,
                     tools=skill_tools,
                     root=skill_dir,
                     prompt_path=prompt_path.resolve() if prompt_path else None,

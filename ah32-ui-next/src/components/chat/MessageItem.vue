@@ -290,7 +290,7 @@
 
          <div v-else class="message-text">
 
-           <div v-html="formatContent(contentWithoutJS)" />
+           <div v-html="formatContent(assistantTextForDisplay)" />
 
          </div>
 
@@ -635,6 +635,133 @@ let cachedCodeBlocks: CodeBlock[] = []
 
 let cachedRunsTick = 0
 
+const _isLikelyPlanJson = (s: string): boolean => {
+  try {
+    const t = String(s || '').trim()
+    if (!t) return false
+    if (!(t.startsWith('{') && t.endsWith('}'))) return false
+    return t.includes('"schema_version"') && t.includes('ah32.plan.v1')
+  } catch (e) {
+    ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/components/chat/MessageItem.vue', e)
+    return false
+  }
+}
+
+const _extractPlansFromContent = (content: string): any[] => {
+  const src = String(content || '')
+  const out: any[] = []
+  try {
+    const re = /```json\\s*([\\s\\S]*?)```/gi
+    let m: RegExpExecArray | null
+    while ((m = re.exec(src)) !== null) {
+      const raw = String(m[1] || '').trim()
+      if (!raw) continue
+      try {
+        const parsed = JSON.parse(raw)
+        if (parsed && typeof parsed === 'object' && (parsed as any).schema_version === 'ah32.plan.v1') out.push(parsed)
+      } catch (e) {
+        ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/components/chat/MessageItem.vue', e)
+      }
+    }
+  } catch (e) {
+    ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/components/chat/MessageItem.vue', e)
+  }
+
+  // Some models output a raw JSON object (no ```json fence). Accept it for preview/UI rendering.
+  try {
+    const t = src.trim()
+    if (_isLikelyPlanJson(t)) {
+      const parsed = JSON.parse(t)
+      if (parsed && typeof parsed === 'object' && (parsed as any).schema_version === 'ah32.plan.v1') out.push(parsed)
+    }
+  } catch (e) {
+    // Best-effort: ignore but keep it observable.
+    ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/components/chat/MessageItem.vue', e)
+  }
+
+  return out
+}
+
+const _planTextPreviewFromPlan = (plan: any): string => {
+  const texts: string[] = []
+  const walk = (actions: any[]) => {
+    for (const a of actions || []) {
+      if (!a || typeof a !== 'object') continue
+      const op = String((a as any).op || '').trim()
+      if (op === 'insert_text' || op === 'insert_after_text' || op === 'insert_before_text') {
+        const t = String((a as any).text || '')
+        if (t.trim()) texts.push(t)
+      }
+      if (op === 'upsert_block' && Array.isArray((a as any).actions)) walk((a as any).actions)
+      else if (Array.isArray((a as any).actions)) walk((a as any).actions)
+    }
+  }
+  try { if (Array.isArray((plan as any)?.actions)) walk((plan as any).actions) } catch (e) { ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/components/chat/MessageItem.vue', e) }
+  const joined = texts.join('\\n').trim()
+  // Keep UI responsive: cap preview length.
+  return joined.length > 12000 ? `${joined.slice(0, 12000)}\\n…（已截断）` : joined
+}
+
+const _buildPlanStepsPreview = (plan: any): Array<{ title?: string; type?: string; content?: string }> => {
+  const steps: Array<{ title?: string; type?: string; content?: string }> = []
+  const add = (title: string, content: string) => {
+    steps.push({ title, content })
+  }
+  const walk = (actions: any[]) => {
+    for (const a of actions || []) {
+      if (!a || typeof a !== 'object') continue
+      const op = String((a as any).op || '').trim()
+      if (op === 'upsert_block') {
+        const bid = String((a as any).block_id || '').trim()
+        if (bid) add('写回块', bid)
+        if (Array.isArray((a as any).actions)) walk((a as any).actions)
+        continue
+      }
+      if (op === 'insert_text' || op === 'insert_after_text' || op === 'insert_before_text') {
+        const t = String((a as any).text || '')
+        const n = t ? t.length : 0
+        add('插入文本', n > 0 ? `${n} 字` : '')
+        continue
+      }
+      if (op === 'delete_block') {
+        const bid = String((a as any).block_id || '').trim()
+        add('删除块', bid)
+        continue
+      }
+      if (op) add('操作', op)
+      if (Array.isArray((a as any).actions)) walk((a as any).actions)
+    }
+  }
+  try { if (Array.isArray((plan as any)?.actions)) walk((plan as any).actions) } catch (e) { ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/components/chat/MessageItem.vue', e) }
+  return steps.slice(0, 12)
+}
+
+const _redactForDisplay = (obj: any): any => {
+  const MAX_STR = 160
+  const redactKeys = new Set(['text', 'anchor_text', 'html', 'markdown', 'content', 'prompt'])
+  const walk = (v: any): any => {
+    if (v == null) return v
+    if (typeof v === 'string') {
+      if (v.length <= MAX_STR) return v
+      return `〈省略 ${v.length} 字〉`
+    }
+    if (Array.isArray(v)) return v.map(walk)
+    if (typeof v === 'object') {
+      const out: any = {}
+      for (const [k, val] of Object.entries(v)) {
+        if (redactKeys.has(k) && typeof val === 'string') {
+          out[k] = val.length <= MAX_STR ? val : `〈省略 ${val.length} 字〉`
+        } else {
+          out[k] = walk(val)
+        }
+      }
+      return out
+    }
+    return v
+  }
+  return walk(obj)
+}
+
 
 
 // 移除 JS 宏代码后的纯文本内容
@@ -686,6 +813,16 @@ const contentWithoutJS = computed(() => {
 
   }
 
+  // If the model output is a raw Plan JSON object, don't show it as normal chat text.
+  // We'll render a readable preview instead (derived from actions).
+  if (_isLikelyPlanJson(sourceContent)) {
+
+    cachedTextValue = ''
+
+    return cachedTextValue
+
+  }
+
   cachedTextValue = sourceContent
 
     .replace(/```(?:js|javascript)\s*[\s\S]*?```/g, '')
@@ -706,10 +843,35 @@ const contentWithoutJS = computed(() => {
 
 })
 
+const planDerivedAssistantText = computed(() => {
+  try {
+    if (props.message.type !== 'assistant') return ''
+    const plans = _extractPlansFromContent(String(props.message.content || ''))
+    if (!plans || plans.length <= 0) return ''
+    const text = _planTextPreviewFromPlan(plans[0])
+    return String(text || '').trim()
+  } catch (e) {
+    ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/components/chat/MessageItem.vue', e)
+    return ''
+  }
+})
+
+const assistantTextForDisplay = computed(() => {
+  try {
+    if (props.message.type !== 'assistant') return String(contentWithoutJS.value || '')
+    const t = String(contentWithoutJS.value || '').trim()
+    if (t) return t
+    return String(planDerivedAssistantText.value || '').trim()
+  } catch (e) {
+    ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/components/chat/MessageItem.vue', e)
+    return String(contentWithoutJS.value || '')
+  }
+})
+
 const hasAssistantText = computed(() => {
   try {
     if (props.message.type !== 'assistant') return false
-    return !!String(contentWithoutJS.value || '').trim()
+    return !!String(assistantTextForDisplay.value || '').trim()
   } catch (e) {
     ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/components/chat/MessageItem.vue', e)
     return false
@@ -805,6 +967,23 @@ const codeBlocks = computed<CodeBlock[]>(() => {
           if (typeof run?.finalCode === 'string' && run.finalCode.trim()) {
 
             code = stripBlockIdHeader(run.finalCode.trim())
+
+          }
+
+          // Plan JSON can be huge; redact long text fields for display (正文 belongs in the document/bubble, not macro card).
+          if (b.type === 'plan') {
+
+            try {
+
+              const parsed = JSON.parse(code)
+
+              code = JSON.stringify(_redactForDisplay(parsed), null, 2)
+
+            } catch (e) {
+
+              // keep as-is
+
+            }
 
           }
 
@@ -1135,17 +1314,35 @@ const codeBlocks = computed<CodeBlock[]>(() => {
 
           : 'Plan'
 
+    // Prepare a redacted code view for Dev UI (do not dump正文 into macro card).
+
+    let displayCode = hydratedCode
+
+    try {
+
+      const parsed = JSON.parse(hydratedCode)
+
+      displayCode = JSON.stringify(_redactForDisplay(parsed), null, 2)
+
+    } catch (e) {
+
+      displayCode = hydratedCode
+
+    }
+
 
 
        blocks.push({
 
          type: 'plan',
 
-         code: hydratedCode,
+         code: displayCode,
 
          blockId,
 
          description,
+
+         steps: _buildPlanStepsPreview(plan),
 
          executed,
 
@@ -1168,6 +1365,103 @@ const codeBlocks = computed<CodeBlock[]>(() => {
       })
 
       planIndex += 1
+
+  }
+
+  // Raw plan JSON (no ```json fence). Keep it consistent with chat store extraction.
+
+  if (planIndex === 0) {
+
+    try {
+
+      const raw = String(sourceContent || '').trim()
+
+      if (_isLikelyPlanJson(raw)) {
+
+        const plan: any = JSON.parse(raw)
+
+        if (plan && typeof plan === 'object' && plan.schema_version === 'ah32.plan.v1') {
+
+          const walkFind = (actions: any[]): string => {
+            for (const a of actions || []) {
+              if (!a || typeof a !== 'object') continue
+              if ((a as any).op === 'upsert_block' && typeof (a as any).block_id === 'string') return String((a as any).block_id || '').trim()
+              if ((a as any).op === 'delete_block' && typeof (a as any).block_id === 'string') return String((a as any).block_id || '').trim()
+              if (Array.isArray((a as any).actions)) {
+                const nested = walkFind((a as any).actions)
+                if (nested) return nested
+              }
+            }
+            return ''
+          }
+
+          const planBlockId = (() => {
+            try { return Array.isArray((plan as any).actions) ? walkFind((plan as any).actions) : '' } catch (e) { ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/components/chat/MessageItem.vue', e); return '' }
+          })()
+
+          const isUpdate = !!macroTargetBlockId.value
+          const blockId = isUpdate
+            ? String(macroTargetBlockId.value)
+            : (planBlockId || `plan_${props.message.id}_1`)
+
+          const description =
+            (typeof plan?.meta?.title === 'string' && String(plan.meta.title).trim())
+              ? String(plan.meta.title).trim()
+              : (typeof plan?.actions?.[0]?.title === 'string' && String(plan.actions[0].title).trim())
+                ? String(plan.actions[0].title).trim()
+                : 'Plan'
+
+          let executed = false
+          let error: string | undefined = undefined
+          let hydratedCode = (() => {
+            try { return JSON.stringify(plan) } catch (e) { return raw }
+          })()
+
+          try {
+            const run = (chatStore as any).getMacroBlockRun?.(props.message.id, blockId)
+            if (run && typeof run === 'object') {
+              if (run.status === 'success') executed = true
+              if (run.status === 'error') error = (typeof run.error === 'string' && run.error.trim()) ? run.error : '执行失败'
+              if (typeof run.finalCode === 'string' && run.finalCode.trim()) hydratedCode = run.finalCode.trim()
+            }
+          } catch (e) {
+            ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/components/chat/MessageItem.vue', e)
+          }
+
+          let displayCode = hydratedCode
+          try {
+            const parsed = JSON.parse(hydratedCode)
+            displayCode = JSON.stringify(_redactForDisplay(parsed), null, 2)
+          } catch (e) {
+            ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/components/chat/MessageItem.vue', e)
+          }
+
+          blocks.push({
+            type: 'plan',
+            code: displayCode,
+            blockId,
+            description,
+            steps: _buildPlanStepsPreview(plan),
+            executed,
+            runStatus: (() => {
+              try {
+                const run = (chatStore as any).getMacroBlockRun?.(props.message.id, blockId)
+                const s = String(run?.status || '')
+                return (s === 'queued' || s === 'running' || s === 'success' || s === 'error') ? (s as any) : undefined
+              } catch (e) { (globalThis as any).__ah32_reportError?.('ah32-ui-next/src/components/chat/MessageItem.vue', e); return undefined }
+            })(),
+            error
+          })
+
+        }
+
+      }
+
+    } catch (e) {
+
+      ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/components/chat/MessageItem.vue', e)
+
+    }
 
   }
 
@@ -1198,6 +1492,7 @@ const codeBlocks = computed<CodeBlock[]>(() => {
           let runStatus: CodeBlock['runStatus'] = undefined
           let error: string | undefined = undefined
           let code = ''
+          let steps: any[] | undefined = undefined
 
           try {
             const run = (chatStore as any).getMacroBlockRun?.(props.message.id, blockId)
@@ -1215,11 +1510,22 @@ const codeBlocks = computed<CodeBlock[]>(() => {
             ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/components/chat/MessageItem.vue', e)
           }
 
+          if (kind === 'plan' && code) {
+            try {
+              const parsed = JSON.parse(code)
+              steps = _buildPlanStepsPreview(parsed)
+              code = JSON.stringify(_redactForDisplay(parsed), null, 2)
+            } catch (e) {
+              // keep as-is
+            }
+          }
+
           blocks.push({
             type: kind,
             code,
             blockId,
             description,
+            steps,
             executed,
             runStatus,
             error
@@ -1578,15 +1884,43 @@ const handleAction = async (actionType: string) => {
 
     case 'copy':
 
-      const success = await chatStore.copyMessage(props.message.id)
+      try {
 
-      if (success) {
+        // If this assistant message is plan-only, copy the readable preview instead of raw JSON.
 
-        ElMessage.success('已复制到剪贴板')
+        const preview = String(assistantTextForDisplay.value || '').trim()
 
-      } else {
+        const isPlanOnly = props.message.type === 'assistant' && !String(contentWithoutJS.value || '').trim() && !!preview
 
-        ElMessage.error('复制失败')
+        if (isPlanOnly) {
+
+          await navigator.clipboard.writeText(preview)
+
+          ElMessage.success('已复制到剪贴板')
+
+          break
+
+        }
+
+      } catch (e) {
+
+        ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/components/chat/MessageItem.vue', e)
+
+      }
+
+      {
+
+        const success = await chatStore.copyMessage(props.message.id)
+
+        if (success) {
+
+          ElMessage.success('已复制到剪贴板')
+
+        } else {
+
+          ElMessage.error('复制失败')
+
+        }
 
       }
 
@@ -1602,7 +1936,7 @@ const handleAction = async (actionType: string) => {
 
         data: {
 
-          text: contentWithoutJS.value || props.message.content || '',
+          text: assistantTextForDisplay.value || contentWithoutJS.value || props.message.content || '',
 
           role: props.message.type
 

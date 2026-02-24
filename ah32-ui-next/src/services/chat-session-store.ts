@@ -7,16 +7,39 @@ const STORE_SESSIONS = 'sessions'
 let _dbPromise: Promise<IDBDatabase> | null = null
 
 const _report = (scope: string, error: any, level: 'warning' | 'error' = 'warning') => {
+  const storageKey = 'ah32_last_error_internal'
   try {
     const fn = (globalThis as any).__ah32_reportError as undefined | ((s: string, e: any, lv?: string) => void)
     if (typeof fn === 'function') {
       fn(`ah32-ui-next/src/services/chat-session-store.ts:${scope}`, error, level)
       return
     }
-  } catch { /* ignore */ }
+  } catch (e) {
+    try {
+      console.warn(`[chat-session-store] reportError failed for scope=${scope}`, e)
+    } catch (e2) {
+      try {
+        if (typeof localStorage !== 'undefined') {
+          localStorage.setItem(storageKey, JSON.stringify({ scope: `chat-session-store:${scope}`, error: String(e2) }))
+        }
+      } catch (e3) {
+        // Best-effort: diagnostics must never throw.
+        void e3
+      }
+    }
+  }
   try {
     console.warn(`[chat-session-store:${scope}]`, error)
-  } catch { /* ignore */ }
+  } catch (e) {
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem(storageKey, JSON.stringify({ scope: `chat-session-store:${scope}`, error: String(e) }))
+      }
+    } catch (e2) {
+      // Best-effort only.
+      void e2
+    }
+  }
 }
 
 const _openDb = (): Promise<IDBDatabase> => {
@@ -71,7 +94,8 @@ export const chatSessionStore = {
   isAvailable(): boolean {
     try {
       return typeof indexedDB !== 'undefined'
-    } catch {
+    } catch (e) {
+      _report('isAvailable', e, 'warning')
       return false
     }
   },

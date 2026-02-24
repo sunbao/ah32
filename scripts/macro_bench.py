@@ -1,13 +1,12 @@
 """
-End-to-end-ish JS macro benchmark harness.
+End-to-end-ish Plan JSON benchmark harness.
 
 What it does (no WPS required):
-- Calls backend LLM endpoints to generate / repair JS macros (same APIs used by the frontend).
-- Runs a fast syntax check using Node's `new Function(...)` as a proxy for WPS taskpane parsing failures.
-- Reports failures to `/agentic/error/report` to seed code-quality memory (Top-K rules).
+- Calls backend LLM endpoint to generate Plan JSON (ah32.plan.v1) via streaming API.
+- Collects basic stats: success rate, attempt_count (internal retries), latency, op distribution.
 
 This is NOT a full WPS execution test (we can't invoke WPS JSAPI here). It is a practical
-regression harness for the highest-frequency failure class: SyntaxError / invalid tokens.
+regression harness for the highest-frequency failure class: invalid/empty Plan output.
 """
 
 from __future__ import annotations
@@ -15,10 +14,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import subprocess
-import sys
 import time
-import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -59,8 +55,8 @@ def call_vibe_stream(
     host_app: str,
     capabilities: Optional[Dict[str, Any]] = None,
     timeout_s: int = 1800,
-) -> Tuple[bool, str, Dict[str, Any]]:
-    url = f"{api_base.rstrip('/')}/agentic/js-macro/vibe-coding/stream"
+) -> Tuple[bool, Optional[Dict[str, Any]], Dict[str, Any]]:
+    url = f"{api_base.rstrip('/')}/agentic/js-plan/vibe-coding/stream"
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["X-API-Key"] = api_key
@@ -78,6 +74,7 @@ def call_vibe_stream(
     resp.raise_for_status()
 
     final: Dict[str, Any] = {}
+    stream_error: str = ""
     for line in _read_sse_lines(resp):
         if not line.startswith("data: "):
             continue
@@ -88,145 +85,58 @@ def call_vibe_stream(
             ev = json.loads(data)
         except Exception:
             continue
+        if ev.get("type") == "error":
+            stream_error = str(ev.get("error") or stream_error or "stream error")
         if ev.get("type") == "final_result":
             final = ev.get("result") or {}
 
     dt_ms = int((time.perf_counter() - t0) * 1000)
-    code = str(final.get("code") or "")
-    ok = bool(final.get("success")) and bool(code.strip())
-    meta = {"duration_ms": dt_ms, "attempt_count": final.get("attempt_count"), "raw": final}
-    return ok, code, meta
+    plan = final.get("plan") if isinstance(final, dict) else None
+    ok = bool(final.get("success")) and isinstance(plan, dict)
+    err = ""
+    if not ok:
+        err_obj = final.get("error") if isinstance(final, dict) else None
+        if isinstance(err_obj, dict):
+            err = str(err_obj.get("message") or err_obj.get("type") or "")
+        if not err:
+            err = stream_error or str(final.get("error") or "generate failed")
 
-
-def call_repair(
-    api_base: str,
-    api_key: str,
-    *,
-    code: str,
-    session_id: str,
-    document_name: str,
-    host_app: str,
-    attempt: int,
-    error_type: str,
-    error_message: str,
-    capabilities: Optional[Dict[str, Any]] = None,
-    timeout_s: int = 1800,
-) -> Tuple[bool, str, Dict[str, Any]]:
-    url = f"{api_base.rstrip('/')}/agentic/js-macro/repair"
-    headers = {"Content-Type": "application/json"}
-    if api_key:
-        headers["X-API-Key"] = api_key
-
-    payload = {
-        "session_id": session_id,
-        "document_name": document_name,
-        "host_app": host_app,
-        "capabilities": capabilities or {},
-        "attempt": attempt,
-        "error_type": error_type,
-        "error_message": error_message,
-        "code": code,
+    meta = {
+        "duration_ms": dt_ms,
+        "attempt_count": int(final.get("attempt_count") or 0) if isinstance(final, dict) else 0,
+        "error": err,
     }
-    t0 = time.perf_counter()
-    resp = requests.post(url, headers=headers, data=json.dumps(payload), timeout=timeout_s)
-    resp.raise_for_status()
-    data = resp.json()
-    dt_ms = int((time.perf_counter() - t0) * 1000)
-    fixed = str(data.get("code") or "")
-    ok = bool(data.get("success")) and bool(fixed.strip())
-    return ok, fixed, {"duration_ms": dt_ms, "raw": data}
+    return ok, plan if isinstance(plan, dict) else None, meta
 
 
-def report_error(
-    api_base: str,
-    api_key: str,
-    *,
-    error_type: str,
-    error_message: str,
-    error_code: str,
-    correction_suggestion: str = "",
-    user_context: str = "",
-    severity: str = "medium",
-) -> None:
-    url = f"{api_base.rstrip('/')}/agentic/error/report"
-    headers = {"Content-Type": "application/json"}
-    if api_key:
-        headers["X-API-Key"] = api_key
-    payload = {
-        "error_type": error_type,
-        "error_message": error_message,
-        "error_code": error_code,
-        "correction_suggestion": correction_suggestion,
-        "user_context": user_context,
-        "severity": severity,
-    }
-    try:
-        resp = requests.post(url, headers=headers, data=json.dumps(payload), timeout=20)
-        if not resp.ok:
-            return
-    except Exception:
-        return
-
-
-def syntax_check_with_node(js_code: str) -> Tuple[bool, str]:
-    """
-    Use Node to parse the code via `new Function(...)`.
-    This approximates the WPS taskpane JS engine class of SyntaxErrors.
-    """
-    tmp = os.path.join(os.getcwd(), f"tmp_macro_bench_{uuid.uuid4().hex}.js")
-    runner = os.path.join(os.getcwd(), f"tmp_macro_bench_runner_{uuid.uuid4().hex}.js")
-    try:
-        with open(tmp, "w", encoding="utf-8") as f:
-            f.write(js_code)
-        with open(runner, "w", encoding="utf-8") as f:
-            f.write(
-                "const fs = require('fs');\n"
-                "const path = process.argv[2];\n"
-                "const code = fs.readFileSync(path, 'utf8');\n"
-                "try {\n"
-                "  // Parse only.\n"
-                "  new Function(code);\n"
-                "  process.stdout.write('OK');\n"
-                "} catch (e) {\n"
-                "  process.stdout.write(String(e && (e.name || 'Error')) + ': ' + String(e && e.message || e));\n"
-                "  process.exitCode = 2;\n"
-                "}\n"
-            )
-        cp = subprocess.run(
-            ["node", runner, tmp],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=10,
-        )
-        out = (cp.stdout or "").strip()
-        if cp.returncode == 0 and out == "OK":
-            return True, ""
-        err = out or (cp.stderr or "").strip() or "SyntaxError"
-        return False, err
-    finally:
-        for p in (tmp, runner):
-            try:
-                os.remove(p)
-            except Exception:
-                pass
+def _collect_ops(actions: Any) -> List[str]:
+    ops: List[str] = []
+    if not isinstance(actions, list):
+        return ops
+    for a in actions:
+        if not isinstance(a, dict):
+            continue
+        op = str(a.get("op") or "").strip()
+        if op:
+            ops.append(op)
+        if op == "upsert_block":
+            ops.extend(_collect_ops(a.get("actions")))
+    return ops
 
 
 def bench_one_case(
     api_base: str,
     api_key: str,
     case: Case,
-    *,
-    max_repairs: int,
     document_name: str,
+    include_plan: bool = False,
 ) -> Dict[str, Any]:
     session_id = f"bench_{case.host_app}_{_now_ms()}"
     capabilities = {"host_app": case.host_app, "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
 
     out: Dict[str, Any] = {"case": case.__dict__, "session_id": session_id, "events": []}
 
-    ok, code, meta = call_vibe_stream(
+    ok, plan, meta = call_vibe_stream(
         api_base,
         api_key,
         user_query=case.query,
@@ -235,49 +145,23 @@ def bench_one_case(
         host_app=case.host_app,
         capabilities=capabilities,
     )
-    out["events"].append({"type": "vibe_generate", "ok": ok, "meta": meta, "code_len": len(code)})
-    if not code.strip():
-        return out
-
-    # Parse check. If it fails, report and try repair.
-    cur = code
-    for attempt in range(1, max_repairs + 1):
-        parse_ok, parse_err = syntax_check_with_node(cur)
-        out["events"].append({"type": "syntax_check", "ok": parse_ok, "error": parse_err, "attempt": attempt})
-        if parse_ok:
-            out["final_ok"] = True
-            out["final_code_len"] = len(cur)
-            return out
-
-        report_error(
-            api_base,
-            api_key,
-            error_type="javascript_syntax_error",
-            error_message=f"bench SyntaxError: {parse_err}",
-            error_code=cur[:4000],
-            user_context=f"bench case={case.name} host={case.host_app} attempt={attempt}",
-            severity="medium",
-        )
-
-        rok, fixed, rmeta = call_repair(
-            api_base,
-            api_key,
-            code=cur,
-            session_id=session_id,
-            document_name=document_name,
-            host_app=case.host_app,
-            attempt=attempt,
-            error_type="javascript_syntax_error",
-            error_message=f"bench SyntaxError: {parse_err}",
-            capabilities=capabilities,
-        )
-        out["events"].append({"type": "repair", "ok": rok, "meta": rmeta, "code_len": len(fixed), "attempt": attempt})
-        if not fixed.strip():
-            break
-        cur = fixed
-
-    out["final_ok"] = False
-    out["final_code_len"] = len(cur)
+    ops = _collect_ops(plan.get("actions") if isinstance(plan, dict) else None)
+    out["events"].append(
+        {
+            "type": "plan_generate",
+            "ok": ok,
+            "meta": meta,
+            "plan_len": len(json.dumps(plan, ensure_ascii=False, default=str)) if isinstance(plan, dict) else 0,
+            "ops": ops[:24],
+            "ops_count": len(ops),
+        }
+    )
+    out["final_ok"] = bool(ok)
+    out["final_attempt_count"] = meta.get("attempt_count")
+    out["final_plan_len"] = out["events"][-1].get("plan_len")
+    out["final_ops_count"] = len(ops)
+    if include_plan and isinstance(plan, dict):
+        out["final_plan"] = plan
     return out
 
 
@@ -315,10 +199,10 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--api-base", default=os.getenv("AH32_API_BASE", "http://127.0.0.1:5123"))
     ap.add_argument("--api-key", default=os.getenv("AH32_API_KEY", "test-key"))
-    ap.add_argument("--max-repairs", type=int, default=3)
     ap.add_argument("--document-name", default="bench.doc")
     ap.add_argument("--only-host", choices=["wps", "et", "wpp"], default=None)
     ap.add_argument("--json-out", default="")
+    ap.add_argument("--include-plan", action="store_true", help="Include full plan JSON in output (can be large).")
     args = ap.parse_args()
 
     cases = default_cases()
@@ -332,12 +216,14 @@ def main() -> int:
             args.api_base,
             args.api_key,
             c,
-            max_repairs=args.max_repairs,
             document_name=args.document_name,
+            include_plan=bool(args.include_plan),
         )
         results.append(r)
         ok = bool(r.get("final_ok"))
-        print(f"[bench]   session_id={r.get('session_id')} final_ok={ok} final_code_len={r.get('final_code_len')}")
+        print(
+            f"[bench]   session_id={r.get('session_id')} final_ok={ok} attempt_count={r.get('final_attempt_count')} ops={r.get('final_ops_count')}"
+        )
 
     if args.json_out:
         with open(args.json_out, "w", encoding="utf-8") as f:

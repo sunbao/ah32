@@ -1,0 +1,73 @@
+{
+  "schema_version": "ah32.skill.v1",
+  "meta": {
+    "id": "et-analyzer",
+    "name": "Excel(ET) 数据分析助手",
+    "version": "0.1.0",
+    "enabled": true,
+    "priority": 32,
+    "description": "读取当前工作表/选区数据（通过 active_doc_text 注入），生成分析摘要与可执行 Plan（透视表/排序筛选/格式/图表）。",
+    "group": "et"
+  },
+  "delivery": {
+    "default_writeback": "direct"
+  },
+  "routing": {
+    "hosts": ["et"],
+    "tags": ["Excel", "ET", "数据分析", "透视表", "排序", "筛选", "异常", "图表"],
+    "intents": ["et_analyze", "data_analysis", "pivot"],
+    "triggers": ["excel", "Excel", "ET", "表格", "数据", "分析", "趋势", "占比", "对比", "透视表", "排序", "筛选", "异常", "分布"],
+    "examples": [
+      "分析一下这份销售数据的趋势，做个透视表并生成图表",
+      "看看各产品占比，输出可执行Plan",
+      "检查这份台账有没有异常值/负数/离群点"
+    ]
+  },
+  "capabilities": {
+    "active_doc_text": true,
+    "active_doc_max_chars": 80000
+  },
+  "output": {
+    "markers": ["分析摘要", "可执行Plan", "透视表", "异常"],
+    "output_schema": "优先输出可执行 Plan JSON（schema_version=ah32.plan.v1, host_app=et），用于生成透视表/排序筛选/格式化/（如可用）插入图表；必要时在 meta 中写入 analysis 摘要与口径。若信息不足，用 meta 写清待确认项，不要编造数据。",
+    "max_chars": 4000,
+    "styleSpecHints": {
+      "et": { "table": { "header": { "bold": true, "fill": "#f1f5f9" } } },
+      "group": "et",
+      "schema": "ah32.styleSpecHints.v1"
+    }
+  },
+  "entry": {
+    "system_prompt": "SYSTEM.md"
+  },
+  "tools": [
+    {
+      "name": "data_parser",
+      "description": "解析 TSV/CSV/Markdown 表格为结构化预览（默认读取当前文档，无需传 doc_text）",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "doc_text": { "type": "string", "description": "表格文本（可省略，默认使用当前文档）" },
+          "max_preview_rows": { "type": "integer", "description": "最多返回多少行预览" },
+          "max_cols": { "type": "integer", "description": "最多解析多少列" },
+          "delimiter": { "type": "string", "description": "强制分隔符（\\t 或 ,），为空则自动" }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "anomaly_detector",
+      "description": "基于规则检测数值异常（负数/零值/离群/大额）（默认读取当前文档，无需传 doc_text）",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "doc_text": { "type": "string", "description": "表格文本（可省略，默认使用当前文档）" },
+          "numeric_columns": { "type": "array", "items": { "type": "string" }, "description": "指定要检查的列名；为空则自动推断" },
+          "amount_threshold": { "type": "number", "description": "大额阈值（abs(value) >= threshold）" },
+          "max_results": { "type": "integer", "description": "最多返回多少条异常" }
+        },
+        "required": []
+      }
+    }
+  ]
+}

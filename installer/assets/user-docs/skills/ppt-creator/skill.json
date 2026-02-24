@@ -1,0 +1,44 @@
+{
+  "schema_version": "ah32.skill.v1",
+  "meta": {
+    "id": "ppt-creator",
+    "name": "PPT一键创建助手",
+    "version": "0.1.0",
+    "enabled": true,
+    "priority": 27,
+    "description": "将材料/大纲一键落地为可执行 Plan JSON（host_app=wpp），直接在 WPS PPT 中创建幻灯片。",
+    "group": "ppt"
+  },
+  "delivery": {
+    "default_writeback": "direct"
+  },
+  "routing": {
+    "hosts": ["wpp"],
+    "tags": ["PPT", "创建", "生成", "制作", "一键", "Plan", "WPP"],
+    "intents": ["create_ppt", "make_slides", "ppt_creator"],
+    "triggers": ["创建PPT", "生成PPT", "制作PPT", "一键创建", "自动生成", "直接生成PPT", "可执行Plan", "Plan JSON"],
+    "examples": [
+      "把下面的大纲一键生成PPT（直接创建到WPS里）",
+      "根据这段方案，生成一份10页PPT并自动创建",
+      "把这份汇报材料做成PPT，输出可执行Plan"
+    ]
+  },
+  "output": {
+    "markers": ["Plan JSON", "add_slide", "add_textbox", "add_image", "add_chart", "add_table"],
+    "output_schema": "输出必须且只能是可执行 Plan JSON（schema_version=ah32.plan.v1, host_app=wpp），包含 add_slide/add_textbox/add_image/add_chart/add_table 等 action，可直接在WPS PPT中执行。",
+    "max_chars": 4000,
+    "styleSpecHints": {
+      "wpp": {
+        "theme": {
+          "palette": { "primary": "#2563eb", "accent": "#f59e0b" }
+        },
+        "layout": { "grid": "standard" }
+      },
+      "group": "ppt",
+      "schema": "ah32.styleSpecHints.v1"
+    }
+  },
+  "entry": {
+    "system_prompt": "SYSTEM.md"
+  }
+}

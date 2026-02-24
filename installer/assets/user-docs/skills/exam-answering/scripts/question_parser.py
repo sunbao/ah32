@@ -106,10 +106,12 @@ def _extract_qid(groups: tuple) -> Optional[str]:
 
 def _clean_question_text(text: str) -> str:
     """清理题目文本，去除多余空白。"""
-    # 去除多余换行
-    text = re.sub(r'\n+', ' ', text)
-    # 去除多余空格
-    text = re.sub(r' +', ' ', text)
+    # 统一换行符
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    # 合并多余空行，但保留换行用于选项/材料分段
+    text = re.sub(r"\n{2,}", "\n", text)
+    # 合并多余空格
+    text = re.sub(r"[ \t]+", " ", text)
     return text.strip()
 
 
@@ -118,12 +120,16 @@ def _detect_question_type(text: str) -> str:
     text_lower = text.lower()
 
     # 选择题特征
-    if re.search(r'[ABCD][.。）)]|\([ABCD]\)', text):
+    if re.search(r"[ABCD][\.\uFF0E\u3001\)\uff09]|\([ABCD]\)", text):
         return "choice"
 
     # 填空题特征
     if re.search(r'_{2,}|\(_{2,}\)', text):
         return "fill_blank"
+
+    # 文言文翻译/解释特征
+    if re.search(r"文言文|译文|翻译成现代汉语|翻译下列|解释下列|解释加点", text):
+        return "classical_chinese"
 
     # 阅读题特征
     if re.search(r'阅读[材料]?|阅读理解|短文', text):
@@ -140,7 +146,7 @@ def _detect_question_type(text: str) -> str:
 def _has_options(text: str) -> bool:
     """检查是否有选项。"""
     # A. B. C. D. 或 (A) (B) 等
-    return bool(re.search(r'[ABCD][.。）)]|\([ABCD]\)', text))
+    return bool(re.search(r"[ABCD][\.\uFF0E\u3001\)\uff09]|\([ABCD]\)", text))
 
 
 def _extract_options(text: str) -> List[str]:
@@ -148,13 +154,13 @@ def _extract_options(text: str) -> List[str]:
     options: List[str] = []
 
     # 匹配 A. B. C. D. 格式
-    for match in re.finditer(r'([ABCD])[.。）]\s*([^\n]+)', text):
+    for match in re.finditer(r"([ABCD])[\.\uFF0E\u3001\)\uff09]\s*([^\n]+)", text):
         options.append(f"{match.group(1)}. {match.group(2).strip()}")
 
     # 如果没找到，尝试 (A) (B) 格式
     if not options:
-        for match in re.finditer(r'\([ABCD]\)\s*([^\n]+)', text):
-            options.append(f"({match.group(1)}) {match.group(2).strip()}")
+        for match in re.finditer(r"\(([ABCD])\)\s*([^\n]+)", text):
+            options.append(f"{match.group(1)}. {match.group(2).strip()}")
 
     return options
 

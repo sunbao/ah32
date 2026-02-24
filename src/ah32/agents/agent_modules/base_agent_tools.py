@@ -324,40 +324,101 @@ def get_synced_documents() -> List[Dict]:
 
     """从 documents.json 获取同步的文档列表（同步调用）"""
 
-    try:
+    sync_file = Path.home() / ".ah32" / "sync" / "documents.json"
 
-        sync_file = Path.home() / ".ah32" / "sync" / "documents.json"
-
-        if not sync_file.exists():
-
-            logger.debug(f"同步文档文件不存在: {sync_file}")
-
-            return []
-
-
-
-        with open(sync_file, "r", encoding="utf-8") as f:
-
-            data = json.load(f)
-
-
-
-        docs = data  # documents.json 直接是数组格式
-
-        logger.info(f"[get_synced_documents] 获取到 {len(docs)} 个文档")
-
-        for doc in docs:
-
-            logger.info(f"  - doc: name={doc.get('name')}, path={doc.get('path')}, id={doc.get('id')}")
-
-        return docs
-
-    except Exception as e:
-
-        logger.debug(f"读取同步文档失败: {e.with_traceback()}")
-
+    if not sync_file.exists():
+        logger.debug(f"同步文档文件不存在: {sync_file}")
         return []
 
+    try:
+        with open(sync_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as e:
+        logger.warning(f"读取同步文档文件失败: {sync_file} err={e}", exc_info=True)
+        return []
+
+    try:
+        # Legacy format: documents.json is a plain list[doc].
+        if isinstance(data, list):
+            docs = [d for d in data if isinstance(d, dict)]
+            logger.info(f"[get_synced_documents] 获取到 {len(docs)} 个文档")
+            for doc in docs:
+                logger.info(f"  - doc: name={doc.get('name')}, path={doc.get('path')}, id={doc.get('id')}")
+            return docs
+
+        # v2 format (document_monitor.py):
+        # {
+        #   "version": "...",
+        #   "updated_at": ...,
+        #   "clients": { "<client_id>": { "hosts": { "<host>": {"documents": [...], "last_seen": ...} } } }
+        # }
+        if isinstance(data, dict) and isinstance(data.get("clients"), dict):
+            clients = data.get("clients") or {}
+
+            ttl_sec = 30
+            try:
+                ttl_sec = int(os.environ.get("AH32_DOC_SYNC_TTL_SEC") or "30")
+                ttl_sec = max(5, min(ttl_sec, 3600))
+            except Exception:
+                ttl_sec = 30
+
+            now = time.time()
+            best_client_id = ""
+            best_last_seen = 0.0
+            best_docs: List[Dict[str, Any]] = []
+            union_docs: List[Dict[str, Any]] = []
+
+            for cid, cdata in clients.items():
+                if not isinstance(cdata, dict):
+                    continue
+                hosts = cdata.get("hosts") or {}
+                if not isinstance(hosts, dict):
+                    continue
+
+                client_docs: List[Dict[str, Any]] = []
+                client_last_seen = 0.0
+                for _host, snap in hosts.items():
+                    if not isinstance(snap, dict):
+                        continue
+                    try:
+                        last_seen = float(snap.get("last_seen") or 0.0)
+                    except Exception:
+                        last_seen = 0.0
+                    client_last_seen = max(client_last_seen, last_seen)
+
+                    if last_seen and (now - last_seen) > ttl_sec:
+                        continue
+
+                    docs = snap.get("documents") or []
+                    if isinstance(docs, list):
+                        for d in docs:
+                            if isinstance(d, dict):
+                                client_docs.append(d)
+
+                if client_docs:
+                    union_docs.extend(client_docs)
+                    if client_last_seen > best_last_seen:
+                        best_last_seen = client_last_seen
+                        best_client_id = str(cid)
+                        best_docs = client_docs
+
+            docs_out = best_docs or union_docs
+            logger.info(
+                f"[get_synced_documents] selected client_id={best_client_id or 'unknown'} "
+                f"docs={len(docs_out)} ttl_sec={ttl_sec}"
+            )
+            for doc in docs_out:
+                logger.info(f"  - doc: name={doc.get('name')}, path={doc.get('path')}, id={doc.get('id')}")
+            return docs_out
+
+        # Unknown format.
+        logger.warning(
+            f"[get_synced_documents] documents.json 格式未知，忽略: type={type(data).__name__}"
+        )
+        return []
+    except Exception as e:
+        logger.warning(f"[get_synced_documents] 解析同步文档失败: {e}", exc_info=True)
+        return []
 
 
 

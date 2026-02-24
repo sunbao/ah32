@@ -17,80 +17,21 @@ class ToolExecutor:
 
     async def execute_tool(self, tool_call: Dict[str, Any]) -> str:
         """执行工具调用 - 增加会话级缓存以避免重复外部调用"""
-        tool_name = tool_call["action"]
-        tool_input = tool_call.get("input", "")
-
-        # 构造缓存键，尽量规范化输入以便比较
         try:
-            import json as _json
-            key_input = _json.dumps(tool_input, sort_keys=True, ensure_ascii=False)
-        except Exception:
-            key_input = str(tool_input)
-        cache_key = (tool_name, key_input)
-
-        # increment call counter for observability
-        self._tool_call_counts[cache_key] = self._tool_call_counts.get(cache_key, 0) + 1
-
-        # 返回缓存的结果（如果存在）
-        if cache_key in self._tool_cache:
-            logger.info(f"使用缓存的工具结果: {tool_name} (input fingerprint)")
-            return self._tool_cache[cache_key]
-
-        try:
-            tool = self.agent.tools.get(tool_name)
-            if not tool:
-                return f"错误：未找到工具 '{tool_name}'"
-
-            # 执行工具（传递LLM实例给需要的工具）
-            if tool_name in [
-                "analyze_chapter", "extract_requirements", "extract_responses",
-                "match_requirements", "assess_quality", "assess_risks", "answer_question"
-            ]:
-                # 传递LLM实例进行结构化分析
-                if hasattr(tool, 'arun'):
-                    result = await tool.arun(tool_input, llm=self.agent.llm)
-                else:
-                    result = tool.run(tool_input, llm=self.agent.llm)
-            else:
-                # 其他工具不传递LLM
-                if hasattr(tool, 'arun'):
-                    result = await tool.arun(tool_input)
-                else:
-                    result = tool.run(tool_input)
-
-            result_str = str(result)
-
-            # 将结果写入缓存并返回
-            try:
-                self._tool_cache[cache_key] = result_str
-            except Exception:
-                logger.debug("无法缓存工具结果（可能不可序列化）")
-
-            return result_str
-
+            # Delegate to the canonical executor in ReActAgent to keep protocol consistent
+            # across streaming and non-streaming paths (supports both legacy and skill tools).
+            return await self.agent._execute_tool(tool_call)
         except Exception as e:
-            logger.error(f"执行工具 {tool_name} 失败: {e}")
-            return f"错误：执行工具 '{tool_name}' 失败 - {str(e)}"
+            logger.error(f"执行工具失败: {e}", exc_info=True)
+            return f"错误：执行工具失败 - {str(e)}"
 
     def parse_tool_call(self, llm_response: str) -> Optional[Dict[str, Any]]:
         """解析LLM返回的工具调用"""
         try:
-            cleaned = llm_response.strip()
-            if cleaned.startswith("{{") and cleaned.endswith("}}"):
-                cleaned = cleaned[1:-1].strip()
-
-            # Only parse when the entire response is a JSON object. This prevents
-            # mis-detecting `{ ... }` blocks inside JS macro code as tool calls.
-            if not cleaned.startswith("{"):
-                return None
-
-            import json
-
-            tool_call = json.loads(cleaned)
-
-            # 验证工具调用格式
-            if "action" in tool_call and tool_call["action"] in self.agent.tools:
-                return tool_call
+            # Delegate to canonical parser to support:
+            # - legacy format: {"action": "...", "input": ...}
+            # - skill format: {"name": "...", "arguments": {...}}
+            return self.agent._parse_tool_call(llm_response)
 
         except Exception as e:
             logger.debug(f"解析工具调用失败: {e}")
@@ -196,8 +137,9 @@ class StreamProcessor:
             tool_call = tool_executor.parse_tool_call(response.content)
 
             if tool_call:
-                tool_name = tool_call.get("action", "unknown")
-                tool_input = tool_call.get("input", "")
+                is_skill_format = ("name" in tool_call)
+                tool_name = tool_call.get("name") if is_skill_format else tool_call.get("action", "unknown")
+                tool_input = tool_call.get("arguments") if is_skill_format else tool_call.get("input", "")
 
                 # 记录工具调用（不发送给用户）
                 logger.info(f"=== 工具调用 ===")
@@ -213,7 +155,7 @@ class StreamProcessor:
 
                 # 添加到消息历史（用于内部处理）
                 messages.append(("assistant", response.content))
-                messages.append(("user", f"[内部工具执行结果]"))  # 不包含敏感信息
+                messages.append(("user", f"TOOL_RESULT: {result}"))
 
             else:
                 # 没有工具调用，生成最终响应
@@ -253,7 +195,7 @@ class StreamProcessor:
             ("system", "\n请根据以下信息直接回复用户。不要提及任何执行过程、工具调用或内部操作。\n\n分析结果：\n" + final_info + "\n\n用户问题：" + message + "\n\n要求：\n1. 直接回答问题\n2. 语言自然、简洁\n3. 以专业顾问的口吻\n4. 不要解释你是如何知道的"),
         ]
 
-        # 使用流式响应
+        # 使用流式响应（仅流 reasoning；最终 content 统一走输出护栏，避免泄漏 Plan/工具 JSON）
         full_response = ""
         try:
             # 兼容性检查：确保 astream 返回异步生成器
@@ -275,11 +217,8 @@ class StreamProcessor:
                     else:
                         logger.debug(f"[推理] 流式响应 - 未获取到 reasoning_content")
 
-                    # 然后发送最终内容
                     if hasattr(chunk, 'content') and chunk.content:
-                        content = chunk.content
-                        full_response += content
-                        yield {"type": "content", "content": content, "session_id": session_id}
+                        full_response += chunk.content
             else:
                 # 如果不是异步生成器，直接 await（向后兼容）
                 chunk = await astream_result
@@ -287,7 +226,7 @@ class StreamProcessor:
                     full_response = chunk.content
         except Exception as e:
             # 如果流式失败，回退到非流式
-            logger.warning(f"流式响应失败，回退到非流式: {e}")
+            logger.warning(f"流式响应失败，回退到非流式: {e}", exc_info=True)
             import asyncio
             response = await asyncio.shield(self.agent.llm.ainvoke(final_messages))
 
@@ -303,10 +242,16 @@ class StreamProcessor:
                 logger.debug(f"[推理] 非流式响应 - 未获取到 reasoning_content")
 
             full_response = response.content
-            yield {"type": "content", "content": full_response, "session_id": session_id}
+        processed = full_response
+        try:
+            processed = await self.agent._send_response_with_code_check(full_response, session_id)
+        except Exception:
+            logger.debug("[stream] output guard failed (ignored)", exc_info=True)
+            processed = full_response
 
-        # 保存最终响应
-        self.agent._last_response = full_response
+        yield {"type": "content", "content": processed, "session_id": session_id}
+        # 保存最终响应（保存用户实际看到的）
+        self.agent._last_response = processed
 
     async def _stream_direct_response(self, message: str, session_id: str):
         """流式直接响应（无工具调用时）
@@ -319,6 +264,7 @@ class StreamProcessor:
             ("user", message)
         ]
 
+        # 仅流 reasoning；最终 content 统一走输出护栏，避免 fenced block/Plan/工具 JSON 泄漏
         full_response = ""
         try:
             # 兼容性检查：确保 astream 返回异步生成器
@@ -340,18 +286,15 @@ class StreamProcessor:
                     else:
                         logger.debug(f"[推理] 直接流式响应 - 未获取到 reasoning_content")
 
-                    # 然后发送最终内容
                     if hasattr(chunk, 'content') and chunk.content:
-                        content = chunk.content
-                        full_response += content
-                        yield {"type": "content", "content": content, "session_id": session_id}
+                        full_response += chunk.content
             else:
                 # 如果不是异步生成器，直接 await（向后兼容）
                 chunk = await astream_result
                 if hasattr(chunk, 'content') and chunk.content:
                     full_response = chunk.content
         except Exception as e:
-            logger.warning(f"流式响应失败，回退到非流式: {e}")
+            logger.warning(f"流式响应失败，回退到非流式: {e}", exc_info=True)
             import asyncio
             response = await asyncio.shield(self.agent.llm.ainvoke(messages))
 
@@ -367,6 +310,12 @@ class StreamProcessor:
                 logger.debug(f"[推理] 直接非流式响应 - 未获取到 reasoning_content")
 
             full_response = response.content
-            yield {"type": "content", "content": full_response, "session_id": session_id}
+        processed = full_response
+        try:
+            processed = await self.agent._send_response_with_code_check(full_response, session_id)
+        except Exception:
+            logger.debug("[stream] output guard failed (ignored)", exc_info=True)
+            processed = full_response
 
-        self.agent._last_response = full_response
+        yield {"type": "content", "content": processed, "session_id": session_id}
+        self.agent._last_response = processed

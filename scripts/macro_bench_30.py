@@ -1,11 +1,9 @@
 """
-30-case macro success benchmark (focus: reduce LLM repair loops).
+30-case Plan JSON success benchmark (focus: reduce model retries).
 
-- Generates JS macros via backend /agentic/js-macro/vibe-coding/stream (same as frontend).
-- Executes with a Node stub runner (parse + best-effort runtime stubs).
-  This is not real WPS, but it reliably catches the dominant failure class: SyntaxError + obvious ReferenceError/TypeError.
-- On failure, calls /agentic/js-macro/repair up to N times (default 5).
-  We count how many repair calls were needed (0..N) and measure latency.
+- Generates ah32.plan.v1 via backend `/agentic/js-plan/vibe-coding/stream` (same stream shape as the old JS macro bench).
+- No WPS required: this only validates the backend generation + strict plan schema extraction.
+- Reports attempt_count (1..3) and latency.
 """
 
 from __future__ import annotations
@@ -17,7 +15,6 @@ import socket
 import subprocess
 import sys
 import time
-import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -103,7 +100,7 @@ def _read_sse_lines(resp: requests.Response) -> Iterable[str]:
         yield buf.rstrip("\r")
 
 
-def _call_vibe_stream(
+def _call_plan_vibe_stream(
     api_base: str,
     api_key: str,
     *,
@@ -113,8 +110,8 @@ def _call_vibe_stream(
     host_app: str,
     capabilities: Optional[Dict[str, Any]] = None,
     timeout_s: int = 1800,
-) -> Tuple[bool, str, Dict[str, Any]]:
-    url = f"{api_base.rstrip('/')}/agentic/js-macro/vibe-coding/stream"
+) -> Tuple[bool, Optional[Dict[str, Any]], Dict[str, Any]]:
+    url = f"{api_base.rstrip('/')}/agentic/js-plan/vibe-coding/stream"
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["X-API-Key"] = api_key
@@ -132,6 +129,7 @@ def _call_vibe_stream(
     resp.raise_for_status()
 
     final: Dict[str, Any] = {}
+    stream_error: str = ""
     for line in _read_sse_lines(resp):
         if not line.startswith("data: "):
             continue
@@ -142,160 +140,42 @@ def _call_vibe_stream(
             ev = json.loads(data)
         except Exception:
             continue
+        if ev.get("type") == "error":
+            stream_error = str(ev.get("error") or stream_error or "stream error")
         if ev.get("type") == "final_result":
             final = ev.get("result") or {}
 
     dt_ms = int((time.perf_counter() - t0) * 1000)
-    code = str(final.get("code") or "")
-    ok = bool(final.get("success")) and bool(code.strip())
-    meta = {"duration_ms": dt_ms, "attempt_count": final.get("attempt_count"), "raw": final}
-    return ok, code, meta
-
-
-def _call_generate_fast(
-    api_base: str,
-    api_key: str,
-    *,
-    user_query: str,
-    session_id: str,
-    document_name: str,
-    host_app: str,
-    capabilities: Optional[Dict[str, Any]] = None,
-    timeout_s: int = 1800,
-) -> Tuple[bool, str, Dict[str, Any]]:
-    url = f"{api_base.rstrip('/')}/agentic/js-macro/generate"
-    headers = {"Content-Type": "application/json"}
-    if api_key:
-        headers["X-API-Key"] = api_key
-
-    payload = {
-        "user_query": user_query,
-        "session_id": session_id,
-        "document_name": document_name,
-        "host_app": host_app,
-        "capabilities": capabilities or {},
+    plan = final.get("plan") if isinstance(final, dict) else None
+    ok = bool(final.get("success")) and isinstance(plan, dict)
+    err = ""
+    if not ok:
+        err_obj = final.get("error") if isinstance(final, dict) else None
+        if isinstance(err_obj, dict):
+            err = str(err_obj.get("message") or err_obj.get("type") or "")
+        if not err:
+            err = stream_error or str(final.get("error") or "generate failed")
+    meta = {
+        "duration_ms": dt_ms,
+        "attempt_count": int(final.get("attempt_count") or 0) if isinstance(final, dict) else 0,
+        "error": err,
     }
-    t0 = time.perf_counter()
-    resp = requests.post(url, headers=headers, data=json.dumps(payload), timeout=timeout_s)
-    resp.raise_for_status()
-    data = resp.json()
-    dt_ms = int((time.perf_counter() - t0) * 1000)
-    code = str(data.get("code") or "")
-    ok = bool(data.get("success")) and bool(code.strip())
-    meta = {"duration_ms": int(data.get("duration_ms") or dt_ms), "raw": data}
-    return ok, code, meta
+    return ok, plan if isinstance(plan, dict) else None, meta
 
 
-def _call_repair(
-    api_base: str,
-    api_key: str,
-    *,
-    code: str,
-    session_id: str,
-    document_name: str,
-    host_app: str,
-    attempt: int,
-    error_type: str,
-    error_message: str,
-    capabilities: Optional[Dict[str, Any]] = None,
-    timeout_s: int = 1800,
-) -> Tuple[bool, str, Dict[str, Any]]:
-    url = f"{api_base.rstrip('/')}/agentic/js-macro/repair"
-    headers = {"Content-Type": "application/json"}
-    if api_key:
-        headers["X-API-Key"] = api_key
-
-    payload = {
-        "session_id": session_id,
-        "document_name": document_name,
-        "host_app": host_app,
-        "capabilities": capabilities or {},
-        "attempt": attempt,
-        "error_type": error_type,
-        "error_message": error_message,
-        "code": code,
-    }
-    t0 = time.perf_counter()
-    resp = requests.post(url, headers=headers, data=json.dumps(payload), timeout=timeout_s)
-    resp.raise_for_status()
-    data = resp.json()
-    dt_ms = int((time.perf_counter() - t0) * 1000)
-    fixed = str(data.get("code") or "")
-    ok = bool(data.get("success")) and bool(fixed.strip())
-    return ok, fixed, {"duration_ms": dt_ms, "raw": data}
-
-
-def _report_error(
-    api_base: str,
-    api_key: str,
-    *,
-    error_type: str,
-    error_message: str,
-    error_code: str,
-    correction_suggestion: str = "",
-    user_context: str = "",
-    severity: str = "medium",
-) -> None:
-    url = f"{api_base.rstrip('/')}/agentic/error/report"
-    headers = {"Content-Type": "application/json"}
-    if api_key:
-        headers["X-API-Key"] = api_key
-    payload = {
-        "error_type": error_type,
-        "error_message": error_message,
-        "error_code": error_code,
-        "correction_suggestion": correction_suggestion,
-        "user_context": user_context,
-        "severity": severity,
-    }
-    try:
-        requests.post(url, headers=headers, data=json.dumps(payload), timeout=20)
-    except Exception:
-        return
-
-
-def _classify_err(err: str) -> str:
-    s = (err or "").lower()
-    if "syntaxerror" in s or "unexpected token" in s or "invalid or unexpected token" in s:
-        return "javascript_syntax_error"
-    if "referenceerror" in s or "is not defined" in s:
-        return "javascript_reference_error"
-    if "typeerror" in s:
-        return "javascript_type_error"
-    if "macrosafetyerror" in s:
-        return "macro_safety_error"
-    return "execution_error"
-
-
-def _node_exec(host_app: str, js_code: str) -> Tuple[bool, str, float]:
-    runner = Path("scripts/macro_node_runner.js").resolve()
-    tmp = Path(f"tmp_macro_bench_{uuid.uuid4().hex}.js").resolve()
-    t0 = time.perf_counter()
-    try:
-        tmp.write_text(js_code, encoding="utf-8")
-        cp = subprocess.run(
-            ["node", str(runner), host_app, str(tmp)],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=6,
-        )
-        dt_ms = (time.perf_counter() - t0) * 1000.0
-        out = (cp.stdout or "").strip()
-        try:
-            data = json.loads(out) if out else {}
-        except Exception:
-            data = {}
-        if cp.returncode == 0 and data.get("ok") is True:
-            return True, "", dt_ms
-        err = str(data.get("error") or cp.stderr or out or "exec_failed").strip()
-        return False, err, dt_ms
-    finally:
-        try:
-            tmp.unlink()
-        except Exception:
-            pass
+def _collect_ops(actions: Any) -> List[str]:
+    ops: List[str] = []
+    if not isinstance(actions, list):
+        return ops
+    for a in actions:
+        if not isinstance(a, dict):
+            continue
+        op = str(a.get("op") or "").strip()
+        if op:
+            ops.append(op)
+        if op == "upsert_block":
+            ops.extend(_collect_ops(a.get("actions")))
+    return ops
 
 
 def _write_json_atomic(path: Path, data: Any) -> None:
@@ -351,7 +231,12 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--api-base", default=os.getenv("AH32_API_BASE", "http://127.0.0.1:5123"))
     ap.add_argument("--api-key", default=os.getenv("AH32_API_KEY", "test-key"))
-    ap.add_argument("--max-repairs", type=int, default=5)
+    ap.add_argument(
+        "--max-repairs",
+        type=int,
+        default=5,
+        help="Bucket upper bound only (attempt_count is fixed by backend stream: 1..3).",
+    )
     ap.add_argument("--json-out", default="tmp_macro_bench_30_results.json")
     ap.add_argument(
         "--resume",
@@ -386,7 +271,6 @@ def main() -> int:
     bucket_counts["fail"] = 0  # type: ignore[index]
     total_gen_ms: List[int] = []
     total_ms: List[int] = []
-    total_repair_ms: List[int] = []
 
     if completed_names:
         print(f"[bench30] resume: already have {len(completed_names)}/{len(cases)} cases in {out_path}")
@@ -401,7 +285,7 @@ def main() -> int:
 
         print(f"[bench30] {idx:02d}/30 start host={c.host_app} case={c.name}")
         t_case0 = time.perf_counter()
-        ok_gen, code, meta = _call_generate_fast(
+        ok, plan, meta = _call_plan_vibe_stream(
             args.api_base,
             args.api_key,
             user_query=c.query,
@@ -410,67 +294,20 @@ def main() -> int:
             host_app=c.host_app,
             capabilities=caps,
         )
-        gen_ms = int(meta.get("duration_ms") or 0)
+        gen_ms = int(meta.get("duration_ms") or 0) if isinstance(meta, dict) else 0
         total_gen_ms.append(gen_ms)
 
-        cur = code
-        repairs_used = 0
-        last_err = ""
-        exec_ok = False
-        exec_ms = 0.0
-        repairs_detail: List[Dict[str, Any]] = []
+        attempt_count = int(meta.get("attempt_count") or 0) if isinstance(meta, dict) else 0
+        repairs_used = max(0, attempt_count - 1) if ok else 0
+        if repairs_used > args.max_repairs:
+            repairs_used = args.max_repairs
 
-        if ok_gen and cur.strip():
-            exec_ok, last_err, exec_ms = _node_exec(c.host_app, cur)
-        else:
-            last_err = "generate_failed"
-
-        while not exec_ok and repairs_used < args.max_repairs and cur.strip():
-            repairs_used += 1
-            etype = _classify_err(last_err)
-            _report_error(
-                args.api_base,
-                args.api_key,
-                error_type=etype,
-                error_message=f"bench30 {etype}: {last_err}",
-                error_code=cur[:4000],
-                user_context=f"bench30 case={c.name} host={c.host_app} repair={repairs_used}",
-            )
-            rok, fixed, rmeta = _call_repair(
-                args.api_base,
-                args.api_key,
-                code=cur,
-                session_id=session_id,
-                document_name=doc_name,
-                host_app=c.host_app,
-                attempt=repairs_used,
-                error_type=etype,
-                error_message=f"bench30 {etype}: {last_err}",
-                capabilities=caps,
-            )
-            r_ms = int(rmeta.get("duration_ms") or 0)
-            total_repair_ms.append(r_ms)
-            repairs_detail.append(
-                {
-                    "attempt": repairs_used,
-                    "error_type": etype,
-                    "error_message": last_err[:240],
-                    "repair_ok": rok,
-                    "repair_ms": r_ms,
-                    "code_len": len(fixed or ""),
-                }
-            )
-            # if backend says success but returns empty/identical, stop early
-            if not fixed.strip() or fixed.strip() == cur.strip():
-                last_err = str(rmeta.get("raw", {}).get("error") or "repair_no_change")
-                break
-            cur = fixed
-            exec_ok, last_err, exec_ms = _node_exec(c.host_app, cur)
+        ops = _collect_ops(plan.get("actions") if isinstance(plan, dict) else None)
 
         case_ms = int((time.perf_counter() - t_case0) * 1000)
         total_ms.append(case_ms)
 
-        if exec_ok:
+        if ok:
             bucket_counts[repairs_used] += 1
         else:
             bucket_counts["fail"] += 1  # type: ignore[index]
@@ -478,16 +315,15 @@ def main() -> int:
         row = {
             "case": c.__dict__,
             "session_id": session_id,
-            "generate_ok": ok_gen,
+            "generate_ok": ok,
             "generate_ms": gen_ms,
-            "workflow_attempt_count": None,
+            "workflow_attempt_count": attempt_count,
             "repairs_used": repairs_used,
-            "repairs_detail": repairs_detail,
-            "final_ok": exec_ok,
-            "node_exec_ms": exec_ms,
             "case_ms": case_ms,
-            "last_error": last_err[:300],
-            "final_code_len": len(cur or ""),
+            "last_error": str(meta.get("error") or "")[:300] if isinstance(meta, dict) else "",
+            "plan_len": len(json.dumps(plan, ensure_ascii=False, default=str)) if isinstance(plan, dict) else 0,
+            "ops": ops[:24],
+            "ops_count": len(ops),
         }
         results.append(row)
         # Persist progress after each case, so long-running runs are resumable.
@@ -496,8 +332,8 @@ def main() -> int:
         except Exception:
             pass
         print(
-            f"[bench30] {idx:02d}/30 done ok={exec_ok} repairs={repairs_used} gen_ms={gen_ms} total_ms={case_ms}"
-            + (f" err={last_err[:120]}" if not exec_ok else "")
+            f"[bench30] {idx:02d}/30 done ok={ok} repairs={repairs_used} gen_ms={gen_ms} total_ms={case_ms}"
+            + (f" err={str(meta.get('error') or '')[:120]}" if not ok else "")
         )
 
     _write_json_atomic(out_path, results)
@@ -510,8 +346,6 @@ def main() -> int:
     for i in range(0, args.max_repairs + 1):
         print(f"  ok_with_repairs_{i}: {bucket_counts[i]}")
     print(f"  avg_generate_ms={sum(total_gen_ms)/len(total_gen_ms):.0f}")
-    if total_repair_ms:
-        print(f"  avg_repair_ms={sum(total_repair_ms)/len(total_repair_ms):.0f} (n={len(total_repair_ms)})")
     print(f"  avg_total_ms={sum(total_ms)/len(total_ms):.0f}")
     print(f"  json_out={out_path}")
 

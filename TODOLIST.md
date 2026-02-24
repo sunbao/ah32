@@ -259,3 +259,91 @@
 - 诊断材料：失败用例的宏代码（finalCode）+ 错误（含 frontend_hint）
 - 主代码改动：只改 1-3 个最能提升成功率/体验的点（不要为了让 bench 过而改 bench）
 - 回归验证：最小回归（至少跑 1 个 Writer + 1 个 ET/WPP）
+
+---
+
+## P0/P1 - ah32.plan.v1（ET/WPP/WPS）落地路线图（对齐当前代码现状）
+
+说明：
+- `TODOLIST_ET.md` / `TODOLIST_PPT.md` / `TODOLIST_WRITER.md` 是“愿景规划”（偏场景与能力清单）。
+- 本节把三份规划对齐到“当前代码已经能执行/还不能执行什么”，并给出按依赖顺序可落地的开发路线图（照着做就能逐步交付）。
+
+### 0) Ground Truth（当前已落地）
+
+- [x] Plan Schema：`schema_version=ah32.plan.v1` + `host_app` 严格 gate（`src/ah32/plan/schema.py`）
+- [x] Plan Normalizer：`normalize_plan_payload()`（LLM 输出的 plan 自动做 key/op 纠正、类型收敛与降噪；含 ET 的 `sheet_name+cell/range`、WPP 坐标/数值字段 best-effort 归一与 `add_image` 占位降级）（`src/ah32/plan/normalize.py`）
+- [x] Plan Executor：前端 `PlanExecutor` 已支持按宿主分发执行（`ah32-ui-next/src/services/plan-executor.ts`）
+- [x] Active Doc Text 注入（用于“数据理解/审阅类 skill tools”）：前端会在 `host_app=et` 时附带 `frontend_context.active_doc_text`（来源：`extractDocumentTextById()`；含 `#sheet/#used_range/#selection/#read_range` 元信息）+ `frontend_context.active_et_meta`（结构化元信息）+ `frontend_context.active_et_header_map`（表头映射），后端工具侧自动注入 `doc_text`（`ah32-ui-next/src/services/api.ts` + `ah32-ui-next/src/services/wps-bridge.ts` + `src/ah32/services/docx_extract.py`）
+- [x] WPP（PPT）新增动作：`add_slide/add_textbox/add_image/add_chart/add_table/...` 已在 schema + executor 落地（`src/ah32/plan/schema.py` + `ah32-ui-next/src/services/plan-executor.ts`）
+- [x] WPP 占位符填充（P1 省踩坑）：`add_textbox` 支持 `placeholder_kind/placeholder_type/placeholder_index`（优先填占位符；失败自动降级为坐标放置）（`src/ah32/plan/schema.py` + `ah32-ui-next/src/services/plan-executor.ts`）
+- [x] WPP 内置 skill（Plan 直出）：
+  - `wpp-outline`：只输出可执行 Plan JSON（`installer/assets/user-docs/skills/wpp-outline/*`）
+  - `ppt-outline`：双模式（默认文字；用户明确要求创建 PPT 时输出 Plan JSON）（`installer/assets/user-docs/skills/ppt-outline/*`）
+  - `ppt-creator`：只输出可执行 Plan JSON（`installer/assets/user-docs/skills/ppt-creator/*`）
+- [x] ET（Excel）可执行 op（当前上限）：`create_pivot_table/sort_range/filter_range/set_*` + `insert_table/insert_chart_from_selection`（`src/ah32/plan/schema.py` + `ah32-ui-next/src/services/plan-executor.ts`）
+- [x] Writer（WPS）可执行 op（当前上限）：`set_selection/insert_* / set_text_style/set_paragraph_format/apply_text_style_to_matches / set_writer_table_style / answer_mode_apply / upsert_block/delete_block`（`src/ah32/plan/schema.py` + `ah32-ui-next/src/services/plan-executor.ts`）
+
+### 1) 能力矩阵（按宿主；✅=已实现/可执行，⏳=可用但能力不足，❌=未实现）
+
+| 宿主 | 当前“可执行闭环” | 主要缺口（影响落地） |
+|---|---|---|
+| Writer（wps） | ✅ 块级写回（upsert_block）+ 定位插入（insert_after/before）+ 基本文字样式（set_text_style）+ 块内段落格式（set_paragraph_format，可用 block_id 限定到 upsert_block 内）+ 小范围批量匹配样式（apply_text_style_to_matches，可用 block_id 限定到 upsert_block 内）+ 块内表格样式（set_writer_table_style，可用 block_id/选区限定） | ❌ 全文级结构/样式遍历（标题层级识别/批量统一） |
+| ET（excel） | ✅ 基础分析落地到新 sheet（upsert_block）+ 透视表/排序筛选/公式/格式 + `transform_range(transpose)` | ⏳ 已补 `set_selection(et)` + `active_doc_text` 注入（带 `used_range/selection` 元信息）但仍缺“结构化读数 API”（避免 LLM 猜 range）；⏳ 图表增强已通过 `insert_chart_from_selection` 字段覆盖（趋势线/数据标签 best-effort），但仍缺“从 range 直接建图并布局”的独立 op |
+| WPP（ppt） | ✅ 创建幻灯片 + 文本框/图片/表格/形状 + 主题/切换/动画（best-effort） | ⏳ 图表 data 写入为 best-effort（失败会降级为“仅插入对象”）；⏳ 图片路径/资源管理策略（本地路径可用性不稳定）；⏳ 坐标放置仍然脆弱（优先用占位符填充） |
+
+### 2) 对齐三份规划：哪些可以“现在就做”，哪些必须先补地基
+
+#### 2.1 `TODOLIST_WRITER.md`（Writer）
+
+- [x] 现有可执行动作清单（见 `src/ah32/plan/schema.py` wps 分支）
+- [x] 修正规划中的 op 映射（P0）
+  - [x] “表格美化”在 Writer 应使用 `set_writer_table_style`（该 op 仅对 Writer 生效；并且建议限定到 `block_id` 或当前选区，避免全篇乱改）
+- [x] 新增内置 skills（P1：先落地能跑的版本）
+  - [x] `doc-formatter`：默认产出 `upsert_block` 在文末生成“排版规范+模板块”（`installer/assets/user-docs/skills/doc-formatter/*`）
+  - [x] `doc-editor`：默认“对照表交付”，用 `upsert_block` 生成“修订稿块”（`installer/assets/user-docs/skills/doc-editor/*`）
+  - [x] `doc-analyzer`：输出结构报告（`installer/assets/user-docs/skills/doc-analyzer/*`）
+- [x] 若要实现“全篇自动排版”，先补 Plan 原语（P2）
+  - [x] `apply_paragraph_style`（一次性 deterministic 遍历：在 selection 或 block_id 范围内批量应用字体+段落格式）
+  - [x] `normalize_headings`（一次性 deterministic 遍历：识别 heading 并按 level 统一样式；支持 selection/block_id 限定）
+  - [x] Writer 表格样式：`set_writer_table_style`（已落地：仅建议用于 `block_id` 或当前选区，保守执行）
+
+#### 2.2 `TODOLIST_ET.md`（ET）
+
+- [x] 已实现：透视表/排序筛选/公式/格式/插表/从选区插图（见 `src/ah32/plan/schema.py` et 分支 + `ah32-ui-next/src/services/plan-executor.ts`）
+- [x] 规划与现状不一致项（P0：先改规划，避免“写出来执行不了”）
+  - [x] `transform_range`（已落地：当前实现 `transpose`；`src/ah32/plan/schema.py` + `ah32-ui-next/src/services/plan-executor.ts`）
+  - [x] `add_chart`（ET 不应使用该 op；服务端 normalize 会把 `et:add_chart` best-effort 映射为 `insert_chart_from_selection`）
+  - [x] `set_chart_style/add_trendline/set_chart_data_labels`（不做独立 op：已收敛到 `insert_chart_from_selection` 的字段，执行侧 best-effort）
+- [x] 先补“范围/选区地基”（P0 → P1，强依赖）
+  - [x] ET 定位类 op：`set_selection` 扩展到 ET（按 `A1` 或 `A1:D10` 选择范围；`sheet_name + cell/range`）（`src/ah32/plan/schema.py` + `ah32-ui-next/src/services/plan-executor.ts`）
+  - [x] ET 范围元信息：`active_et_meta` 已提供 `sheet_name/used_range_a1/selection_a1`（减少 LLM 猜 range；`ah32-ui-next/src/services/wps-bridge.ts`）
+  - [x] ET 结构化读数 API（P1）：已提供 `wpsBridge.readEtRangeById(docId, {sheet_name, range_a1, maxRows/maxCols/maxCells}) -> values[][]`，且 `active_doc_text` 的 ET 预览改为使用该 bounded read（带 `limit_cells/max_chars/truncated_by_char_budget` 元信息；`ah32-ui-next/src/services/wps-bridge.ts` + `ah32-ui-next/src/services/api.ts`）
+- [x] 再补“图表最小闭环”（P1）
+  - [x] `insert_chart_from_selection`：支持 `title/legend` + `add_trendline/show_data_labels`（best-effort；`src/ah32/plan/schema.py` + `ah32-ui-next/src/services/plan-executor.ts`）
+  - [x] `add_chart_et`（不单独做 op：ET 的 `insert_chart_from_selection` 已支持 `sheet_name + source_range` 直接选定范围并建图）
+- [x] 最后做“智能分析推荐”（P1/P2）
+- [x] `et-analyzer` skill：声明 `capabilities.active_doc_text=true`，用 `data_parser/anomaly_detector` 做 deterministic 摘要（`installer/assets/user-docs/skills/et-analyzer/*`）
+  - [x] `et-visualizer` skill：把“推荐图表”收敛到已支持的 chart op 子集（`installer/assets/user-docs/skills/et-visualizer/*`）
+
+#### 2.3 `TODOLIST_PPT.md`（WPP）
+
+- [x] WPP 基础建稿闭环已具备（创建页 + 内容填充 + 样式 best-effort）
+- [x] `ppt-outline` 已支持“用户明确要求时输出 Plan”（双模式），`ppt-creator` 已提供“一键创建”入口
+- [x] 规划的“图表 data 直写”（P1，best-effort）
+  - [x] `add_chart`：补 ChartData 写入；失败时降级为“仅插入图表对象”（`ah32-ui-next/src/services/plan-executor.ts`）
+- [x] 图片资源策略（P1）
+  - [x] 执行侧容错：`add_image` 插入失败时自动降级为“占位形状”，保证 Plan 可继续执行（`ah32-ui-next/src/services/plan-executor.ts`）
+  - [x] URL best-effort：当 `add_image.path` 为 `http(s)://...` 且 `AddPicture` 失败时，前端会尝试“同步下载图片字节 -> 写入剪贴板 -> 在 Slide 粘贴”为图片（失败再继续降级为占位形状；`ah32-ui-next/src/services/plan-executor.ts`）
+  - [x] 资源库（Plan 级）：支持 `meta.resources.images=[{id,data_url}]` + `add_image.path="res:<id>"` 复用资源（减少路径/重复下载翻车；`ah32-ui-next/src/services/plan-executor.ts`）
+  - [x] 下载生命周期（Plan 内）：对同一 URL 进行 best-effort 复用缓存（避免重复下载/重复粘贴；`ah32-ui-next/src/services/plan-executor.ts`）
+- [x] 版式/占位（P1）
+  - [x] `wpp-outline` tools 已有 `recommend_layout/get_placeholder_map`（脚本已存在）
+  - [x] 把占位映射用于 `add_textbox` 自动放置：未显式给占位/坐标时，执行侧会优先填充空的 title/body 占位符，并在坐标兜底时尽量用占位框尺寸（`ah32-ui-next/src/services/plan-executor.ts`）
+
+### 3) 推荐开发顺序（按依赖；做完一项就能交付一个可用闭环）
+
+1. Writer：补 `doc-formatter/doc-editor/doc-analyzer`（先“块级交付”，不做全篇遍历）
+2. ET：补“选区/UsedRange 结构化读取 API”（让 Plan 不再靠猜 range）
+3. ET：补最小图表闭环（`add_chart_et`：从明确 range 创建图表）
+4. WPP：补图片资源策略 + 占位映射落地（避免路径/坐标拍脑袋）
+5. 三宿主统一：把能力探测/降级（capability_matrix）覆盖到关键 op，并在 UI 可见

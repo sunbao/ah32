@@ -88,6 +88,9 @@
   "entry": {
     "system_prompt": "SYSTEM.md"
   },
+  "capabilities": {
+    "rag_missing_hint": true
+  },
   "tools": [
     {
       "name": "generate_timeline",
@@ -141,6 +144,115 @@
           }
         },
         "required": []
+      }
+    },
+    {
+      "name": "check_policy_update",
+      "description": "手动触发政策更新检查（默认24小时TTL缓存），并将新增政策保存为结构化JSON到 data/rag/policies/（可写时）。抓取失败会返回缓存并提示原因。",
+      "hints": {
+        "turn_mode": "background",
+        "triggers": [
+          "政策更新",
+          "检查政策更新",
+          "抓取最新政策",
+          "抓取政策",
+          "政策入库",
+          "同步政策"
+        ]
+      },
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "force_refresh": {
+            "type": "boolean",
+            "description": "是否强制刷新（跳过TTL）"
+          },
+          "ttl_hours": {
+            "type": "integer",
+            "description": "缓存有效期（小时），默认24"
+          },
+          "max_items": {
+            "type": "integer",
+            "description": "最多抓取的政策条数，默认10"
+          },
+          "record_trace": {
+            "type": "boolean",
+            "description": "是否记录Playwright trace（落盘到storage/browser_traces/），默认false"
+          },
+          "timeout_ms": {
+            "type": "integer",
+            "description": "页面超时（毫秒），默认30000"
+          }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "get_latest_policies",
+      "description": "读取本地 data/rag/policies/*.json（或fallback到storage）并按发布日期倒序返回最新政策摘要列表。",
+      "hints": {
+        "turn_mode": "background",
+        "triggers": [
+          "最新政策",
+          "查看政策",
+          "列出政策",
+          "政策列表"
+        ]
+      },
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "description": "返回条数，默认10"
+          }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "ingest_url_to_rag",
+      "description": "抓取网页URL正文（纯文本）并导入到RAG向量库；支持scope=global|project（项目优先需提供context_document_path以推导项目）。抓取失败会返回可诊断原因（不可达/超时/验证码/登录/正文为空），兜底建议用户粘贴纯文本或上传文件导入。",
+      "hints": {
+        "turn_mode": "background",
+        "triggers": [
+          "URL入库",
+          "抓取URL",
+          "抓取网页入库",
+          "爬取入库",
+          "把链接导入RAG",
+          "导入网页"
+        ]
+      },
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string",
+            "description": "要抓取并入库的网页URL（http/https）"
+          },
+          "title": {
+            "type": "string",
+            "description": "可选：入库文档标题（不填则用网页title或final_url）"
+          },
+          "scope": {
+            "type": "string",
+            "description": "可选：global|project；不填时默认：若能从context_document_path推导项目则project，否则global"
+          },
+          "context_document_path": {
+            "type": "string",
+            "description": "可选：当前项目/文档路径，用于推导项目范围（project scope）"
+          },
+          "record_trace": {
+            "type": "boolean",
+            "description": "可选：是否记录Playwright trace（用于定位抓取失败）"
+          },
+          "timeout_ms": {
+            "type": "integer",
+            "description": "可选：页面超时（毫秒）"
+          }
+        },
+        "required": ["url"]
       }
     }
   ]

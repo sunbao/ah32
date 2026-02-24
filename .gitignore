@@ -41,6 +41,8 @@ ah32-ui/.idea/
 .claude/
 
 # Codex / local agent artifacts
+.codex/
+openspec/
 .codex-loop*/
 .coverage
 scripts/ralph_codex_loop.sh

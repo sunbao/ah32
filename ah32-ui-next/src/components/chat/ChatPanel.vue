@@ -319,7 +319,7 @@
 import { ChatDotRound, Link, WarningFilled, Close, Document, Search, StarFilled, Plus, Delete, Promotion, CircleClose } from '@element-plus/icons-vue'
 import { useChatStore } from '@/stores/chat'
 import { useDocumentStore } from '@/stores/document'
-import { wpsBridge } from '@/services/wps-bridge'
+import { WPSHelper, wpsBridge } from '@/services/wps-bridge'
 import { logger } from '@/utils/logger'
 	import RememberMemoryDialog from './RememberMemoryDialog.vue'
 	import { memoryApi, type MemoryPatch } from '@/services/memory-api'
@@ -896,6 +896,93 @@ const cancelMessage = () => {
 // 其他复杂操作（如写入、搜索、分析）都由后端 Agent 自主判断
 const handleDocumentCommand = async (message: string): Promise<boolean> => {
   const lowerMsg = message.toLowerCase()
+
+  // Dev helper: execute a Plan JSON directly (no LLM / no macro queue).
+  //
+  // Usage:
+  // - `/plan { ... }`
+  // - `/plan ```json\\n{ ... }\\n``` ` (fences are tolerated best-effort)
+  if (lowerMsg.trim().startsWith('/plan')) {
+    try {
+      const trimmed = String(message || '').trim()
+      const jsonRaw = trimmed.replace(/^\/plan\b/i, '').trim()
+      if (!jsonRaw) {
+        ElMessage.info('用法：/plan <ah32.plan.v1 的 JSON>（不会发送到后端，会直接执行写回）')
+        inputText.value = message
+        return true
+      }
+
+      const stripFences = (s: string): string => {
+        let t = String(s || '').trim()
+        if (!t) return t
+        if (t.startsWith('```')) {
+          t = t.replace(/^```[a-z0-9_.-]*\s*/i, '').replace(/```$/i, '').trim()
+        }
+        const nl = t.indexOf('\n')
+        if (nl > 0 && nl <= 20) {
+          const first = t.slice(0, nl).trim().toLowerCase()
+          const rest = t.slice(nl + 1).trim()
+          if ((first === 'json' || first === 'plan' || first.startsWith('ah32')) && rest.startsWith('{')) {
+            t = rest
+          }
+        }
+        return t
+      }
+
+      let plan: any = null
+      try {
+        plan = JSON.parse(stripFences(jsonRaw))
+      } catch (e) {
+        ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/components/chat/ChatPanel.vue', e)
+        try {
+          ;(globalThis as any).__ah32_logToBackend?.(
+            `[UI] /plan JSON.parse failed: ${String((e as any)?.message || e)}`,
+            'warning'
+          )
+        } catch (e2) {
+          ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/components/chat/ChatPanel.vue', e2)
+        }
+        ElMessage.error('Plan JSON 解析失败：请确认粘贴的是完整 JSON（以 { 开头，以 } 结尾）')
+        inputText.value = message
+        return true
+      }
+
+      const schemaVersion = String(plan?.schema_version || plan?.schemaVersion || plan?.schema || '').trim()
+      if (schemaVersion !== 'ah32.plan.v1') {
+        ElMessage.error('不是可执行的 Plan JSON：schema_version 必须是 \"ah32.plan.v1\"')
+        inputText.value = message
+        return true
+      }
+
+      try {
+        chatStore.addSystemMessage('[Plan] 开始执行（/plan 直执行，不会走模型/修复环）')
+      } catch (e) {
+        ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/components/chat/ChatPanel.vue', e)
+      }
+      const res = await WPSHelper.executePlan(plan)
+      const ok = !!res?.success
+      const msg = String(res?.message || (ok ? 'ok' : 'failed'))
+      try {
+        if (ok) chatStore.addSystemMessage(`[Plan] 执行成功：${msg}`)
+        else chatStore.addSystemMessage(`[Plan] 执行失败：${msg}`)
+      } catch (e) {
+        ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/components/chat/ChatPanel.vue', e)
+      }
+      if (ok) ElMessage.success('Plan 执行成功')
+      else ElMessage.error(`Plan 执行失败：${msg}`)
+      return true
+    } catch (e: any) {
+      ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/components/chat/ChatPanel.vue', e)
+      try {
+        ;(globalThis as any).__ah32_logToBackend?.(`[UI] /plan fatal: ${String(e?.message || e)}`, 'error')
+      } catch (e2) {
+        ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/components/chat/ChatPanel.vue', e2)
+      }
+      ElMessage.error(`Plan 执行异常：${String(e?.message || e || 'unknown_error')}`)
+      inputText.value = message
+      return true
+    }
+  }
 
   // 简单操作模式匹配（只有完全匹配特定模式才由前端处理）
   // 这些是用户意图非常明确的简单操作

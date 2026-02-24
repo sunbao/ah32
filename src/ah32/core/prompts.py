@@ -236,7 +236,7 @@ class PromptManager:
 
 - 不输出长篇推理；最多 3 条要点。
 
-        - 需要操作文档时：输出一个可执行的 ```json``` Plan（严格 JSON，不要代码解释/HTML）。
+        - 需要操作文档时：只输出一个可执行的 Plan JSON（严格 JSON，不要 Markdown/代码解释/HTML）。
         - schema_version 必须是 "ah32.plan.v1"，host_app 必须与当前宿主一致（wps/et/wpp）。
         - 优先使用 op=upsert_block 保证幂等；id/block_id 必须匹配 /^[a-zA-Z0-9_\\-:.]{1,64}$/。
         - 不要输出 JS/VBA/宏代码。
@@ -343,9 +343,9 @@ class PromptManager:
 
 - 分析/回答：最多 3 条要点。
 
-        - 生成计划：先一句话说明要做什么，然后只输出一个 ```json``` 代码块（仅 JSON）。
+        - 生成计划：只输出一个严格 JSON 对象（不要 Markdown/不要代码围栏/不要额外解释）。
 
-- 如果上下文里有 “RAG命中片段”：必须基于片段回答，并在回答里引用 `source`（简短即可）。
+- 如果上下文里有 “RAG命中片段”：必须基于片段回答。默认不要在正文/写回中展示 `source`/URL（避免影响排版）；仅当用户明确要求“出处/来源/引用/链接”时，才在回答末尾用“来源：”列出最少必要的 `source`/URL。
 
 
 
@@ -353,7 +353,7 @@ class PromptManager:
 
 如果你需要调用工具，不要输出解释，直接输出一个 JSON：
 
-{"action": "<tool_name>", "input": <tool_input>}
+{"name": "<tool_name>", "arguments": { ... }}
 
 
 
