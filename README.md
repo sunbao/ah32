@@ -16,6 +16,11 @@
 
 推荐通过 GitHub Releases 分发与安装（插件 zip、后端压缩包）。打包与发布说明见：`PACKAGING.md`。
 
+## 联系
+
+- 优先通过 GitHub Issues 反馈问题（建议附截图/日志/复现步骤）。
+- 如需快速沟通/合作对接：微信 `abaokaimen`（备注：AH32/GitHub）。
+
 ### 安装 WPS 插件（连接远程后端）
 
 1) 下载 `Ah32WpsPlugin.zip` 并解压
