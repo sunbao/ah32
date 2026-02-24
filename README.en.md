@@ -1,18 +1,18 @@
 # AH32 (Aha)
 
+[English](README.en.md) | [中文](README.md)
+
 AH32 (product name: **Aha**) is a local-first office assistant for **WPS Office**. Inspired by the overall architecture and interaction patterns of *VibeCoding*, it helps users extract value from everyday office documents (summarization, alignment, search, structured notes, etc.) through **chat + executable actions** (default: writeback via Plan JSON).
 
 Note: due to historical reasons, the backend Python package directory remains `src/ah32/` (import path is still `ah32`).
-
-- Chinese README: `README.md`
 
 ## Core Capabilities (incl. Bidding/Tendering)
 
 - **Skill-based scenarios**: Skills for different business scenarios (e.g., bidding docs analysis, compliance checks, meeting minutes, PPT/spreadsheet assistance). A router selects the best skill automatically or via user intent.
 - **Bidding/tendering (example: `bidding-helper`)**: Generates structured outputs that can be used directly in the workflow, such as compliance/deviation matrices, clarification questions, risks & recommendations, and milestone timelines.
 - **RAG (retrieval augmentation)**: Knowledge bases (contracts, cases, templates, policies) can come from user uploads/imports, or from URL ingestion into the RAG library for later retrieval in conversations.
-- **Missing-library awareness**: If a scenario relies on RAG but retrieval returns no hits, the system explicitly reports “no hits / library needs data” and guides the user to upload materials or provide URLs for ingestion.
-- **Source display policy**: By default, sources/URLs are not shown in the main body or writeback content to avoid messing up formatting; sources are appended only when users explicitly ask for “source/citation/link”.
+- **Missing-library awareness**: If a scenario relies on RAG but retrieval returns no hits, the system explicitly reports "no hits / library needs data" and guides the user to upload materials or provide URLs for ingestion.
+- **Source display policy**: By default, sources/URLs are not shown in the main body or writeback content to avoid messing up formatting; sources are appended only when users explicitly ask for "source/citation/link".
 
 ## Download & Install
 
