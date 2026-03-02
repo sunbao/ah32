@@ -14,6 +14,8 @@ import tempfile
 import asyncio
 import uuid
 
+import uuid
+
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -29,8 +31,25 @@ from ah32.knowledge.project_rag_index import (
 )
 from ah32.config import settings
 
+async def require_rag_tenancy(req: Request):
+    """Enforce tenant/user/auth context for /api/rag/* endpoints.
+
+    /api/rag is not under /agentic, so it doesn't pass through the agentic middleware.
+    We intentionally reuse the same header rules to prevent cross-tenant access.
+    """
+    trace_id = (
+        str(req.headers.get("X-AH32-Trace-Id") or "").strip()
+        or str(req.headers.get("X-Trace-Id") or "").strip()
+        or uuid.uuid4().hex
+    )
+    from ah32.security.request_context import bind_tenancy_for_request
+
+    with bind_tenancy_for_request(req, trace_id=trace_id):
+        yield
+
+
 # 创建路由
-router = APIRouter(prefix="/api/rag", tags=["RAG知识库"])
+router = APIRouter(prefix="/api/rag", tags=["RAG知识库"], dependencies=[Depends(require_rag_tenancy)])
 
 # ----------------------------
 # Shared path mode: client path -> backend path mapping
@@ -131,19 +150,42 @@ def _apply_path_mapping(client_path: str) -> Tuple[str, Optional[Dict[str, str]]
     return cp, None
 
 # 全局向量存储引用（从main.py获取）
-def get_vector_store():
-    """获取全局向量存储实例"""
-    from ah32.server.main import app
-    if hasattr(app.state, '_vector_store'):
-        return app.state._vector_store
+async def get_vector_store(req: Request):
+    """Get tenant-scoped vector store for this request.
+
+    NOTE:
+    - /api/rag/* is NOT under /agentic/*, so it does not go through the agentic middleware.
+    - We still require the same tenant/user headers here to avoid cross-tenant data access.
+    """
+    tenant_id = str(getattr(req.state, "tenant_id", "") or "").strip() or str(
+        getattr(settings, "default_tenant_id", "public") or "public"
+    ).strip()
+
+    registry = getattr(req.app.state, "_tenant_vector_stores", None)
+    if registry is not None:
+        yield registry.get_rag_store(tenant_id)
+        return
+
+    if hasattr(req.app.state, "_vector_store"):
+        yield req.app.state._vector_store
+        return
+
     raise HTTPException(status_code=500, detail="向量存储未初始化")
 
 
 def _get_project_index(vector_store) -> ProjectRagIndex:
-    """Get (and cache) the project/global membership index next to the vector store."""
+    """Get (and cache) the project/global membership index next to the vector store (tenant-scoped)."""
     from ah32.server.main import app
+    from ah32.tenancy.context import get_tenant_id
 
-    idx = getattr(app.state, "_project_rag_index", None)
+    tenant_id = str(get_tenant_id() or "").strip() or str(getattr(settings, "default_tenant_id", "public") or "public").strip()
+
+    by_tenant = getattr(app.state, "_project_rag_index_by_tenant", None)
+    if not isinstance(by_tenant, dict):
+        by_tenant = {}
+        setattr(app.state, "_project_rag_index_by_tenant", by_tenant)
+
+    idx = by_tenant.get(tenant_id)
     try:
         persist_dir = Path(getattr(vector_store, "persist_path"))
     except Exception:
@@ -176,7 +218,7 @@ def _get_project_index(vector_store) -> ProjectRagIndex:
         except Exception as e:
             logger.warning(f"[rag] project index bootstrap failed: {e}", exc_info=True)
 
-        app.state._project_rag_index = idx
+        by_tenant[tenant_id] = idx
 
     return idx
 
@@ -323,35 +365,35 @@ class RagTaskState(BaseModel):
     error: Optional[str] = None
 
 
-_rag_tasks: Dict[str, RagTaskState] = {}
-_rag_task_queues: Dict[str, asyncio.Queue] = {}
-_rag_async_tasks: Dict[str, asyncio.Task] = {}
+_rag_tasks_by_tenant: Dict[str, Dict[str, RagTaskState]] = {}
+_rag_task_queues_by_tenant: Dict[str, Dict[str, asyncio.Queue]] = {}
+_rag_async_tasks_by_tenant: Dict[str, Dict[str, asyncio.Task]] = {}
 
 
 def _now_ts() -> float:
     return time.time()
 
 
-def _task_emit(task_id: str, payload: Dict[str, Any]) -> None:
+def _task_emit(*, tenant_id: str, task_id: str, payload: Dict[str, Any]) -> None:
     """Push a progress/event payload to task queue if present."""
-    q = _rag_task_queues.get(task_id)
+    q = (_rag_task_queues_by_tenant.get(str(tenant_id or "").strip() or "public") or {}).get(task_id)
     if not q:
         return
     try:
         q.put_nowait(payload)
     except Exception:
         # Best-effort; don't block ingestion.
-        logger.warning("[rag] task emit failed task_id=%s", task_id, exc_info=True)
+        logger.warning("[rag] task emit failed tenant_id=%s task_id=%s", tenant_id, task_id, exc_info=True)
 
 
-def _task_update(task_id: str, **updates) -> None:
-    task = _rag_tasks.get(task_id)
+def _task_update(*, tenant_id: str, task_id: str, **updates) -> None:
+    task = (_rag_tasks_by_tenant.get(str(tenant_id or "").strip() or "public") or {}).get(task_id)
     if not task:
         return
     for k, v in updates.items():
         setattr(task, k, v)
     task.updatedAt = _now_ts()
-    _task_emit(task_id, {"type": "task", "data": task.model_dump()})
+    _task_emit(tenant_id=tenant_id, task_id=task_id, payload={"type": "task", "data": task.model_dump()})
 
 
 # 工具函数
@@ -1243,6 +1285,18 @@ async def get_document_detail(documentPath: str, limit: int = 50, vector_store=D
 async def batch_import_documents(request: BatchImportRequest, vector_store=Depends(get_vector_store)):
     """批量导入文档"""
     try:
+        tenant_id = str(getattr(getattr(request, "state", None), "tenant_id", "") or "").strip()
+        # NOTE: request here is the payload model, not FastAPI Request. Use contextvars.
+        if not tenant_id:
+            try:
+                from ah32.tenancy.context import get_tenant_id as _get_tid
+
+                tenant_id = str(_get_tid() or "").strip()
+            except Exception:
+                tenant_id = ""
+        if not tenant_id:
+            tenant_id = str(getattr(settings, "default_tenant_id", "public") or "public").strip()
+
         # Start an async ingestion task and return immediately (no fixed timeout on frontend).
         task_id = f"rag_{uuid.uuid4().hex[:12]}"
         state = RagTaskState(
@@ -1254,14 +1308,14 @@ async def batch_import_documents(request: BatchImportRequest, vector_store=Depen
             createdAt=_now_ts(),
             updatedAt=_now_ts(),
         )
-        _rag_tasks[task_id] = state
-        _rag_task_queues[task_id] = asyncio.Queue()
+        _rag_tasks_by_tenant.setdefault(tenant_id, {})[task_id] = state
+        _rag_task_queues_by_tenant.setdefault(tenant_id, {})[task_id] = asyncio.Queue()
 
         async def _runner():
             try:
                 # Yield to event loop so the HTTP response can be sent before heavy work starts.
                 await asyncio.sleep(0)
-                _task_update(task_id, status="running", currentStep="开始入库", progress=1)
+                _task_update(tenant_id=tenant_id, task_id=task_id, status="running", currentStep="开始入库", progress=1)
                 proj_idx = _get_project_index(vector_store)
                 scope = (request.scope or "").strip().lower()
                 if scope not in ("global", "project"):
@@ -1272,7 +1326,7 @@ async def batch_import_documents(request: BatchImportRequest, vector_store=Depen
 
                 docs = request.documents or []
                 if (not docs) and request.directory:
-                    _task_update(task_id, currentStep="扫描目录中...", progress=3)
+                    _task_update(tenant_id=tenant_id, task_id=task_id, currentStep="扫描目录中...", progress=3)
                     # Scan in a worker thread to avoid blocking the event loop (prevents request timeouts).
                     docs = await asyncio.to_thread(
                         _scan_directory_for_import,
@@ -1283,7 +1337,7 @@ async def batch_import_documents(request: BatchImportRequest, vector_store=Depen
                     )
                     if not docs:
                         raise ValueError("未扫描到可导入的文档（当前仅支持 txt/md/doc/docx）")
-                    _task_update(task_id, currentStep=f"扫描完成，发现 {len(docs)} 个文档，开始入库", progress=8)
+                    _task_update(tenant_id=tenant_id, task_id=task_id, currentStep=f"扫描完成，发现 {len(docs)} 个文档，开始入库", progress=8)
 
                 if not docs:
                     raise ValueError("documents 为空，且未提供 directory")
@@ -1294,11 +1348,12 @@ async def batch_import_documents(request: BatchImportRequest, vector_store=Depen
 
                 for i, doc_info in enumerate(docs):
                     # Cancellation check
-                    if task_id in _rag_async_tasks and _rag_async_tasks[task_id].cancelled():
+                    if task_id in (_rag_async_tasks_by_tenant.get(tenant_id) or {}) and (_rag_async_tasks_by_tenant.get(tenant_id) or {})[task_id].cancelled():
                         raise asyncio.CancelledError()
 
                     _task_update(
-                        task_id,
+                        tenant_id=tenant_id,
+                        task_id=task_id,
                         currentStep=f"入库中: {doc_info.name} ({i+1}/{len(docs)})",
                         progress=min(99, int((i / total) * 90) + 5),
                     )
@@ -1348,7 +1403,8 @@ async def batch_import_documents(request: BatchImportRequest, vector_store=Depen
                     logger.warning(f"[rag] project index save failed: {e}", exc_info=True)
 
                 _task_update(
-                    task_id,
+                    tenant_id=tenant_id,
+                    task_id=task_id,
                     status="completed",
                     progress=100,
                     currentStep="入库完成",
@@ -1360,11 +1416,11 @@ async def batch_import_documents(request: BatchImportRequest, vector_store=Depen
                     },
                 )
             except asyncio.CancelledError:
-                _task_update(task_id, status="cancelled", currentStep="已取消", progress=0)
+                _task_update(tenant_id=tenant_id, task_id=task_id, status="cancelled", currentStep="已取消", progress=0)
             except Exception as e:
-                _task_update(task_id, status="failed", currentStep="入库失败", error=str(e))
+                _task_update(tenant_id=tenant_id, task_id=task_id, status="failed", currentStep="入库失败", error=str(e))
 
-        _rag_async_tasks[task_id] = asyncio.create_task(_runner())
+        _rag_async_tasks_by_tenant.setdefault(tenant_id, {})[task_id] = asyncio.create_task(_runner())
 
         return {
             "success": True,
@@ -1415,6 +1471,15 @@ async def _read_upload_file_content(upload: UploadFile) -> Tuple[str, str]:
 async def upload_text_documents(request: UploadTextRequest, vector_store=Depends(get_vector_store)):
     """Upload-to-RAG: client sends text, backend embeds without filesystem access."""
     try:
+        try:
+            from ah32.tenancy.context import get_tenant_id as _get_tid
+
+            tenant_id = str(_get_tid() or "").strip()
+        except Exception:
+            tenant_id = ""
+        if not tenant_id:
+            tenant_id = str(getattr(settings, "default_tenant_id", "public") or "public").strip()
+
         task_id = f"rag_{uuid.uuid4().hex[:12]}"
         state = RagTaskState(
             taskId=task_id,
@@ -1425,13 +1490,13 @@ async def upload_text_documents(request: UploadTextRequest, vector_store=Depends
             createdAt=_now_ts(),
             updatedAt=_now_ts(),
         )
-        _rag_tasks[task_id] = state
-        _rag_task_queues[task_id] = asyncio.Queue()
+        _rag_tasks_by_tenant.setdefault(tenant_id, {})[task_id] = state
+        _rag_task_queues_by_tenant.setdefault(tenant_id, {})[task_id] = asyncio.Queue()
 
         async def _runner():
             try:
                 await asyncio.sleep(0)
-                _task_update(task_id, status="running", currentStep="开始入库", progress=1)
+                _task_update(tenant_id=tenant_id, task_id=task_id, status="running", currentStep="开始入库", progress=1)
                 proj_idx = _get_project_index(vector_store)
 
                 items = request.items or []
@@ -1444,11 +1509,12 @@ async def upload_text_documents(request: UploadTextRequest, vector_store=Depends
                 results: List[Dict[str, Any]] = []
 
                 for i, item in enumerate(items):
-                    if task_id in _rag_async_tasks and _rag_async_tasks[task_id].cancelled():
+                    if task_id in (_rag_async_tasks_by_tenant.get(tenant_id) or {}) and (_rag_async_tasks_by_tenant.get(tenant_id) or {})[task_id].cancelled():
                         raise asyncio.CancelledError()
 
                     _task_update(
-                        task_id,
+                        tenant_id=tenant_id,
+                        task_id=task_id,
                         currentStep=f"入库中: {item.name} ({i+1}/{len(items)})",
                         progress=min(99, int((i / total) * 90) + 5),
                     )
@@ -1490,7 +1556,8 @@ async def upload_text_documents(request: UploadTextRequest, vector_store=Depends
                     logger.warning(f"[rag] project index save failed: {e}", exc_info=True)
 
                 _task_update(
-                    task_id,
+                    tenant_id=tenant_id,
+                    task_id=task_id,
                     status="completed",
                     progress=100,
                     currentStep="入库完成",
@@ -1502,11 +1569,11 @@ async def upload_text_documents(request: UploadTextRequest, vector_store=Depends
                     },
                 )
             except asyncio.CancelledError:
-                _task_update(task_id, status="cancelled", currentStep="已取消", progress=0)
+                _task_update(tenant_id=tenant_id, task_id=task_id, status="cancelled", currentStep="已取消", progress=0)
             except Exception as e:
-                _task_update(task_id, status="failed", currentStep="入库失败", error=str(e))
+                _task_update(tenant_id=tenant_id, task_id=task_id, status="failed", currentStep="入库失败", error=str(e))
 
-        _rag_async_tasks[task_id] = asyncio.create_task(_runner())
+        _rag_async_tasks_by_tenant.setdefault(tenant_id, {})[task_id] = asyncio.create_task(_runner())
         return {"success": True, "message": "已创建入库任务", "data": {"taskId": task_id, "task": state.model_dump()}}
     except Exception as e:
         logger.error(f"upload-text 入库失败: {e}")
@@ -1523,6 +1590,15 @@ async def upload_files_documents(
 ):
     """Upload-to-RAG: multipart file upload -> text extract -> embed."""
     try:
+        try:
+            from ah32.tenancy.context import get_tenant_id as _get_tid
+
+            tenant_id = str(_get_tid() or "").strip()
+        except Exception:
+            tenant_id = ""
+        if not tenant_id:
+            tenant_id = str(getattr(settings, "default_tenant_id", "public") or "public").strip()
+
         task_id = f"rag_{uuid.uuid4().hex[:12]}"
         state = RagTaskState(
             taskId=task_id,
@@ -1533,13 +1609,13 @@ async def upload_files_documents(
             createdAt=_now_ts(),
             updatedAt=_now_ts(),
         )
-        _rag_tasks[task_id] = state
-        _rag_task_queues[task_id] = asyncio.Queue()
+        _rag_tasks_by_tenant.setdefault(tenant_id, {})[task_id] = state
+        _rag_task_queues_by_tenant.setdefault(tenant_id, {})[task_id] = asyncio.Queue()
 
         async def _runner():
             try:
                 await asyncio.sleep(0)
-                _task_update(task_id, status="running", currentStep="开始入库", progress=1)
+                _task_update(tenant_id=tenant_id, task_id=task_id, status="running", currentStep="开始入库", progress=1)
                 proj_idx = _get_project_index(vector_store)
 
                 total = max(len(files or []), 1)
@@ -1548,11 +1624,12 @@ async def upload_files_documents(
                 results: List[Dict[str, Any]] = []
 
                 for i, f in enumerate(files or []):
-                    if task_id in _rag_async_tasks and _rag_async_tasks[task_id].cancelled():
+                    if task_id in (_rag_async_tasks_by_tenant.get(tenant_id) or {}) and (_rag_async_tasks_by_tenant.get(tenant_id) or {})[task_id].cancelled():
                         raise asyncio.CancelledError()
 
                     _task_update(
-                        task_id,
+                        tenant_id=tenant_id,
+                        task_id=task_id,
                         currentStep=f"解析/入库中: {(f.filename or 'upload')} ({i+1}/{len(files)})",
                         progress=min(99, int((i / total) * 90) + 5),
                     )
@@ -1593,7 +1670,8 @@ async def upload_files_documents(
                     logger.warning(f"[rag] project index save failed: {e}", exc_info=True)
 
                 _task_update(
-                    task_id,
+                    tenant_id=tenant_id,
+                    task_id=task_id,
                     status="completed",
                     progress=100,
                     currentStep="入库完成",
@@ -1605,11 +1683,11 @@ async def upload_files_documents(
                     },
                 )
             except asyncio.CancelledError:
-                _task_update(task_id, status="cancelled", currentStep="已取消", progress=0)
+                _task_update(tenant_id=tenant_id, task_id=task_id, status="cancelled", currentStep="已取消", progress=0)
             except Exception as e:
-                _task_update(task_id, status="failed", currentStep="入库失败", error=str(e))
+                _task_update(tenant_id=tenant_id, task_id=task_id, status="failed", currentStep="入库失败", error=str(e))
 
-        _rag_async_tasks[task_id] = asyncio.create_task(_runner())
+        _rag_async_tasks_by_tenant.setdefault(tenant_id, {})[task_id] = asyncio.create_task(_runner())
         return {"success": True, "message": "已创建入库任务", "data": {"taskId": task_id, "task": state.model_dump()}}
     except Exception as e:
         logger.error(f"upload-files 入库失败: {e}")
@@ -1618,14 +1696,27 @@ async def upload_files_documents(
 @router.get("/tasks")
 async def get_import_tasks():
     """获取导入任务状态"""
+    try:
+        from ah32.tenancy.context import get_tenant_id as _get_tid
+
+        tenant_id = str(_get_tid() or "").strip() or str(getattr(settings, "default_tenant_id", "public") or "public").strip()
+    except Exception:
+        tenant_id = str(getattr(settings, "default_tenant_id", "public") or "public").strip()
     return {
         "success": True,
-        "data": [t.model_dump() for t in _rag_tasks.values()]
+        "data": [t.model_dump() for t in (_rag_tasks_by_tenant.get(tenant_id) or {}).values()]
     }
 
 @router.get("/tasks/{taskId}")
 async def get_import_task_status(taskId: str):
-    task = _rag_tasks.get(taskId)
+    try:
+        from ah32.tenancy.context import get_tenant_id as _get_tid
+
+        tenant_id = str(_get_tid() or "").strip() or str(getattr(settings, "default_tenant_id", "public") or "public").strip()
+    except Exception:
+        tenant_id = str(getattr(settings, "default_tenant_id", "public") or "public").strip()
+
+    task = (_rag_tasks_by_tenant.get(tenant_id) or {}).get(taskId)
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
     return {"success": True, "data": task.model_dump()}
@@ -1633,14 +1724,22 @@ async def get_import_task_status(taskId: str):
 @router.get("/tasks/{taskId}/stream")
 async def stream_import_task(taskId: str):
     """SSE stream for task updates (event-driven, no polling)."""
-    task = _rag_tasks.get(taskId)
+    try:
+        from ah32.tenancy.context import get_tenant_id as _get_tid
+
+        tenant_id = str(_get_tid() or "").strip() or str(getattr(settings, "default_tenant_id", "public") or "public").strip()
+    except Exception:
+        tenant_id = str(getattr(settings, "default_tenant_id", "public") or "public").strip()
+
+    task = (_rag_tasks_by_tenant.get(tenant_id) or {}).get(taskId)
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
 
-    q = _rag_task_queues.get(taskId)
+    qmap = _rag_task_queues_by_tenant.setdefault(tenant_id, {})
+    q = qmap.get(taskId)
     if not q:
-        _rag_task_queues[taskId] = asyncio.Queue()
-        q = _rag_task_queues[taskId]
+        qmap[taskId] = asyncio.Queue()
+        q = qmap[taskId]
 
     async def event_gen():
         # send initial snapshot
@@ -1655,7 +1754,7 @@ async def stream_import_task(taskId: str):
                 yield f"event: {ev_type}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
                 # Stop streaming on terminal state.
-                state = _rag_tasks.get(taskId)
+                state = (_rag_tasks_by_tenant.get(tenant_id) or {}).get(taskId)
                 if state and state.status in ("completed", "failed", "cancelled"):
                     break
             except asyncio.TimeoutError:
@@ -1667,10 +1766,17 @@ async def stream_import_task(taskId: str):
 @router.post("/tasks/{taskId}/cancel")
 async def cancel_import_task(taskId: str):
     """取消导入任务"""
-    t = _rag_async_tasks.get(taskId)
+    try:
+        from ah32.tenancy.context import get_tenant_id as _get_tid
+
+        tenant_id = str(_get_tid() or "").strip() or str(getattr(settings, "default_tenant_id", "public") or "public").strip()
+    except Exception:
+        tenant_id = str(getattr(settings, "default_tenant_id", "public") or "public").strip()
+
+    t = (_rag_async_tasks_by_tenant.get(tenant_id) or {}).get(taskId)
     if t and not t.done():
         t.cancel()
-    _task_update(taskId, status="cancelled", currentStep="已取消", progress=0)
+    _task_update(tenant_id=tenant_id, task_id=taskId, status="cancelled", currentStep="已取消", progress=0)
     return {
         "success": True,
         "message": "任务已取消"

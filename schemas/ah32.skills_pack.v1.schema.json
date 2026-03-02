@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AH32 Skills Pack (v1)",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["schema_version", "pack_hash", "host_app", "skills"],
+  "properties": {
+    "schema_version": { "type": "string", "const": "ah32.skills_pack.v1" },
+    "tenant_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "client_id": { "type": "string", "minLength": 0, "maxLength": 128 },
+    "host_app": { "type": "string", "enum": ["wps", "et", "wpp", "unknown"] },
+    "pack_hash": { "type": "string", "minLength": 8, "maxLength": 128 },
+    "skills": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 50,
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["skill_id", "name", "prompt_text"],
+        "properties": {
+          "skill_id": { "type": "string", "minLength": 2, "maxLength": 64, "pattern": "^[a-z0-9][a-z0-9\\-_]{1,63}$" },
+          "name": { "type": "string", "minLength": 1, "maxLength": 128 },
+          "version": { "type": "string", "minLength": 0, "maxLength": 64 },
+          "priority": { "type": "integer", "minimum": -1000, "maximum": 1000 },
+          "enabled": { "type": "boolean" },
+          "description": { "type": "string", "maxLength": 2000 },
+          "group": { "type": "string", "maxLength": 64 },
+          "default_writeback": { "type": "string", "maxLength": 64 },
+          "hosts": {
+            "type": "array",
+            "items": { "type": "string", "maxLength": 32 },
+            "maxItems": 16
+          },
+          "tags": { "type": "array", "items": { "type": "string", "maxLength": 64 }, "maxItems": 64 },
+          "intents": { "type": "array", "items": { "type": "string", "maxLength": 64 }, "maxItems": 64 },
+          "triggers": { "type": "array", "items": { "type": "string", "maxLength": 80 }, "maxItems": 80 },
+          "examples": { "type": "array", "items": { "type": "string", "maxLength": 500 }, "maxItems": 30 },
+          "output_schema": { "type": "string", "maxLength": 20000 },
+          "style_spec_hints": { "type": "string", "maxLength": 20000 },
+          "markers": { "type": "array", "items": { "type": "string", "maxLength": 80 }, "maxItems": 40 },
+          "capabilities": { "type": "object", "additionalProperties": true },
+          "prompt_text": { "type": "string", "minLength": 1, "maxLength": 200000 }
+        }
+      }
+    }
+  }
+}
+

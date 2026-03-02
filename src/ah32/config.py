@@ -110,7 +110,33 @@ def _default_user_documents_dir() -> Path:
     return home
 
 
-
+def _default_llm_tool_allowlist() -> str:
+    # Default backend LLM tool allowlist for "chat mode":
+    # - Allow: read/query/view + web fetch/crawl + ingest-from-web + image generation.
+    # - Disallow: local file import (manual via UI), and destructive RAG admin operations.
+    return ",".join(
+        [
+            # Document read/analysis (non-destructive)
+            "list_open_documents",
+            "read_document",
+            "document_memory",
+            "quick_analyze",
+            "generate_report",
+            "export_analysis",
+            "get_user_preferences",
+            "calculate_date",
+            # Web fetch / browser crawl (backend strong tools)
+            "web_fetch",
+            "browser_snapshot",
+            # RAG (read + ingest-from-web; no delete/clear)
+            "rag_search",
+            "rag_stats",
+            "rag_list_documents",
+            "rag_ingest_url",
+            # Multimodal (image)
+            "mm_generate_image",
+        ]
+    )
 
 
 class Ah32Settings(BaseSettings):
@@ -147,6 +173,28 @@ class Ah32Settings(BaseSettings):
     memory_vector_dirname: str = Field(default="memory_vector_store")
 
     logs_dirname: str = Field(default="logs")
+    doc_snapshots_dirname: str = Field(default="doc_snapshots", description="Ephemeral per-turn document snapshots.")
+    assets_dirname: str = Field(default="assets", description="Ephemeral generated assets (images).")
+
+    # Doc snapshot transport (ephemeral, privacy-first)
+    doc_snapshot_ttl_sec: int = Field(
+        default=1800,
+        description="TTL seconds for doc snapshots (crash-safety only; normal flow deletes immediately).",
+    )
+    doc_snapshot_max_bytes: int = Field(
+        default=200_000_000,
+        description="Max upload bytes for a single doc snapshot (safety cap).",
+    )
+
+    # Asset store (ephemeral, privacy-first)
+    asset_ttl_sec_default: int = Field(
+        default=600,
+        description="Default TTL seconds for assets (crash-safety; frontend should DELETE after use).",
+    )
+    asset_max_bytes: int = Field(
+        default=20_000_000,
+        description="Max bytes for a single asset upload (safety cap).",
+    )
 
 
 
@@ -270,6 +318,28 @@ class Ah32Settings(BaseSettings):
 
     )
 
+    # Multimodal (v1): image understanding + image generation (ephemeral assets).
+    mm_provider: str = Field(
+        default="disabled",
+        description="Multimodal provider: bailian|openai-compatible|disabled",
+    )
+    mm_strict: bool = Field(
+        default=True,
+        description="Strict mode for multimodal: missing keys/models -> error (no silent fallback).",
+    )
+
+    # Bailian (阿里百炼) — recommended default for multimodal
+    bailian_api_key: Optional[str] = Field(default=None, description="Bailian API key (AH32_BAILIAN_API_KEY).")
+    bailian_base_url: str = Field(default="", description="Bailian base URL (OpenAI-compatible).")
+    bailian_vision_model: str = Field(default="qwen-vl-max", description="Bailian vision model id.")
+    bailian_image_model: str = Field(default="", description="Bailian image generation model id.")
+
+    # Generic OpenAI-compatible multimodal provider (optional)
+    mm_api_key: Optional[str] = Field(default=None, description="OpenAI-compatible MM API key (AH32_MM_API_KEY).")
+    mm_base_url: str = Field(default="", description="OpenAI-compatible MM base URL (e.g. https://.../v1).")
+    mm_vision_model: str = Field(default="", description="OpenAI-compatible vision model id.")
+    mm_image_model: str = Field(default="", description="OpenAI-compatible image model id.")
+
     # GPU配置
 
     enable_gpu: bool = Field(
@@ -345,6 +415,36 @@ class Ah32Settings(BaseSettings):
 
         description="Minimum routing score for a skill to be considered relevant (embedding router).",
 
+    )
+
+    llm_tool_allowlist: str = Field(
+        default_factory=_default_llm_tool_allowlist,
+        description=(
+            "Comma-separated tool names allowed for backend LLM tool-calls. "
+            "Set AH32_LLM_TOOL_ALLOWLIST to override."
+        ),
+    )
+
+    # Client-managed skills pack (remote backend mode)
+    skills_pack_max_total_chars: int = Field(
+        default=12000,
+        description="Max total characters allowed for a client-sent skills_pack (prompt_text + schemas).",
+    )
+    skills_pack_max_skill_chars: int = Field(
+        default=8000,
+        description="Max characters allowed for a single skill prompt_text in skills_pack.",
+    )
+    skills_pack_max_skills: int = Field(
+        default=6,
+        description="Max number of skills allowed in a single skills_pack.",
+    )
+    skills_pack_store_ttl_seconds: int = Field(
+        default=3600,
+        description="TTL seconds for in-memory skills_pack_ref cache (crash-safety only; not persistent).",
+    )
+    skills_pack_store_max_sessions: int = Field(
+        default=5000,
+        description="Max cached skills_pack refs across sessions (best-effort bound).",
     )
 
 
@@ -486,6 +586,44 @@ class Ah32Settings(BaseSettings):
         description="API key for authentication. Must be set in production environment."
 
     )
+
+    default_tenant_id: str = Field(
+        default="public",
+        description="Default tenant id when X-AH32-Tenant-Id is missing (for trial/experience users).",
+    )
+
+    max_tenants: int = Field(default=100, description="Maximum number of tenants supported by local keyring.")
+
+    tenant_keyring_path: Optional[Path] = Field(
+        default=None,
+        description="Local tenant keyring file path (default: storage/tenants/keyring.json). Not committed.",
+    )
+
+    tenant_keyring_reload_sec: int = Field(
+        default=5,
+        description="Keyring reload interval in seconds (best-effort).",
+    )
+
+    auth_accept_legacy_x_api_key: bool = Field(
+        default=True,
+        description="Accept legacy X-API-Key header as alias of X-AH32-Api-Key.",
+    )
+
+    auth_allow_default_tenant_anonymous: bool = Field(
+        default=True,
+        description="When enable_auth=true, allow anonymous access for default_tenant_id (trial/experience mode).",
+    )
+
+    jwt_secret: str = Field(
+        default="",
+        description="JWT HS256 secret for issuing/verifying tokens (AH32_JWT_SECRET).",
+    )
+
+    jwt_issuer: str = Field(default="ah32", description="JWT issuer claim (iss).")
+
+    jwt_audience: str = Field(default="ah32", description="JWT audience claim (aud).")
+
+    jwt_access_token_ttl_sec: int = Field(default=3600, description="JWT access token TTL in seconds.")
 
 
 
@@ -714,6 +852,14 @@ class Ah32Settings(BaseSettings):
 
         return self.storage_root / self.logs_dirname
 
+    @property
+    def doc_snapshots_path(self) -> Path:
+        return self.storage_root / self.doc_snapshots_dirname
+
+    @property
+    def assets_path(self) -> Path:
+        return self.storage_root / self.assets_dirname
+
 
 
     @field_validator("storage_root", mode="before")
@@ -801,6 +947,8 @@ class Ah32Settings(BaseSettings):
             self.skills_vector_store_path,
             self.memory_vector_store_path,
             self.logs_path,
+            self.doc_snapshots_path,
+            self.assets_path,
         ):
 
             path.mkdir(parents=True, exist_ok=True)

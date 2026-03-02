@@ -14,6 +14,8 @@ import { chatSessionStore } from '@/services/chat-session-store'
 import {useSessionStore} from '@/stores/session'
 import {logger} from '@/utils/logger'
 import {getRuntimeConfig} from '@/utils/runtime-config'
+import { getClientSkillsCatalog } from '@/services/skills-catalog'
+import { routeClientSkillSelection } from '@/services/skill-router'
 
 // ==================== 工具调用相关 ====================
 
@@ -2734,10 +2736,10 @@ export const useChatStore = defineStore('chat', () => {
             const hostApp = String(args?.docContext?.hostApp || wpsBridge.getHostApp() || 'wps').trim()
             const plan = {
                 schema_version: 'ah32.plan.v1',
-                host_app: (hostApp === 'et' || hostApp === 'wpp') ? hostApp : 'wps',
+                host_app: 'wps',
                 meta: { kind: 'rollback' },
                 actions: [
-                    { id: `rollback_${blockId}`.slice(0, 64), title: 'Rollback block', op: 'delete_block', block_id: blockId },
+                    { id: `rollback_${blockId}`.slice(0, 64), title: 'Rollback block', op: 'rollback_block', block_id: blockId },
                 ],
             }
             const codeToRun = JSON.stringify(plan)
@@ -3618,16 +3620,31 @@ export const useChatStore = defineStore('chat', () => {
                 }
             }
 
+            const hostAppForRouting = String(docContext?.hostApp || wpsBridge.getHostApp() || '')
+            let clientSkillSelection: any = null
+            try {
+                const catalog = await getClientSkillsCatalog()
+                const lastPrimary = rt.selectedSkills && rt.selectedSkills.length > 0 ? String(rt.selectedSkills[0]?.id || '') : ''
+                clientSkillSelection = routeClientSkillSelection({
+                    message: backendContent,
+                    hostApp: hostAppForRouting,
+                    catalog,
+                    lastPrimarySkillId: lastPrimary || null,
+                })
+            } catch (e) {
+              ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/stores/chat.ts', e)
+                clientSkillSelection = null
+            }
+
             const combinedFrontendContextPatch = (() => {
                 const base =
                     options?.frontendContextPatch && typeof options.frontendContextPatch === 'object'
                         ? { ...(options.frontendContextPatch as any) }
                         : {}
-                const hostApp = String(docContext?.hostApp || wpsBridge.getHostApp() || '')
                 const rc = {
                     run_id: rt.turnRunId,
                     mode: 'chat',
-                    host_app: hostApp,
+                    host_app: hostAppForRouting,
                     doc_id: docContext?.docId,
                     doc_key: docContext?.docKey,
                     session_id: sendSid,
@@ -3640,6 +3657,13 @@ export const useChatStore = defineStore('chat', () => {
                 } catch (e: any) {
                     logger.debug('[chat] merge run_context failed', e)
                     ;(base as any).run_context = rc
+                }
+                try {
+                    if (clientSkillSelection && typeof clientSkillSelection === 'object') {
+                        ;(base as any).client_skill_selection = clientSkillSelection
+                    }
+                } catch (e: any) {
+                    logger.debug('[chat] attach client_skill_selection failed', e)
                 }
                 return base
             })()
@@ -4086,7 +4110,17 @@ export const useChatStore = defineStore('chat', () => {
                             rt.streamPhase = 'error'
                             rt.isSending = false
                             rt.isThinking = false
-                            throw new Error(data?.message || data?.error || '未知错误')
+                            {
+                                const traceId = String((data as any)?.trace_id || (data as any)?.traceId || '').trim()
+                                const tenantId = String((data as any)?.tenant_id || (data as any)?.tenantId || '').trim()
+                                const baseMsg = String((data as any)?.message || (data as any)?.error || '未知错误')
+                                const parts = [
+                                    traceId ? `trace_id=${traceId}` : '',
+                                    tenantId ? `tenant_id=${tenantId}` : '',
+                                ].filter(Boolean)
+                                const suffix = parts.length ? ` (${parts.join(' ')})` : ''
+                                throw new Error(`${baseMsg}${suffix}`)
+                            }
                     }
                 },
                 rt.abortController || undefined,

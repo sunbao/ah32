@@ -2,6 +2,8 @@ import { wpsBridge, type WPSHostApp } from './wps-bridge'
 import { logger } from '@/utils/logger'
 import { reportAuditEvent } from './audit-client'
 import { emitTelemetryEvent } from './telemetry'
+import { getRuntimeConfig } from '@/utils/runtime-config'
+import { getClientId } from '@/utils/client-id'
 
 type PlanDiagLevel = 'info' | 'warning' | 'error'
 const _planDiagLastAt: Record<PlanDiagLevel, number> = { info: 0, warning: 0, error: 0 }
@@ -47,6 +49,35 @@ const _errMsg = (error: unknown): string => {
   } catch (e) {
     ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e)
     return 'unknown error'
+  }
+}
+
+const _redactImageRefForLog = (raw: string): string => {
+  try {
+    const s = String(raw || '').trim()
+    if (!s) return ''
+    if (/^asset:\/\//i.test(s)) {
+      const id = s.replace(/^asset:\/\//i, '').trim()
+      return id ? `asset://${id}` : 'asset://'
+    }
+    if (/^data:image\//i.test(s) || /;base64,/i.test(s) || /^data:/i.test(s)) {
+      return `data_url(len=${s.length})`
+    }
+    if (/^https?:\/\//i.test(s)) {
+      // Avoid logging long query strings/tokens.
+      try {
+        const u = new URL(s)
+        const host = u.host || ''
+        const path = u.pathname || ''
+        return `url(${host}${path})`
+      } catch (_e) {
+        return 'url'
+      }
+    }
+    return s.length > 180 ? `${s.slice(0, 180)}…` : s
+  } catch (e) {
+    ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e)
+    return 'image_ref'
   }
 }
 
@@ -135,6 +166,17 @@ export interface InsertWordArtAction extends PlanBaseAction {
   size?: number | null
   bold?: boolean | null
   italic?: boolean | null
+}
+
+export interface InsertImageAction extends PlanBaseAction {
+  op: 'insert_image'
+  path: string
+  width?: number | null
+  height?: number | null
+  // ET-only (best-effort): anchor a position by selecting a range/cell on a sheet.
+  sheet_name?: string | null
+  cell?: string | null
+  range?: string | null
 }
 
 export interface SetTextStyleAction extends PlanBaseAction {
@@ -540,6 +582,11 @@ export interface DeleteBlockAction extends PlanBaseAction {
   block_id: string
 }
 
+export interface RollbackBlockAction extends PlanBaseAction {
+  op: 'rollback_block'
+  block_id: string
+}
+
 export interface UpsertBlockAction extends PlanBaseAction {
   op: 'upsert_block'
   block_id: string
@@ -557,6 +604,7 @@ export type PlanAction =
   | InsertTableAction
   | InsertChartFromSelectionAction
   | InsertWordArtAction
+  | InsertImageAction
   | SetTextStyleAction
   | SetParagraphFormatAction
   | ApplyParagraphStyleAction
@@ -595,6 +643,7 @@ export type PlanAction =
   // 通用操作
   | AnswerModeApplyAction
   | DeleteBlockAction
+  | RollbackBlockAction
   | UpsertBlockAction
 
 export interface Plan {
@@ -812,6 +861,7 @@ export class PlanExecutor {
         'delete_block',
         'set_selection',
         'insert_text',
+        'insert_image',
         'insert_table',
         'insert_chart_from_selection',
         'set_cell_formula',
@@ -856,6 +906,7 @@ export class PlanExecutor {
     return new Set([
       'upsert_block',
       'delete_block',
+      'rollback_block',
       'set_selection',
       'insert_text',
       'insert_after_text',
@@ -863,6 +914,7 @@ export class PlanExecutor {
       'insert_table',
       'insert_chart_from_selection',
       'insert_word_art',
+      'insert_image',
       'set_text_style',
       'set_paragraph_format',
       'apply_paragraph_style',
@@ -925,23 +977,25 @@ export class PlanExecutor {
     const isPlainObject = (v: any): v is Record<string, any> =>
       !!v && typeof v === 'object' && !Array.isArray(v)
 
-    const normOp = (op: any) => {
-      const s = String(op || '').trim()
-      const map: Record<string, string> = {
-        upsertBlock: 'upsert_block',
-        deleteBlock: 'delete_block',
-        insertText: 'insert_text',
-        insertAfterText: 'insert_after_text',
-        insertBeforeText: 'insert_before_text',
-        insertTable: 'insert_table',
-        insertChartFromSelection: 'insert_chart_from_selection',
-        insert_chart: 'insert_chart_from_selection',
-        insertWordArt: 'insert_word_art',
-        setTextStyle: 'set_text_style',
-        setWriterTableStyle: 'set_writer_table_style',
-        applyParagraphStyle: 'apply_paragraph_style',
-        normalizeHeadings: 'normalize_headings',
-        setCellFormula: 'set_cell_formula',
+      const normOp = (op: any) => {
+        const s = String(op || '').trim()
+        const map: Record<string, string> = {
+          upsertBlock: 'upsert_block',
+          deleteBlock: 'delete_block',
+          rollbackBlock: 'rollback_block',
+          insertText: 'insert_text',
+          insertAfterText: 'insert_after_text',
+          insertBeforeText: 'insert_before_text',
+          insertTable: 'insert_table',
+          insertChartFromSelection: 'insert_chart_from_selection',
+          insert_chart: 'insert_chart_from_selection',
+          insertWordArt: 'insert_word_art',
+          insertImage: 'insert_image',
+          setTextStyle: 'set_text_style',
+          setWriterTableStyle: 'set_writer_table_style',
+          applyParagraphStyle: 'apply_paragraph_style',
+          normalizeHeadings: 'normalize_headings',
+          setCellFormula: 'set_cell_formula',
         setNumberFormat: 'set_number_format',
         setConditionalFormat: 'set_conditional_format',
         setDataValidation: 'set_data_validation',
@@ -1000,6 +1054,7 @@ export class PlanExecutor {
           hasHeader: 'has_header',
           visibleDropdown: 'visible_dropdown',
           sourceRange: 'source_range',
+          sheetName: 'sheet_name',
           tableName: 'table_name',
           replaceExisting: 'replace_existing',
           valueFields: 'values',
@@ -1369,6 +1424,9 @@ export class PlanExecutor {
       case 'insert_word_art':
         this.insertWordArt(ctx.doc, ctx.selection, action)
         return
+      case 'insert_image':
+        this.insertImageWps(ctx.app, ctx.doc, ctx.selection, action as any)
+        return
       case 'set_text_style':
         this.setTextStyle(ctx.doc, ctx.selection, action as any)
         return
@@ -1392,6 +1450,9 @@ export class PlanExecutor {
         return
       case 'delete_block':
         this.deleteBlock(ctx.doc, action.block_id)
+        return
+      case 'rollback_block':
+        this.rollbackBlock(ctx.doc, (action as any).block_id)
         return
       case 'upsert_block':
         if (!Array.isArray((action as any).actions) || (action as any).actions.length === 0) {
@@ -2683,6 +2744,205 @@ export class PlanExecutor {
     // Attempting to assign it may throw and can destabilize the taskpane runtime.
   }
 
+  private insertImageWps(app: any, doc: any, selection: any, action: InsertImageAction) {
+    const raw = String((action as any)?.path || '').trim()
+    const widthCm = (action as any)?.width != null ? Number((action as any).width) : null
+    const heightCm = (action as any)?.height != null ? Number((action as any).height) : null
+    const widthPt = widthCm && Number.isFinite(widthCm) && widthCm > 0 ? widthCm * 28.35 : null
+    const heightPt = heightCm && Number.isFinite(heightCm) && heightCm > 0 ? heightCm * 28.35 : null
+
+    const emitInsertImageEvent = (payload: Record<string, any>) => {
+      try {
+        emitTelemetryEvent('plan.insert_image', payload, { mode: 'plan', host_app: 'wps' })
+      } catch (e) {
+        ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e)
+      }
+    }
+
+    const insertPlaceholder = (reason: string) => {
+      const msg = `【图片未插入】原因：${String(reason || 'unknown').slice(0, 200)}\n路径：${raw.slice(0, 300)}`
+      try {
+        this.insertText(selection, msg, true, true)
+      } catch (e) {
+        ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e)
+        // If even placeholder can't be inserted, rethrow to stop the plan (we have no visible fallback).
+        throw e
+      }
+    }
+
+    const tryAddPicture = (p: string): any | null => {
+      const path = String(p || '').trim()
+      if (!path) return null
+      try {
+        const r = this.safe(() => selection?.Range)
+        // Prefer InlineShapes at cursor.
+        let sh = this.safe(() => (doc as any)?.InlineShapes?.AddPicture?.(path)) ||
+          this.safe(() => (r as any)?.InlineShapes?.AddPicture?.(path)) ||
+          null
+        if (!sh) {
+          // Fallback: floating shape.
+          sh = this.safe(() => (doc as any)?.Shapes?.AddPicture?.(path)) ||
+            this.safe(() => (doc as any)?.Shapes?.AddPicture?.(path, false, true)) ||
+            null
+        }
+        if (!sh) return null
+        if (widthPt) this.safe(() => ((sh as any).Width = widthPt))
+        if (heightPt) this.safe(() => ((sh as any).Height = heightPt))
+        return sh
+      } catch (e) {
+        ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e)
+        return null
+      }
+    }
+
+    const tryPasteDataUrl = (dataUrl: string): any | null => {
+      const url = String(dataUrl || '').trim()
+      if (!url) return null
+      if (url.length > 3_000_000) return null
+
+      const doc2 = (globalThis as any).document as Document | undefined
+      if (!doc2 || !doc2.body) return null
+
+      const escapeAttr = (v: string) => String(v || '').replace(/&/g, '&amp;').replace(/\"/g, '&quot;').replace(/</g, '&lt;')
+      const container = doc2.createElement('div')
+      container.setAttribute('contenteditable', 'true')
+      container.style.position = 'fixed'
+      container.style.left = '-10000px'
+      container.style.top = '0'
+      container.style.width = '10px'
+      container.style.height = '10px'
+      container.style.opacity = '0'
+      container.innerHTML = `<table><tr><td><img src="${escapeAttr(url)}" /></td></tr></table>`
+
+      try {
+        doc2.body.appendChild(container)
+        try { (container as any).focus?.() } catch (e) { ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e) }
+
+        const sel = doc2.getSelection?.()
+        if (!sel) return null
+        sel.removeAllRanges()
+        const r = doc2.createRange()
+        r.selectNodeContents(container)
+        sel.addRange(r)
+        const ok = typeof (doc2 as any).execCommand === 'function' ? (doc2 as any).execCommand('copy') : false
+        sel.removeAllRanges()
+        if (!ok) return null
+
+        // Paste into document at selection.
+        let pasted: any = null
+        pasted = this.safe(() => (selection && typeof (selection as any).Paste === 'function' ? (selection as any).Paste() : null))
+        if (!pasted) {
+          pasted = this.safe(() =>
+            app && (app as any).Selection && typeof (app as any).Selection.Paste === 'function' ? (app as any).Selection.Paste() : null
+          )
+        }
+        // Pasted object may be null; still consider it "ok" if no exception and doc changed.
+        return pasted || true
+      } catch (e) {
+        ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e)
+        return null
+      } finally {
+        try {
+          if (container && container.parentNode) container.parentNode.removeChild(container)
+        } catch (e) {
+          ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e)
+        }
+      }
+    }
+
+    if (!raw) {
+      insertPlaceholder('missing path')
+      emitInsertImageEvent({ op: 'insert_image', source: 'missing', fallback: true, ok: false })
+      return
+    }
+
+    const cfg = getRuntimeConfig()
+    const headers = {
+      ...(cfg.apiKey ? { 'X-API-Key': cfg.apiKey } : {}),
+      ...(cfg.tenantId ? { 'X-AH32-Tenant-Id': cfg.tenantId } : {}),
+      ...(cfg.accessToken ? { Authorization: `Bearer ${cfg.accessToken}` } : {}),
+      ...(getClientId() ? { 'X-AH32-User-Id': getClientId() } : {}),
+    }
+
+    let assetId: string | null = null
+    let source: 'asset' | 'data_url' | 'url' | 'local_path' = 'local_path'
+    let urlToTry = raw
+    let dataUrlToTry: string | null = null
+
+    const am = raw.match(/^asset:\/\/(.+)$/i)
+    if (am && am[1]) {
+      assetId = String(am[1] || '').trim()
+      if (assetId) {
+        source = 'asset'
+        urlToTry = `${cfg.apiBase}/agentic/assets/${encodeURIComponent(assetId)}/content`
+      }
+    } else if (/^data:image\//i.test(raw)) {
+      source = 'data_url'
+      dataUrlToTry = raw
+    } else if (/^https?:\/\//i.test(raw)) {
+      source = 'url'
+      urlToTry = raw
+    } else {
+      source = 'local_path'
+      urlToTry = raw
+    }
+
+    let inserted: any = null
+    let used: string = ''
+    let degraded = false
+
+    try {
+      if (source === 'data_url') {
+        inserted = tryPasteDataUrl(dataUrlToTry || '')
+        used = inserted ? 'clipboard' : ''
+      } else {
+        inserted = tryAddPicture(urlToTry)
+        used = inserted ? 'add_picture' : ''
+        if (!inserted) {
+          const dl = this.downloadImageAsDataUrlSync(urlToTry, { maxBytes: 2_000_000, headers })
+          if (dl?.data_url) {
+            dataUrlToTry = dl.data_url
+            inserted = tryPasteDataUrl(dl.data_url)
+            if (inserted) used = 'clipboard'
+          }
+        }
+      }
+    } catch (e) {
+      ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e)
+      inserted = null
+    }
+
+    if (inserted) {
+      if (assetId) this.deleteBackendAssetBestEffort(assetId)
+      emitInsertImageEvent({ op: 'insert_image', source, used, degraded: false, ok: true })
+      this.emitCapabilityEvent('plan.capability_matrix', {
+        host_app: 'wps',
+        op: 'insert_image',
+        branch: `${source}:${used || 'unknown'}`,
+        fallback: false,
+        success: true,
+      })
+      return
+    }
+
+    degraded = true
+    const reason = source === 'asset' ? 'asset insert failed (download/paste also failed)' : 'insert failed'
+    try {
+      _planDiag('warning', `insert_image(wps) degraded: source=${source} reason=${reason}`)
+    } catch (e) {
+      ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e)
+    }
+    insertPlaceholder(reason)
+    emitInsertImageEvent({ op: 'insert_image', source, used, degraded, ok: false })
+    this.emitCapabilityEvent('plan.capability_matrix', {
+      host_app: 'wps',
+      op: 'insert_image',
+      branch: `${source}:placeholder`,
+      fallback: true,
+      success: true,
+    })
+  }
+
   private deleteBlock(doc: any, blockId: string) {
     const id = String(blockId || 'ah32_auto')
 
@@ -2691,6 +2951,12 @@ export class PlanExecutor {
       const name = this.bookmarkName(id)
       const r = this.getBookmarkRange(doc, name)
       if (r) {
+        try {
+          const prevText = String(this.safe(() => (r as any).Text, '') || '')
+          this.saveBlockBackupBestEffort(doc, id, prevText)
+        } catch (e) {
+          ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e)
+        }
         this.safe(() => (r.Text = ''))
         this.safe(() => r.Delete && r.Delete())
         this.deleteBookmark(doc, name)
@@ -2709,8 +2975,169 @@ export class PlanExecutor {
 
     const r = this.getDocRange(doc, startR.Start, endR.End)
     if (!r) return
+    try {
+      const inner = this.getDocRange(doc, startR.End, endR.Start)
+      const prevText = inner ? String(this.safe(() => (inner as any).Text, '') || '') : ''
+      this.saveBlockBackupBestEffort(doc, id, prevText)
+    } catch (e) {
+      ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e)
+    }
     this.safe(() => (r.Text = ''))
     this.safe(() => r.Delete && r.Delete())
+  }
+
+  private rollbackBlock(doc: any, blockId: string) {
+    const id = String(blockId || 'ah32_auto')
+    let ok = false
+    let via = 'fallback'
+    try {
+      const bid = (globalThis as any).BID || (globalThis as any).window?.BID
+      if (bid && typeof bid.rollbackBlock === 'function') {
+        via = 'bid'
+        try {
+          bid.rollbackBlock(id)
+          ok = true
+          return
+        } catch (e) {
+          // Fallback to localStorage restore (PlanExecutor backup format) when BID can't find a backup.
+          ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e)
+          via = 'fallback_after_bid_error'
+        }
+      }
+
+      const payload = this.loadBlockBackupBestEffort(doc, id)
+      if (!payload || typeof payload !== 'object' || typeof (payload as any).text !== 'string') {
+        throw new Error('NoBackup: 未找到可回退的上一版（可能尚未写回过，或备份被清理）')
+      }
+      this.setBlockTextBestEffort(doc, id, String((payload as any).text || ''))
+      ok = true
+    } finally {
+      try {
+        emitTelemetryEvent(
+          'plan.rollback_block',
+          { ok, via },
+          { host_app: 'wps', op: 'rollback_block' } as any
+        )
+      } catch (e) {
+        ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e)
+      }
+    }
+  }
+
+  private docStorageIds(doc: any): string[] {
+    const out: string[] = []
+    const push = (s: any) => {
+      const v = String(s || '').trim()
+      if (v && !out.includes(v)) out.push(v)
+    }
+    try {
+      push((doc as any)?.FullName || (doc as any)?.fullName || '')
+    } catch (e) {
+      ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e)
+    }
+    try {
+      const p = String((doc as any)?.Path || (doc as any)?.path || '').trim()
+      const n = String((doc as any)?.Name || (doc as any)?.name || '').trim()
+      if (p && n) {
+        const sep = p.endsWith('\\') || p.endsWith('/') ? '' : '\\'
+        push(`${p}${sep}${n}`)
+      }
+    } catch (e) {
+      ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e)
+    }
+    try {
+      push((doc as any)?.Name || (doc as any)?.name || '')
+    } catch (e) {
+      ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e)
+    }
+    return out.filter(Boolean)
+  }
+
+  private blockBackupKeys(doc: any, blockId: string): string[] {
+    const id = String(blockId || '').trim()
+    const docIds = this.docStorageIds(doc)
+    return docIds.map((docId) => `__ah32:block_backup:${docId}:${id}`)
+  }
+
+  private saveBlockBackupBestEffort(doc: any, blockId: string, text: string) {
+    try {
+      if (typeof localStorage === 'undefined') return
+      const id = String(blockId || '').trim()
+      if (!id) return
+      const keys = this.blockBackupKeys(doc, id)
+      if (!keys.length) return
+
+      const payload: any = { text: String(text || '') }
+      try {
+        payload.ts = new Date().toISOString()
+      } catch (e0) {
+        payload.ts = String(Date.now())
+      }
+
+      const raw = JSON.stringify(payload)
+      for (const key of keys) {
+        try {
+          localStorage.setItem(key, raw)
+        } catch (e) {
+          ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e)
+        }
+      }
+    } catch (e) {
+      ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e)
+      try {
+        _planDiag('warning', `save backup failed block_id=${String(blockId || '').slice(0, 64)}`)
+      } catch (e2) {
+        ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e2)
+      }
+    }
+  }
+
+  private loadBlockBackupBestEffort(doc: any, blockId: string): any | null {
+    try {
+      if (typeof localStorage === 'undefined') return null
+      const id = String(blockId || '').trim()
+      if (!id) return null
+      const keys = this.blockBackupKeys(doc, id)
+      if (!keys.length) return null
+      for (const key of keys) {
+        const raw = localStorage.getItem(key)
+        if (!raw) continue
+        try {
+          return JSON.parse(raw)
+        } catch (e) {
+          ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e)
+        }
+      }
+      return null
+    } catch (e) {
+      ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e)
+      return null
+    }
+  }
+
+  private setBlockTextBestEffort(doc: any, blockId: string, text: string) {
+    const id = String(blockId || 'ah32_auto')
+    // Prefer bookmarks if present.
+    try {
+      const bmName = this.bookmarkName(id)
+      const r = this.getBookmarkRange(doc, bmName)
+      if (r) {
+        this.safe(() => ((r as any).Text = String(text || '')))
+        return
+      }
+    } catch (e) {
+      ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e)
+    }
+
+    const startTag = this.tag(id, 'START')
+    const endTag = this.tag(id, 'END')
+    const startR = this.findTextRange(doc, startTag)
+    if (!startR) throw new Error(`BlockNotFound: ${id}`)
+    const endR = this.findTextRange(doc, endTag, startR.End)
+    if (!endR) throw new Error(`BlockNotFound: ${id}`)
+    const inner = this.getDocRange(doc, startR.End, endR.Start)
+    if (!inner) throw new Error(`BlockNotFound: ${id}`)
+    this.safe(() => ((inner as any).Text = String(text || '')))
   }
 
   private upsertBlock(
@@ -2763,6 +3190,12 @@ export class PlanExecutor {
           const startPos = this.safe(() => (bmRange as any).Start)
           const endPos = this.safe(() => (bmRange as any).End)
           if (typeof startPos === 'number' && typeof endPos === 'number' && endPos >= startPos) {
+            try {
+              const prevText = String(this.safe(() => (bmRange as any).Text, '') || '')
+              this.saveBlockBackupBestEffort(ctx.doc, id, prevText)
+            } catch (e) {
+              ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e)
+            }
             const r = this.getDocRange(ctx.doc, startPos, endPos)
             if (r) this.safe(() => ((r as any).Text = ''))
 
@@ -2872,6 +3305,12 @@ export class PlanExecutor {
     if (typeof contentStart === 'number' && typeof contentEnd === 'number' && contentEnd >= contentStart) {
       const inner = this.getDocRange(ctx.doc, contentStart, contentEnd)
       if (inner) {
+        try {
+          const prevText = String(this.safe(() => (inner as any).Text, '') || '')
+          this.saveBlockBackupBestEffort(ctx.doc, id, prevText)
+        } catch (e) {
+          ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e)
+        }
         this.safe(() => (inner.Text = ''))
         // NOTE: Avoid calling Delete() after setting Text='' - some WPS builds may over-delete,
         // removing our hidden block markers and breaking idempotency.
@@ -3085,6 +3524,247 @@ export class PlanExecutor {
       const detail = errors.filter(Boolean).slice(0, 2).join(' | ')
       throw new Error(detail ? `failed to write cell value: ${detail}` : 'failed to write cell value')
     }
+  }
+
+  private insertImageEt(app: any, wb: any, selection: any, action: InsertImageAction) {
+    const raw = String((action as any)?.path || '').trim()
+    const widthCm = (action as any)?.width != null ? Number((action as any).width) : null
+    const heightCm = (action as any)?.height != null ? Number((action as any).height) : null
+    const widthPt = widthCm && Number.isFinite(widthCm) && widthCm > 0 ? widthCm * 28.35 : 10 * 28.35
+    const heightPt = heightCm && Number.isFinite(heightCm) && heightCm > 0 ? heightCm * 28.35 : 6 * 28.35
+
+    const emitInsertImageEvent = (payload: Record<string, any>) => {
+      try {
+        emitTelemetryEvent('plan.insert_image', payload, { mode: 'plan', host_app: 'et' })
+      } catch (e) {
+        ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e)
+      }
+    }
+
+    const setPlaceholderCell = (reason: string) => {
+      const msg = `【图片未插入】原因：${String(reason || 'unknown').slice(0, 200)} | ${raw.slice(0, 200)}`
+      try {
+        this.insertTextEt(app, selection, msg)
+      } catch (e) {
+        ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e)
+        throw e
+      }
+    }
+
+    if (!raw) {
+      setPlaceholderCell('missing path')
+      emitInsertImageEvent({ op: 'insert_image', source: 'missing', fallback: true, ok: false })
+      return
+    }
+
+    const cfg = getRuntimeConfig()
+    const headers = {
+      ...(cfg.apiKey ? { 'X-API-Key': cfg.apiKey } : {}),
+      ...(cfg.tenantId ? { 'X-AH32-Tenant-Id': cfg.tenantId } : {}),
+      ...(cfg.accessToken ? { Authorization: `Bearer ${cfg.accessToken}` } : {}),
+      ...(getClientId() ? { 'X-AH32-User-Id': getClientId() } : {}),
+    }
+
+    let assetId: string | null = null
+    let source: 'asset' | 'data_url' | 'url' | 'local_path' = 'local_path'
+    let urlToTry = raw
+    let dataUrlToTry: string | null = null
+
+    const am = raw.match(/^asset:\/\/(.+)$/i)
+    if (am && am[1]) {
+      assetId = String(am[1] || '').trim()
+      if (assetId) {
+        source = 'asset'
+        urlToTry = `${cfg.apiBase}/agentic/assets/${encodeURIComponent(assetId)}/content`
+      }
+    } else if (/^data:image\//i.test(raw)) {
+      source = 'data_url'
+      dataUrlToTry = raw
+    } else if (/^https?:\/\//i.test(raw)) {
+      source = 'url'
+      urlToTry = raw
+    } else {
+      source = 'local_path'
+      urlToTry = raw
+    }
+
+    const resolveSelectionRange = () => this.safe(() => (selection as any)?.Range) || selection
+
+    // Best-effort: honor ET anchoring fields by selecting the range first.
+    try {
+      let sheetName = String((action as any)?.sheet_name || '').trim()
+      const cellAddr = String((action as any)?.cell || '').trim()
+      const rangeAddr = String((action as any)?.range || '').trim()
+      if (sheetName) sheetName = sheetName.replace(/^'/, '').replace(/'$/, '')
+
+      let sheet =
+        this.safe(() => (resolveSelectionRange() as any)?.Worksheet) ||
+        this.safe(() => wb?.ActiveSheet) ||
+        this.safe(() => (app as any)?.ActiveSheet) ||
+        null
+
+      if (sheetName) {
+        const s = this.getSheetByNameEt(wb, sheetName)
+        if (s) sheet = s
+      }
+
+      if (sheet && (cellAddr || rangeAddr)) {
+        const addr = rangeAddr || cellAddr
+        const rng = this.safe(() => (sheet as any).Range?.(addr)) || this.safe(() => (sheet as any).Range(addr))
+        if (rng && typeof (rng as any).Select === 'function') this.safe(() => (rng as any).Select())
+        if (rng) selection = rng
+      }
+    } catch (e) {
+      ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e)
+    }
+
+    const getAnchorPos = () => {
+      const r = resolveSelectionRange()
+      const left = Number(this.safe(() => (r as any)?.Left, NaN as any))
+      const top = Number(this.safe(() => (r as any)?.Top, NaN as any))
+      if (Number.isFinite(left) && Number.isFinite(top)) return { left, top }
+      return { left: 28.35, top: 28.35 }
+    }
+
+    const tryAddPicture = (sheet: any, p: string): any | null => {
+      const path = String(p || '').trim()
+      if (!path) return null
+      try {
+        const shapes = this.safe(() => (sheet as any)?.Shapes) || null
+        const pos = getAnchorPos()
+        // Excel AddPicture: (Filename, LinkToFile, SaveWithDocument, Left, Top, Width, Height)
+        let pic =
+          (shapes && typeof (shapes as any).AddPicture === 'function'
+            ? this.safe(() => (shapes as any).AddPicture(path, false, true, pos.left, pos.top, widthPt, heightPt))
+            : null)
+        if (!pic && shapes && typeof (shapes as any).AddPicture === 'function') {
+          pic = this.safe(() => (shapes as any).AddPicture(path))
+        }
+        if (!pic) return null
+        return pic
+      } catch (e) {
+        ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e)
+        return null
+      }
+    }
+
+    const tryPasteDataUrl = (sheet: any, dataUrl: string): any | null => {
+      const url = String(dataUrl || '').trim()
+      if (!url) return null
+      if (url.length > 3_000_000) return null
+
+      const doc2 = (globalThis as any).document as Document | undefined
+      if (!doc2 || !doc2.body) return null
+
+      const escapeAttr = (v: string) => String(v || '').replace(/&/g, '&amp;').replace(/\"/g, '&quot;').replace(/</g, '&lt;')
+      const container = doc2.createElement('div')
+      container.setAttribute('contenteditable', 'true')
+      container.style.position = 'fixed'
+      container.style.left = '-10000px'
+      container.style.top = '0'
+      container.style.width = '10px'
+      container.style.height = '10px'
+      container.style.opacity = '0'
+      container.innerHTML = `<table><tr><td><img src="${escapeAttr(url)}" /></td></tr></table>`
+
+      try {
+        doc2.body.appendChild(container)
+        try { (container as any).focus?.() } catch (e) { ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e) }
+
+        const sel = doc2.getSelection?.()
+        if (!sel) return null
+        sel.removeAllRanges()
+        const r = doc2.createRange()
+        r.selectNodeContents(container)
+        sel.addRange(r)
+        const ok = typeof (doc2 as any).execCommand === 'function' ? (doc2 as any).execCommand('copy') : false
+        sel.removeAllRanges()
+        if (!ok) return null
+
+        const shapes = this.safe(() => (sheet as any)?.Shapes) || null
+        let pasted: any = null
+        pasted = this.safe(() => (shapes && typeof (shapes as any).Paste === 'function' ? (shapes as any).Paste() : null))
+        if (!pasted) {
+          pasted = this.safe(() =>
+            app && (app as any).ActiveSheet && typeof (app as any).ActiveSheet.Paste === 'function' ? (app as any).ActiveSheet.Paste() : null
+          )
+        }
+        return pasted || true
+      } catch (e) {
+        ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e)
+        return null
+      } finally {
+        try {
+          if (container && container.parentNode) container.parentNode.removeChild(container)
+        } catch (e) {
+          ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e)
+        }
+      }
+    }
+
+    let sheet =
+      this.safe(() => (resolveSelectionRange() as any)?.Worksheet) ||
+      this.safe(() => wb?.ActiveSheet) ||
+      this.safe(() => (app as any)?.ActiveSheet) ||
+      null
+    if (!sheet) {
+      setPlaceholderCell('ET active sheet not available')
+      emitInsertImageEvent({ op: 'insert_image', source, fallback: true, ok: false })
+      return
+    }
+
+    let inserted: any = null
+    let used: string = ''
+
+    try {
+      if (source === 'data_url') {
+        inserted = tryPasteDataUrl(sheet, dataUrlToTry || '')
+        used = inserted ? 'clipboard' : ''
+      } else {
+        inserted = tryAddPicture(sheet, urlToTry)
+        used = inserted ? 'add_picture' : ''
+        if (!inserted) {
+          const dl = this.downloadImageAsDataUrlSync(urlToTry, { maxBytes: 2_000_000, headers })
+          if (dl?.data_url) {
+            dataUrlToTry = dl.data_url
+            inserted = tryPasteDataUrl(sheet, dl.data_url)
+            if (inserted) used = 'clipboard'
+          }
+        }
+      }
+    } catch (e) {
+      ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e)
+      inserted = null
+    }
+
+    if (inserted) {
+      if (assetId) this.deleteBackendAssetBestEffort(assetId)
+      emitInsertImageEvent({ op: 'insert_image', source, used, degraded: false, ok: true })
+      this.emitCapabilityEvent('plan.capability_matrix', {
+        host_app: 'et',
+        op: 'insert_image',
+        branch: `${source}:${used || 'unknown'}`,
+        fallback: false,
+        success: true,
+      })
+      return
+    }
+
+    try {
+      _planDiag('warning', `insert_image(et) degraded: source=${source}`)
+    } catch (e) {
+      ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e)
+    }
+
+    setPlaceholderCell('insert failed')
+    emitInsertImageEvent({ op: 'insert_image', source, used, degraded: true, ok: false })
+    this.emitCapabilityEvent('plan.capability_matrix', {
+      host_app: 'et',
+      op: 'insert_image',
+      branch: `${source}:placeholder`,
+      fallback: true,
+      success: true,
+    })
   }
 
   private getSheetByNameEt(wb: any, sheetName: string): any | null {
@@ -4232,6 +4912,9 @@ export class PlanExecutor {
             break
           case 'insert_text':
             this.insertTextEt(ctx.app, selection, action.text)
+            break
+          case 'insert_image':
+            this.insertImageEt(ctx.app, ctx.wb, selection, action as any)
             break
           case 'set_cell_formula':
             this.setCellFormulaEt(ctx.app, selection, action as any)
@@ -5892,6 +6575,16 @@ export class PlanExecutor {
     const rawPath = String((action as any)?.path || '')
     if (!rawPath) throw new Error('image path is required')
 
+    const assetId = (() => {
+      try {
+        const m = String(rawPath || '').trim().match(/^asset:\/\/(.+)$/i)
+        return m && m[1] ? String(m[1]).trim() : ''
+      } catch (e) {
+        ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e)
+        return ''
+      }
+    })()
+
     const resolveImagePath = (p: string) => {
       const s = String(p || '').trim()
       if (!s) return s
@@ -5901,10 +6594,51 @@ export class PlanExecutor {
         const dataUrl = id && this._planImageResources ? this._planImageResources.get(id) : null
         if (dataUrl) return dataUrl
       }
+
+      // Backend asset reference: asset://<id>
+      const am = s.match(/^asset:\/\/(.+)$/i)
+      if (am && am[1]) {
+        const id = String(am[1] || '').trim()
+        if (id) {
+          try {
+            const key = `asset://${id}`
+            const cached = this._planImageUrlCache ? this._planImageUrlCache.get(key) : null
+            if (cached) return cached
+
+            const cfg = getRuntimeConfig()
+            const url = `${cfg.apiBase}/agentic/assets/${encodeURIComponent(id)}/content`
+            const downloaded = this.downloadImageAsDataUrlSync(url, {
+              maxBytes: 2_000_000,
+              headers: {
+                ...(cfg.apiKey ? { 'X-API-Key': cfg.apiKey } : {}),
+                ...(cfg.tenantId ? { 'X-AH32-Tenant-Id': cfg.tenantId } : {}),
+                ...(cfg.accessToken ? { Authorization: `Bearer ${cfg.accessToken}` } : {}),
+                ...(getClientId() ? { 'X-AH32-User-Id': getClientId() } : {}),
+              },
+            })
+            if (downloaded?.data_url) {
+              try { if (this._planImageUrlCache) this._planImageUrlCache.set(key, downloaded.data_url) } catch (e) { ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e) }
+              return downloaded.data_url
+            }
+          } catch (e) {
+            ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e)
+          }
+        }
+      }
       return s
     }
 
     const path = resolveImagePath(rawPath)
+    const pathForLog = _redactImageRefForLog(path || rawPath)
+    const sourceForTelemetry = assetId
+      ? 'asset'
+      : /^https?:\/\//i.test(String(rawPath || '').trim())
+        ? 'url'
+        : /^(?:res|resource):/i.test(String(rawPath || '').trim())
+          ? 'res'
+          : /^data:image\//i.test(String(path || '').trim())
+            ? 'data_url'
+            : 'path'
 
     const shapes = this.safe(() => slide.Shapes)
     if (!shapes) throw new Error('shapes not available')
@@ -5968,11 +6702,12 @@ export class PlanExecutor {
           height: height > 0 ? height : undefined,
         })
         if (pasted) {
+          if (assetId) this.deleteBackendAssetBestEffort(assetId)
           this.emitCapabilityEvent('plan.capability_matrix', {
             host_app: 'wpp',
             op: 'add_image',
-            branch: 'addImage.data_url_clipboard_paste',
-            fallback: true,
+            branch: assetId ? 'addImage.asset_clipboard_paste' : 'addImage.data_url_clipboard_paste',
+            fallback: false,
             success: true,
           })
           return
@@ -6006,7 +6741,7 @@ export class PlanExecutor {
             })
             if (pasted) {
               try {
-                _planDiag('warning', `add_image AddPicture failed; used clipboard paste for url=${url}`)
+                _planDiag('warning', `add_image AddPicture failed; used clipboard paste for ${_redactImageRefForLog(url)}`)
               } catch (e) {
                 ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e)
               }
@@ -6028,7 +6763,7 @@ export class PlanExecutor {
       // Best-effort fallback: insert a visible placeholder so the plan doesn't fail just because
       // the path is not reachable in the host environment.
       try {
-        _planDiag('warning', `add_image failed; inserted placeholder for path=${path}`)
+        _planDiag('warning', `add_image failed; inserted placeholder for path=${pathForLog}`)
       } catch (e) {
         ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e)
       }
@@ -6040,10 +6775,10 @@ export class PlanExecutor {
           op: 'add_shape',
           shape_type: 'rectangle',
           left: (left / 28.35),
-          top: (top / 28.35),
-          width: ((width > 0 ? width : 12 * 28.35) / 28.35),
-          height: ((height > 0 ? height : 7 * 28.35) / 28.35),
-          text: `[IMAGE] ${path}`.slice(0, 5000),
+           top: (top / 28.35),
+           width: ((width > 0 ? width : 12 * 28.35) / 28.35),
+           height: ((height > 0 ? height : 7 * 28.35) / 28.35),
+          text: `[IMAGE] ${pathForLog}`.slice(0, 5000),
           slide_index: (action as any)?.slide_index ?? slideIndex,
         } as any)
       } catch (e) {
@@ -6067,10 +6802,12 @@ export class PlanExecutor {
       return
     }
 
+    if (assetId) this.deleteBackendAssetBestEffort(assetId)
+
     this.emitCapabilityEvent('plan.capability_matrix', {
       host_app: 'wpp',
       op: 'add_image',
-      branch: 'addImage',
+      branch: `addImage.${sourceForTelemetry}`,
       fallback: false,
       success: true,
     })
@@ -6078,12 +6815,13 @@ export class PlanExecutor {
 
   private downloadImageAsDataUrlSync(
     url: string,
-    opts?: { maxBytes?: number },
+    opts?: { maxBytes?: number; headers?: Record<string, string> },
   ): { data_url: string; mime: string; bytes: number } | null {
     const u = String(url || '').trim()
     if (!u) return null
 
     const maxBytes = Math.max(10_000, Math.min(20_000_000, Number(opts?.maxBytes || 0) || 2_000_000))
+    const headers = opts?.headers && typeof opts.headers === 'object' ? opts.headers : null
 
     const inferMimeFromBytes = (bytes: Uint8Array): string => {
       if (!bytes || bytes.length < 12) return ''
@@ -6127,6 +6865,17 @@ export class PlanExecutor {
       const xhr = new XMLHttpRequest()
       xhr.open('GET', u, false)
       xhr.responseType = 'arraybuffer'
+      if (headers) {
+        try {
+          for (const k of Object.keys(headers)) {
+            const v = String((headers as any)[k] || '')
+            if (!k || !v) continue
+            try { xhr.setRequestHeader(k, v) } catch (e) { ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e) }
+          }
+        } catch (e) {
+          ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e)
+        }
+      }
       xhr.send(null)
 
       const status = Number((xhr as any).status || 0) || 0
@@ -6267,6 +7016,28 @@ export class PlanExecutor {
       } catch (e) {
         ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e)
       }
+    }
+  }
+
+  private deleteBackendAssetBestEffort(assetId: string): void {
+    const id = String(assetId || '').trim()
+    if (!id) return
+    try {
+      const cfg = getRuntimeConfig()
+      const url = `${cfg.apiBase}/agentic/assets/${encodeURIComponent(id)}`
+      void fetch(url, {
+        method: 'DELETE',
+        headers: {
+          ...(cfg.apiKey ? { 'X-API-Key': cfg.apiKey } : {}),
+          ...(cfg.tenantId ? { 'X-AH32-Tenant-Id': cfg.tenantId } : {}),
+          ...(cfg.accessToken ? { Authorization: `Bearer ${cfg.accessToken}` } : {}),
+          ...(getClientId() ? { 'X-AH32-User-Id': getClientId() } : {}),
+        },
+      }).catch((e) => {
+        ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e)
+      })
+    } catch (e) {
+      ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e)
     }
   }
 

@@ -659,31 +659,53 @@ export class WPSDocumentBridge {
     docId: string,
     options?: { maxChars?: number; maxRows?: number; maxCols?: number; maxCells?: number }
   ): string {
-    const id = String(docId || '').trim()
-    if (!id) return ''
+    return this.execWpsApi('extractDocumentTextById', () => {
+      const id = String(docId || '').trim()
+      if (!id) return ''
 
-    const app = this.getApplication()
-    if (!app) return ''
+      const app = this.getApplication()
+      if (!app) return ''
 
-    const host = this.getHostApp()
-    const maxChars = options?.maxChars ?? 200_000
-    const maxRows = options?.maxRows ?? 200
-    const maxCols = options?.maxCols ?? 50
-    const maxCells = options?.maxCells ?? Math.min(Math.max(1, maxRows) * Math.max(1, maxCols), 4000)
+      const host = this.getHostApp()
+      const maxChars = options?.maxChars ?? 200_000
+      const maxRows = options?.maxRows ?? 200
+      const maxCols = options?.maxCols ?? 50
+      const maxCells = options?.maxCells ?? Math.min(Math.max(1, maxRows) * Math.max(1, maxCols), 4000)
 
-    try {
-      if (host === 'wps') {
-        const docs = app.Documents
-        if (!docs) return ''
-        for (let i = 0; i < docs.Count; i++) {
-          const d = docs.Item(i + 1)
-          if (!d) continue
-          if (this.getDocId(d) !== id) continue
-          const text = String(d?.Content?.Text || '')
+      try {
+        if (host === 'wps') {
+          const docs = app.Documents
+          if (!docs) return ''
+          // Root-cause fix: prefer cached live object by id. Some WPS hosts return inconsistent
+          // FullName/Path across calls, causing getDocId() mismatch and empty extraction.
+          let target: any = null
+          try { target = this.docObjById.get(id) } catch (e) { ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/wps-bridge.ts', e) }
+          if (!target) {
+            for (let i = 0; i < docs.Count; i++) {
+              const d = docs.Item(i + 1)
+              if (!d) continue
+              if (this.getDocId(d) !== id) continue
+              target = d
+              break
+            }
+          }
+          if (!target) return ''
+
+          // Prefer bounded range read to avoid allocating the whole document text.
+          try {
+            const rangeFn = (target as any)?.Range
+            if (typeof rangeFn === 'function' && Number.isFinite(Number(maxChars)) && maxChars > 0) {
+              const rng = rangeFn.call(target, 0, Math.max(0, Math.floor(maxChars)))
+              const text = String((rng as any)?.Text || '')
+              if (text) return this._capText(text, maxChars)
+            }
+          } catch (e) {
+            ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/wps-bridge.ts', e)
+          }
+
+          const text = String((target as any)?.Content?.Text || '')
           return this._capText(text, maxChars)
         }
-        return ''
-      }
 
         if (host === 'et') {
           const wbs = app.Workbooks
@@ -858,7 +880,6 @@ export class WPSDocumentBridge {
 
           return this._capText(lines.join('\n'), maxChars)
         }
-        return ''
       }
 
       if (host === 'wpp') {
@@ -897,12 +918,52 @@ export class WPSDocumentBridge {
         }
         return ''
       }
+      return ''
     } catch (e) {
       console.warn('[WPSBridge] extractDocumentTextById failed:', e)
       return ''
     }
+  }, '')
+  }
 
-    return ''
+  /**
+   * Best-effort local file read via WPS runtime (when available).
+   *
+   * Remote backend deployments cannot read client-local paths, so the client
+   * must upload bytes. This helper enables reading already-saved OOXML files
+   * (docx/xlsx/pptx) from their local paths.
+   */
+  readLocalFileAsArrayBuffer(path: string, options?: { maxBytes?: number }): ArrayBuffer | null {
+    const p = String(path || '').trim()
+    if (!p) return null
+    const maxBytes =
+      Number.isFinite(Number(options?.maxBytes)) && Number(options?.maxBytes) > 0
+        ? Math.max(256 * 1024, Number(options?.maxBytes))
+        : 40_000_000
+
+    return this.execWpsApi('readLocalFileAsArrayBuffer', () => {
+      const wpsRuntime = (window as any).wps || (window as any).WPS || null
+      const fs = wpsRuntime?.FileSystem || null
+      if (!fs) return null
+
+      let buf: any = null
+      try {
+        if (typeof fs.ReadFileAsArrayBuffer === 'function') {
+          buf = fs.ReadFileAsArrayBuffer(p)
+        } else if (typeof fs.ReadFile === 'function') {
+          buf = fs.ReadFile(p)
+        }
+      } catch (e) {
+        ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/wps-bridge.ts', e)
+        buf = null
+      }
+
+      const out = (buf instanceof ArrayBuffer) ? buf : (buf && (buf as any).buffer instanceof ArrayBuffer ? (buf as any).buffer : null)
+      if (!out) return null
+      if ((out as ArrayBuffer).byteLength <= 0) return null
+      if ((out as ArrayBuffer).byteLength > maxBytes) return null
+      return out as ArrayBuffer
+    }, null)
   }
 
   /**
@@ -1813,11 +1874,15 @@ export class WPSDocumentBridge {
       // 获取API配置（优先 runtime-config；避免“静默 fallback 导致上报到错误的服务”）
       let apiBaseUrl = 'http://127.0.0.1:5123'
       let apiKey = ''
+      let tenantId = ''
+      let accessToken = ''
       try {
         const { getRuntimeConfig } = await import('@/utils/runtime-config')
         const cfg = getRuntimeConfig()
         apiBaseUrl = cfg.apiBase || apiBaseUrl
         apiKey = cfg.apiKey || apiKey
+        tenantId = cfg.tenantId || tenantId
+        accessToken = cfg.accessToken || accessToken
       } catch (e) {
         // Keep reporting best-effort, but don't swallow silently.
         try { logToBackend(`[WPSBridge] reportJSMacroError: failed to load runtime-config: ${String((e as any)?.message || e)}`, 'warning') } catch (e) { (globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/wps-bridge.ts', e) }
@@ -1898,7 +1963,10 @@ export class WPSDocumentBridge {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...(apiKey ? { 'X-API-Key': apiKey } : {})
+          ...(apiKey ? { 'X-API-Key': apiKey } : {}),
+          ...(tenantId ? { 'X-AH32-Tenant-Id': tenantId } : {}),
+          ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+          ...(getClientId() ? { 'X-AH32-User-Id': getClientId() } : {}),
         },
         body: JSON.stringify(errorReport)
       })
@@ -2851,7 +2919,7 @@ export const WPSHelper = {
     try {
       // Some plan ops (e.g. answer_mode_apply) delegate to BID helper functions implemented
       // in the JS macro runtime. Preload it only when required.
-      if (WPSHelper._planHasOp(plan, 'answer_mode_apply')) {
+      if (WPSHelper._planHasOp(plan, 'answer_mode_apply') || WPSHelper._planHasOp(plan, 'rollback_block')) {
         await getJSMacroExecutor()
       }
     } catch (e) {

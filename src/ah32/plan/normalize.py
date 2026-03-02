@@ -96,6 +96,7 @@ def _norm_op(op: Any) -> str:
     m = {
         "upsertBlock": "upsert_block",
         "deleteBlock": "delete_block",
+        "rollbackBlock": "rollback_block",
         "setSelection": "set_selection",
         "insertText": "insert_text",
         "insertAfterText": "insert_after_text",
@@ -103,6 +104,7 @@ def _norm_op(op: Any) -> str:
         "insertTable": "insert_table",
         "insertChartFromSelection": "insert_chart_from_selection",
         "insertWordArt": "insert_word_art",
+        "insertImage": "insert_image",
         "answerModeApply": "answer_mode_apply",
         "setCellFormula": "set_cell_formula",
         "setNumberFormat": "set_number_format",
@@ -478,6 +480,44 @@ def _normalize_action(action: Any, *, fallback_id: str, host: HostApp) -> dict[s
             "bold": _to_bool_opt(a1.get("bold")),
             "italic": _to_bool_opt(a1.get("italic")),
         }
+        return out
+
+    if op == "insert_image":
+        # Common payloads:
+        # - {path} / {url} / {image_path}
+        # - {asset_id} (multimodal generate) -> asset://<id>
+        asset_id = _to_str_opt(a1.get("asset_id") or a1.get("assetId"))
+        path = _to_str_opt(a1.get("path") or a1.get("url") or a1.get("image_path"))
+        if path is None and asset_id:
+            path = f"asset://{asset_id}"
+
+        if path is None:
+            hint = _to_str_opt(a1.get("alt") or a1.get("description") or a1.get("desc") or a1.get("text"))
+            text = f"[IMAGE] {hint}" if hint else "[IMAGE] (missing path)"
+            return {"id": action_id, "title": title, "op": "insert_text", "text": text[:5000]}
+
+        out: dict[str, Any] = {
+            "id": action_id,
+            "title": title,
+            "op": "insert_image",
+            "path": path,
+        }
+        width = _to_float_opt(a1.get("width"))
+        height = _to_float_opt(a1.get("height"))
+        if width is not None:
+            out["width"] = width
+        if height is not None:
+            out["height"] = height
+
+        sheet_name = _to_str_opt(a1.get("sheet_name") or a1.get("sheet") or a1.get("sheetName"))
+        if sheet_name is not None:
+            out["sheet_name"] = sheet_name[:64]
+        cell = _to_str_opt(a1.get("cell") or a1.get("cell_a1") or a1.get("anchor_cell"))
+        if cell is not None:
+            out["cell"] = cell[:64]
+        range_addr = _to_str_opt(a1.get("range") or a1.get("range_a1") or a1.get("anchor_range"))
+        if range_addr is not None:
+            out["range"] = range_addr[:128]
         return out
 
     if op == "set_cell_formula":

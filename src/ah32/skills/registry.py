@@ -226,6 +226,7 @@ class SkillRegistry:
         *,
         embedder: Any = None,
         host: Optional[str] = None,
+        allow_skill_ids: Optional[Iterable[str]] = None,
         top_k: int = 4,
         min_score: float = 0.18,
     ) -> List[Dict[str, Any]]:
@@ -246,6 +247,11 @@ class SkillRegistry:
         host_norm = _normalize_host(host)
         if host_norm:
             enabled = [s for s in enabled if _skill_allows_host(s, host_norm)]
+        if allow_skill_ids is not None:
+            allow = {str(x or "").strip() for x in (allow_skill_ids or ()) if str(x or "").strip()}
+            if not allow:
+                return []
+            enabled = [s for s in enabled if s.skill_id in allow]
         if not enabled:
             return []
 

@@ -324,7 +324,29 @@ def get_synced_documents() -> List[Dict]:
 
     """从 documents.json 获取同步的文档列表（同步调用）"""
 
-    sync_file = Path.home() / ".ah32" / "sync" / "documents.json"
+    # Remote-backend friendly: doc sync persistence is tenant-scoped under storage/.
+    tenant_id = ""
+    storage_root = Path("storage")
+    try:
+        from ...config import settings
+
+        storage_root = Path(getattr(settings, "storage_root", "storage") or "storage")
+        tenant_id = str(getattr(settings, "default_tenant_id", "") or "").strip()
+    except Exception:
+        storage_root = Path("storage")
+        tenant_id = ""
+
+    try:
+        from ...tenancy.context import get_tenant_id
+
+        tid = str(get_tenant_id() or "").strip()
+        if tid:
+            tenant_id = tid
+    except Exception:
+        pass
+
+    tenant_id = tenant_id or "public"
+    sync_file = storage_root / "tenants" / tenant_id / "doc_sync" / "documents.json"
 
     if not sync_file.exists():
         logger.debug(f"同步文档文件不存在: {sync_file}")

@@ -11,6 +11,7 @@ import { wpsBridge } from './wps-bridge'
 import { logger } from '@/utils/logger'
 
 import { getRuntimeConfig } from '@/utils/runtime-config'
+import { getClientId } from '@/utils/client-id'
 
 import { checkMacroSafety } from './js-macro-safety'
 
@@ -346,6 +347,7 @@ export class JSMacroExecutor {
     try {
 
       const cfg = getRuntimeConfig()
+      const uid = (() => { try { return getClientId() } catch (_e) { return '' } })()
 
       const capabilities = wpsBridge.getCapabilities(false)
 
@@ -357,7 +359,10 @@ export class JSMacroExecutor {
 
           'Content-Type': 'application/json',
 
-          ...(cfg.apiKey ? { 'X-API-Key': cfg.apiKey } : {})
+          ...(cfg.apiKey ? { 'X-API-Key': cfg.apiKey } : {}),
+          ...(cfg.tenantId ? { 'X-AH32-Tenant-Id': cfg.tenantId } : {}),
+          ...(cfg.accessToken ? { Authorization: `Bearer ${cfg.accessToken}` } : {}),
+          ...(uid ? { 'X-AH32-User-Id': uid } : {}),
 
         },
 
@@ -596,6 +601,7 @@ export class JSMacroExecutor {
     try {
 
       const cfg = getRuntimeConfig()
+      const uid = (() => { try { return getClientId() } catch (_e) { return '' } })()
 
       const capabilities = wpsBridge.getCapabilities(false)
 
@@ -607,7 +613,10 @@ export class JSMacroExecutor {
 
           'Content-Type': 'application/json',
 
-          ...(cfg.apiKey ? { 'X-API-Key': cfg.apiKey } : {})
+          ...(cfg.apiKey ? { 'X-API-Key': cfg.apiKey } : {}),
+          ...(cfg.tenantId ? { 'X-AH32-Tenant-Id': cfg.tenantId } : {}),
+          ...(cfg.accessToken ? { Authorization: `Bearer ${cfg.accessToken}` } : {}),
+          ...(uid ? { 'X-AH32-User-Id': uid } : {}),
 
         },
 
@@ -684,6 +693,7 @@ export class JSMacroExecutor {
     try {
 
       const cfg = getRuntimeConfig()
+      const uid = (() => { try { return getClientId() } catch (_e) { return '' } })()
 
       const response = await fetch(`${cfg.apiBase}/agentic/chat/stream?show_thoughts=false`, {
 
@@ -693,7 +703,10 @@ export class JSMacroExecutor {
 
           'Content-Type': 'application/json',
 
-          ...(cfg.apiKey ? { 'X-API-Key': cfg.apiKey } : {})
+          ...(cfg.apiKey ? { 'X-API-Key': cfg.apiKey } : {}),
+          ...(cfg.tenantId ? { 'X-AH32-Tenant-Id': cfg.tenantId } : {}),
+          ...(cfg.accessToken ? { Authorization: `Bearer ${cfg.accessToken}` } : {}),
+          ...(uid ? { 'X-AH32-User-Id': uid } : {}),
 
         },
 

@@ -1,6 +1,9 @@
 # Skills 设计与开发规范（Prompt + Tools）
 
-本项目的 Skills 目标是：**可热插拔、可热更新、少 token、可确定性执行**。技能既可以只提供规则文本（Prompt-only），也可以额外声明可调用的 Python 工具（Prompt + Tools）。
+本项目的 Skills 目标是：**可热插拔、可热更新、少 token、可确定性执行**。
+技能既可以只提供规则文本（Prompt-only），也可以额外声明“客户端脚本工具”（Prompt + Client Tools）。
+
+注意：后端已禁用执行 `skill.json.tools` 对应的 `scripts/*.py`（历史方案）。后续工具实现以**前端（WPS 插件）JS**为准。
 
 落地清单（实现/待办对照）：`skills/todolist_skills.md`。
 
@@ -43,7 +46,8 @@ skills/<skill-id>/
 
 ### tools 声明（强约束）
 
-- **`skill.json.tools` 是对外“唯一权威来源”**：运行时只会向模型暴露 `tools` 中声明的工具名。
+- **`skill.json.tools` 是对外“唯一权威来源”**：工具名/参数 schema 以这里为准。
+- 后端不再把这些工具当作“可执行的服务端 tool-call”（避免执行用户可修改脚本）；这些工具将以“客户端可执行能力”注入到前端运行时。
 - 每个工具建议使用“全量声明”对象形式：
   - `name`：工具名
   - `description`：一句话描述（尽量短）
@@ -51,15 +55,11 @@ skills/<skill-id>/
 
 ---
 
-## 3. 工具脚本（scripts/）契约
+## 3. 客户端脚本（JS）契约（替代 scripts/*.py）
 
-工具脚本必须满足：
-- 文件路径：`scripts/<tool_name>.py`
-- 文件内必须提供同名可调用函数：`def <tool_name>(**kwargs) -> dict:`
-- 返回值必须是 **JSON 对象**（Python `dict`）
-- 禁止吞错：出现异常应抛出或记录（后端会捕获并写日志）
-
-运行时会做最小参数校验（基于 `skill.json.tools[].parameters` 的 `required`/`type`）。
+后端不再执行 `scripts/*.py`。工具实现以**客户端 JS**为准：
+- `skill.json.tools` 负责声明工具名、描述、参数 schema（给 LLM/路由/前端识别用）
+- 实际执行由 WPS 插件侧根据 tool_id/script_id + JSON arguments 触发（并回传结果）
 
 ---
 

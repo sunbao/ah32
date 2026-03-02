@@ -2,19 +2,17 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Header
 from pydantic import BaseModel, Field
 
-from ah32.config import settings
 from ah32.core.audit_recorder import audit_recorder
 
 router = APIRouter(prefix="/agentic/audit", tags=["audit"])
 
 
-def _auth(api_key: str | None) -> None:
-    if settings.enable_auth:
-        if not api_key or api_key != settings.api_key:
-            raise HTTPException(status_code=401, detail="Invalid API Key")
+def _auth(_: str | None) -> None:
+    # Auth is enforced centrally for /agentic/* in server middleware.
+    return
 
 
 class AuditRecordRequest(BaseModel):

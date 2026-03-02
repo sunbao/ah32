@@ -15,24 +15,34 @@
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
+import json
+import logging
+import os
+import threading
+import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
-import json
-import logging
-import os
-import time
-
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
+
+from ah32.config import settings
+from ah32.tenancy.context import get_tenant_id
+from ah32.tenancy.usage_audit import UsageSpan
 
 logger = logging.getLogger(__name__)
 
-# Persist on disk so reopening the taskpane can show the last known docs quickly.
-# We still TTL-filter on read, so stale entries won't appear as "currently open".
-SYNC_DIR = Path.home() / ".ah32" / "sync"
-SYNC_FILE = SYNC_DIR / "documents.json"
+# Per-tenant cache + write-behind persistence (to avoid I/O storms).
+_STORE_LOCK = threading.RLock()
+_STORE_CACHE_BY_TENANT: Dict[str, Dict[str, Any]] = {}
+_STORE_DIRTY_BY_TENANT: Dict[str, bool] = {}
+_FLUSH_TASK_BY_TENANT: Dict[str, asyncio.Task] = {}
+_LAST_SIG_BY_KEY: Dict[Tuple[str, str, str], str] = {}
+_LAST_UNCHANGED_LOG_AT: Dict[Tuple[str, str, str], float] = {}
 
 
 HostApp = Literal["wps", "et", "wpp", "unknown"]
@@ -54,9 +64,23 @@ class DocumentInfo(BaseModel):
 class DocumentSyncRequest(BaseModel):
     """A snapshot from one taskpane instance (one host app)."""
 
-    client_id: str = Field(default="default", description="Stable client identifier (frontend localStorage).")
+    boot_id: Optional[str] = Field(
+        default=None,
+        description="Per-taskpane boot id (for correlation).",
+    )
+    boot_seq: Optional[int] = Field(
+        default=None,
+        description="Boot sequence counter (localStorage).",
+    )
+    client_id: str = Field(
+        default="default",
+        description="Stable client identifier (frontend localStorage).",
+    )
     host_app: HostApp = Field(default="unknown", description="Source host of this snapshot.")
-    documents: List[Dict[str, Any]] = Field(default_factory=list, description="Raw doc dicts from frontend.")
+    documents: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="Raw doc dicts from frontend.",
+    )
 
 
 class DocumentSyncResponse(BaseModel):
@@ -68,6 +92,31 @@ class DocumentSyncResponse(BaseModel):
 class _SnapshotKey:
     client_id: str
     host_app: HostApp
+
+
+async def _bind_tenancy(req: Request):
+    """Bind tenant/user/auth context for non-/agentic routes."""
+    trace_id = str(getattr(req.state, "trace_id", "") or "").strip() or uuid.uuid4().hex
+    from ah32.security.request_context import bind_tenancy_for_request
+
+    with bind_tenancy_for_request(req, trace_id=trace_id):
+        yield
+
+
+def _effective_tenant_id() -> str:
+    try:
+        tid = str(get_tenant_id() or "").strip()
+        if tid:
+            return tid
+    except Exception:
+        pass
+    return str(getattr(settings, "default_tenant_id", "public") or "public").strip() or "public"
+
+
+def _sync_file_for_tenant(tenant_id: str) -> Path:
+    tid = str(tenant_id or "").strip() or _effective_tenant_id()
+    # Tenant-scoped storage unit: storage/tenants/<tenant_id>/doc_sync/documents.json
+    return Path(settings.storage_root) / "tenants" / tid / "doc_sync" / "documents.json"
 
 
 def _ttl_seconds() -> int:
@@ -82,6 +131,88 @@ def _ttl_seconds() -> int:
 
 def _now() -> float:
     return time.time()
+
+
+def _persist_enabled() -> bool:
+    v = str(os.environ.get("AH32_DOC_SYNC_PERSIST") or "true").strip().lower()
+    return v not in ("0", "false", "no", "off")
+
+
+def _flush_interval_sec() -> float:
+    try:
+        v = float(os.environ.get("AH32_DOC_SYNC_FLUSH_INTERVAL_SEC") or "5")
+        return max(0.5, min(v, 60.0))
+    except Exception:
+        logger.debug("[documents] flush interval parse failed; default=5", exc_info=True)
+        return 5.0
+
+
+def _write_store_payload(payload: str, *, tenant_id: str) -> None:
+    try:
+        out = _sync_file_for_tenant(tenant_id)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        tmp = out.with_suffix(".json.tmp")
+        tmp.write_text(payload, encoding="utf-8")
+        tmp.replace(out)
+    except Exception as e:
+        logger.warning(f"[documents] write store failed: {e}", exc_info=True)
+
+
+async def _flush_store_after_delay(tenant_id: str) -> None:
+    interval = _flush_interval_sec()
+    try:
+        await asyncio.sleep(interval)
+        while True:
+            payload: Optional[str] = None
+            with _STORE_LOCK:
+                store = _STORE_CACHE_BY_TENANT.get(tenant_id)
+                dirty = bool(_STORE_DIRTY_BY_TENANT.get(tenant_id, False))
+                if not dirty or store is None:
+                    _FLUSH_TASK_BY_TENANT.pop(tenant_id, None)
+                    return
+                try:
+                    payload = json.dumps(store, ensure_ascii=False)
+                    _STORE_DIRTY_BY_TENANT[tenant_id] = False
+                except Exception as e:
+                    logger.warning(f"[documents] json dump failed: {e}", exc_info=True)
+                    payload = None
+
+            if payload is not None:
+                _write_store_payload(payload, tenant_id=tenant_id)
+
+            with _STORE_LOCK:
+                if not bool(_STORE_DIRTY_BY_TENANT.get(tenant_id, False)):
+                    _FLUSH_TASK_BY_TENANT.pop(tenant_id, None)
+                    return
+            await asyncio.sleep(interval)
+    except Exception as e:
+        logger.warning(f"[documents] flush task failed: {e}", exc_info=True)
+        with _STORE_LOCK:
+            _STORE_DIRTY_BY_TENANT[tenant_id] = True
+            _FLUSH_TASK_BY_TENANT.pop(tenant_id, None)
+
+
+def _schedule_flush(tenant_id: str) -> None:
+    if not _persist_enabled():
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    with _STORE_LOCK:
+        existing = _FLUSH_TASK_BY_TENANT.get(tenant_id)
+        if existing is not None and not existing.done():
+            return
+        _FLUSH_TASK_BY_TENANT[tenant_id] = loop.create_task(_flush_store_after_delay(tenant_id))
+
+
+def _get_store_cached(tenant_id: str) -> Dict[str, Any]:
+    with _STORE_LOCK:
+        existing = _STORE_CACHE_BY_TENANT.get(tenant_id)
+        if existing is None:
+            existing = _load_store(tenant_id)
+            _STORE_CACHE_BY_TENANT[tenant_id] = existing
+        return existing
 
 
 def _normalize_host(v: str) -> HostApp:
@@ -113,13 +244,14 @@ def _coerce_doc(raw: Dict[str, Any], host_app: HostApp) -> DocumentInfo:
     )
 
 
-def _load_store() -> Dict[str, Any]:
+def _load_store(tenant_id: str) -> Dict[str, Any]:
     """Load store from disk, upgrading older formats if needed."""
-    if not SYNC_FILE.exists():
+    p = _sync_file_for_tenant(tenant_id)
+    if not p.exists():
         return {"version": 2, "updated_at": _now(), "clients": {}}
 
     try:
-        data = json.loads(SYNC_FILE.read_text(encoding="utf-8") or "{}")
+        data = json.loads(p.read_text(encoding="utf-8") or "{}")
     except Exception:
         logger.debug("[documents] load store failed; defaulting empty", exc_info=True)
         return {"version": 2, "updated_at": _now(), "clients": {}}
@@ -155,13 +287,37 @@ def _load_store() -> Dict[str, Any]:
 
 def _save_store(store: Dict[str, Any]) -> None:
     try:
-        SYNC_DIR.mkdir(parents=True, exist_ok=True)
-        SYNC_FILE.write_text(json.dumps(store, ensure_ascii=False, indent=2), encoding="utf-8")
+        _write_store_payload(
+            json.dumps(store, ensure_ascii=False, indent=2),
+            tenant_id=_effective_tenant_id(),
+        )
     except Exception as e:
         logger.warning(f"保存同步文档失败: {e}", exc_info=True)
 
 
-def _update_snapshot(store: Dict[str, Any], key: _SnapshotKey, docs: List[Dict[str, Any]]) -> int:
+def _docs_signature(coerced_docs: List[Dict[str, Any]]) -> str:
+    try:
+        parts: List[str] = []
+        for d in coerced_docs or []:
+            if not isinstance(d, dict):
+                continue
+            host = _normalize_host(str(d.get("hostApp") or "unknown"))
+            did = str(d.get("id") or "").strip()
+            path = str(d.get("path") or "").strip()
+            name = str(d.get("name") or "").strip()
+            active = "1" if d.get("isActive") else "0"
+            parts.append(f"{host}|{did}|{path}|{name}|{active}")
+        parts.sort()
+        raw = ";;".join(parts)
+        return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+    except Exception:
+        logger.debug("[documents] signature failed", exc_info=True)
+        return f"sig_{time.time()}"
+
+
+def _update_snapshot(
+    store: Dict[str, Any], key: _SnapshotKey, docs: List[Dict[str, Any]]
+) -> Tuple[int, bool]:
     clients = store.setdefault("clients", {})
     client = clients.setdefault(key.client_id, {})
     hosts = client.setdefault("hosts", {})
@@ -176,9 +332,28 @@ def _update_snapshot(store: Dict[str, Any], key: _SnapshotKey, docs: List[Dict[s
             continue
         coerced.append(d.model_dump())
 
-    hosts[str(key.host_app)] = {"last_seen": _now(), "documents": coerced}
+    sig = _docs_signature(coerced)
+    tenant_id = _effective_tenant_id()
+    sig_key = (tenant_id, key.client_id, str(key.host_app))
+    prev_sig = _LAST_SIG_BY_KEY.get(sig_key)
+    prev_snap = hosts.get(str(key.host_app))
+    changed = bool(prev_sig is None or sig != prev_sig)
+
+    # Always keep last_seen fresh in memory (TTL filter relies on it).
+    # Persist to disk only when the doc set changes, and do it write-behind.
+    if changed:
+        hosts[str(key.host_app)] = {"last_seen": _now(), "documents": coerced}
+        _LAST_SIG_BY_KEY[sig_key] = sig
+    else:
+        if isinstance(prev_snap, dict):
+            prev_snap["last_seen"] = _now()
+        else:
+            hosts[str(key.host_app)] = {"last_seen": _now(), "documents": coerced}
+            _LAST_SIG_BY_KEY[sig_key] = sig
+            changed = True
+
     store["updated_at"] = _now()
-    return len(coerced)
+    return len(coerced), changed
 
 
 def _read_union(store: Dict[str, Any], client_id: str) -> List[Dict[str, Any]]:
@@ -222,21 +397,68 @@ def _read_union(store: Dict[str, Any], client_id: str) -> List[Dict[str, Any]]:
     return out
 
 
-router = APIRouter(prefix="/api", tags=["文档同步"])
+router = APIRouter(prefix="/api", tags=["文档同步"], dependencies=[Depends(_bind_tenancy)])
 
 
 @router.post("/documents/sync", response_model=DocumentSyncResponse)
 async def sync_documents(request: DocumentSyncRequest):
     """Receive a snapshot of currently-open docs from one host app."""
+    span = UsageSpan(
+        event="api_call",
+        component="doc_sync",
+        action="sync",
+        extra={
+            "client_id": str(getattr(request, "client_id", "") or "")[:64],
+            "host_app": str(getattr(request, "host_app", "") or "")[:16],
+            "docs_count": len(getattr(request, "documents", None) or []) if getattr(request, "documents", None) else 0,
+        },
+    )
     try:
+        tenant_id = _effective_tenant_id()
         client_id = _normalize_client_id(request.client_id)
         host_app = _normalize_host(request.host_app)
-        store = _load_store()
-        count = _update_snapshot(store, _SnapshotKey(client_id=client_id, host_app=host_app), request.documents)
-        _save_store(store)
-        logger.info(f"[documents/sync] client_id={client_id} host={host_app} docs={count}")
+        boot_id = str(request.boot_id or "").strip()
+        boot_seq = request.boot_seq
+
+        with _STORE_LOCK:
+            store = _get_store_cached(tenant_id)
+            count, changed = _update_snapshot(
+                store,
+                _SnapshotKey(client_id=client_id, host_app=host_app),
+                request.documents,
+            )
+            if changed:
+                _STORE_DIRTY_BY_TENANT[tenant_id] = True
+                _schedule_flush(tenant_id)
+
+        # Throttle "unchanged" spam to keep logs usable (and reduce file I/O).
+        sig_key = (tenant_id, client_id, str(host_app))
+        now = _now()
+        last = _LAST_UNCHANGED_LOG_AT.get(sig_key) or 0.0
+        if changed or (now - last) > 5.0:
+            if not changed:
+                _LAST_UNCHANGED_LOG_AT[sig_key] = now
+            meta = []
+            if boot_id:
+                meta.append(f"boot={boot_id[:32]}")
+            if boot_seq is not None:
+                meta.append(f"boot_seq={boot_seq}")
+            meta_s = f" ({' '.join(meta)})" if meta else ""
+            logger.info(
+                f"[documents/sync]{meta_s} tenant_id={tenant_id} client_id={client_id} host={host_app} "
+                f"docs={count} changed={changed}"
+            )
+
+        span.set_status_code(200)
+        span.close()
         return DocumentSyncResponse(success=True, count=count)
     except Exception as e:
+        try:
+            span.set_status_code(500)
+            span.fail(error_type=type(e).__name__, error_message=str(e))
+            span.close()
+        except Exception:
+            pass
         logger.error(f"文档同步失败: {e}", exc_info=True)
         return DocumentSyncResponse(success=False, count=0)
 
@@ -244,25 +466,42 @@ async def sync_documents(request: DocumentSyncRequest):
 @router.get("/documents")
 async def get_documents(client_id: str = Query(default="default")):
     """Return union of currently-open documents for a client (TTL-filtered)."""
+    span = UsageSpan(event="api_call", component="doc_sync", action="get_documents", extra={"client_id": str(client_id or "")[:64]})
+    tenant_id = _effective_tenant_id()
     cid = _normalize_client_id(client_id)
-    store = _load_store()
-    docs = _read_union(store, cid)
-    return {"documents": docs, "client_id": cid, "ttl_sec": _ttl_seconds()}
+    with _STORE_LOCK:
+        store = _get_store_cached(tenant_id)
+        docs = _read_union(store, cid)
+    span.set_status_code(200)
+    span.close()
+    return {"documents": docs, "client_id": cid, "tenant_id": tenant_id, "ttl_sec": _ttl_seconds()}
 
 
 @router.post("/documents/clear")
 async def clear_documents(client_id: Optional[str] = Query(default=None)):
     """Clear stored snapshots. Default clears all clients (dev convenience)."""
+    span = UsageSpan(event="api_call", component="doc_sync", action="clear", extra={"client_id": str(client_id or "")[:64]})
     try:
-        store = _load_store()
-        if client_id:
-            cid = _normalize_client_id(client_id)
-            (store.get("clients") or {}).pop(cid, None)
-        else:
-            store["clients"] = {}
-        store["updated_at"] = _now()
-        _save_store(store)
+        tenant_id = _effective_tenant_id()
+        with _STORE_LOCK:
+            store = _get_store_cached(tenant_id)
+            if client_id:
+                cid = _normalize_client_id(client_id)
+                (store.get("clients") or {}).pop(cid, None)
+            else:
+                store["clients"] = {}
+            store["updated_at"] = _now()
+            _STORE_DIRTY_BY_TENANT[tenant_id] = True
+            _schedule_flush(tenant_id)
+        span.set_status_code(200)
+        span.close()
     except Exception as e:
+        try:
+            span.set_status_code(500)
+            span.fail(error_type=type(e).__name__, error_message=str(e))
+            span.close()
+        except Exception:
+            pass
         # Dev convenience endpoint; never fail the call, but don't swallow errors silently.
         logger.warning(f"[documents/clear] failed: {e}", exc_info=True)
     return {"success": True}
@@ -279,9 +518,39 @@ class LogRequest(BaseModel):
 
 
 @router.get("/log")
-async def receive_log(message: str, level: str = "info"):
+async def receive_log(
+    message: str,
+    level: str = "info",
+    boot_id: Optional[str] = Query(default=None),
+    boot_seq: Optional[str] = Query(default=None),
+    client_id: Optional[str] = Query(default=None),
+    host_app: Optional[str] = Query(default=None),
+):
     """Receive frontend logs via GET (WPS webview constraints)."""
-    msg = f"[WPS-前端] {message}"
+    meta_parts: List[str] = []
+    try:
+        if client_id:
+            meta_parts.append(f"client_id={_normalize_client_id(client_id)}")
+    except Exception:
+        meta_parts.append("client_id=?")
+    try:
+        if host_app:
+            meta_parts.append(f"host={_normalize_host(host_app)}")
+    except Exception:
+        meta_parts.append("host=?")
+    try:
+        if boot_id:
+            meta_parts.append(f"boot={str(boot_id)[:64]}")
+    except Exception:
+        meta_parts.append("boot=?")
+    try:
+        if boot_seq:
+            meta_parts.append(f"boot_seq={str(boot_seq)[:32]}")
+    except Exception:
+        meta_parts.append("boot_seq=?")
+
+    meta = f" [{' '.join(meta_parts)}]" if meta_parts else ""
+    msg = f"[WPS-前端]{meta} {message}"
     level_lower = level.lower()
     if level_lower == "error":
         logger.error(msg)

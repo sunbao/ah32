@@ -663,22 +663,51 @@ class MemoryManager:
         return memories
 
 
-# 全局记忆管理器实例
-_memory_manager = None
+# Per-tenant + per-user memory managers (disk storage isolation).
+_MEMORY_MANAGERS: Dict[str, MemoryManager] = {}
+_MEMORY_MANAGERS_LOCK = threading.RLock()
 _global_user_profile_cache = None  # 全局用户档案缓存
 
 
+def _default_memory_storage_root() -> Path:
+    """Resolve the default storage root based on the current tenancy context."""
+    from ..config import settings
+
+    tenant_id = ""
+    user_id = ""
+    try:
+        from ah32.tenancy.context import get_tenant_id, get_user_id
+
+        tenant_id = str(get_tenant_id() or "").strip()
+        user_id = str(get_user_id() or "").strip()
+    except Exception:
+        tenant_id = ""
+        user_id = ""
+
+    if not tenant_id:
+        tenant_id = str(getattr(settings, "default_tenant_id", "public") or "public").strip() or "public"
+    if not user_id:
+        user_id = "anon"
+
+    # Tenant+user scoped storage unit: storage/tenants/<tenant_id>/memory/users/<user_id>/
+    return Path(settings.storage_root) / "tenants" / tenant_id / "memory" / "users" / user_id
+
 
 def get_memory_manager(storage_root: Optional[Path] = None) -> MemoryManager:
-    """获取全局记忆管理器"""
-    global _memory_manager
-    if _memory_manager is None:
-        if storage_root is None:
-            # 修复：使用统一配置，从项目根目录的storage获取
-            from ..config import settings
-            storage_root = settings.storage_root / "memory"
-        _memory_manager = MemoryManager(storage_root)
-    return _memory_manager
+    """Get a memory manager for the given storage root (defaults to tenant+user scoped)."""
+    root = Path(storage_root) if storage_root is not None else _default_memory_storage_root()
+    try:
+        key = str(root.resolve())
+    except Exception:
+        key = str(root)
+
+    with _MEMORY_MANAGERS_LOCK:
+        mgr = _MEMORY_MANAGERS.get(key)
+        if mgr is not None:
+            return mgr
+        mgr = MemoryManager(root)
+        _MEMORY_MANAGERS[key] = mgr
+        return mgr
 
 
 
@@ -726,9 +755,9 @@ def verify_global_user_memory() -> Dict[str, Any]:
         - issues: 发现的问题列表
     """
     try:
-        from ..config import settings
-        storage_root = settings.storage_root / "memory"
-        global_memory_file = storage_root / "__GLOBAL_USER___memory.json"
+        manager = get_memory_manager()
+        storage_root = manager.storage_root
+        global_memory_file = Path(storage_root) / "__GLOBAL_USER___memory.json"
 
         result = {
             "file_exists": False,

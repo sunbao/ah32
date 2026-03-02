@@ -14,10 +14,10 @@ from ctypes import wintypes
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Optional
-from fastapi import APIRouter, HTTPException, Header, Request
+from fastapi import APIRouter, HTTPException, Header, Query, Request
 from fastapi.responses import StreamingResponse
 from fastapi import Response
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError
 import sys
 
 from ah32.config import settings
@@ -85,11 +85,25 @@ def _sanitize_frontend_context_for_failure_store(frontend_context: Optional[Dict
 
         docs = frontend_context.get("documents") or []
         docs_count = len(docs) if isinstance(docs, list) else 0
+        doc_snapshot_id = None
+        try:
+            if isinstance(frontend_context, dict):
+                v = (
+                    frontend_context.get("doc_snapshot_id")
+                    or frontend_context.get("docSnapshotId")
+                    or frontend_context.get("doc_snapshot")
+                    or frontend_context.get("docSnapshot")
+                )
+                if isinstance(v, str) and v.strip():
+                    doc_snapshot_id = v.strip()
+        except Exception:
+            logger.debug("[failure_context] extract doc_snapshot_id failed (ignored)", exc_info=True)
 
         return {
             "host_app": host_app,
             "activeDocument": active_out or None,
             "documents_count": docs_count,
+            "doc_snapshot_id": doc_snapshot_id,
             "run_context": run_out or None,
             "timestamp": frontend_context.get("timestamp"),
         }
@@ -345,10 +359,7 @@ async def generate_session(
     api_key: Optional[str] = Header(None, alias="X-API-Key")
 ):
     try:
-        # 验证API密钥
-        if settings.enable_auth and ('pytest' not in sys.modules and 'PYTEST_CURRENT_TEST' not in os.environ):
-            if not api_key or api_key != settings.api_key:
-                raise HTTPException(status_code=401, detail="Invalid API Key")
+        # Auth is enforced centrally for /agentic/* in server middleware.
         
         # 读取原始请求体用于调试
         body_bytes = await request.body()
@@ -462,9 +473,7 @@ async def plan_repair(
     error_type = (request.error_type or "").strip().lower()
     fast_path_only = bool(request.attempt <= 0 or error_type in ("preflight", "preflight_validate", "validate_only"))
     try:
-        if settings.enable_auth and ("pytest" not in sys.modules and "PYTEST_CURRENT_TEST" not in os.environ):
-            if not api_key or api_key != settings.api_key:
-                raise HTTPException(status_code=401, detail="Invalid API Key")
+        # Auth is enforced centrally for /agentic/* in server middleware.
 
         # Deterministic fast-path: many "repair" requests are just schema noise (e.g. `params` wrappers).
         # Normalize + validate first so we don't waste LLM calls and we avoid repeated "invalid plan" loops.
@@ -608,9 +617,7 @@ async def plan_generate(
     if host not in ("wps", "et", "wpp"):
         host = "wps"
     try:
-        if settings.enable_auth and ("pytest" not in sys.modules and "PYTEST_CURRENT_TEST" not in os.environ):
-            if not api_key or api_key != settings.api_key:
-                raise HTTPException(status_code=401, detail="Invalid API Key")
+        # Auth is enforced centrally for /agentic/* in server middleware.
 
         try:
             llm = load_llm(settings)
@@ -696,12 +703,18 @@ async def plan_generate(
 
 class ChatRequest(BaseModel):
     """聊天请求模型"""
+
+    model_config = ConfigDict(extra="forbid")
+
     message: str
     context: Optional[Dict[str, Any]] = None
     session_id: Optional[str] = None  # 优先使用前端传的 session_id
     document_name: Optional[str] = None  # 当前打开的文档名，用于生成 session_id
     frontend_context: Optional[Dict[str, Any]] = None  # 动态感知：前端收集的文档上下文（光标、选区、格式等）
     rule_files: Optional[list[str]] = None  # 每次请求注入的规则文件（docx/txt/md），支持热更新
+    # v1: doc snapshot transport (ephemeral, privacy-first). Prefer putting it inside frontend_context,
+    # but keep a top-level field for API evolution and easier clients.
+    doc_snapshot_id: Optional[str] = None
 
 # 前端统一使用 /agentic/chat/stream 流式接口
 
@@ -721,10 +734,9 @@ async def agentic_chat_stream(
         try:
             yield
         except asyncio.CancelledError:
-            # 捕获并忽略取消信号
-            logger.warning("[HTTP连接] 捕获CancelledError，使用shield保护继续执行")
-            # 不重新抛出，让任务继续执行
-            pass
+            # 连接已断开/请求被取消：立即终止本轮，释放资源
+            logger.info("[HTTP连接] 捕获CancelledError，终止当前流式请求")
+            raise
         except Exception as e:
             logger.error(f"[HTTP连接] 流式处理异常: {e}")
             raise
@@ -732,12 +744,30 @@ async def agentic_chat_stream(
     # 在最外层使用保护
     async with shield_cancellation():
         try:
-            # 验证API密钥（在 pytest 下绕过以便单元测试可以不携带头）
-            if settings.enable_auth and ('pytest' not in sys.modules and 'PYTEST_CURRENT_TEST' not in os.environ):
-                if not api_key or api_key != settings.api_key:
-                    raise HTTPException(status_code=401, detail="Invalid API Key")
+            # Auth is enforced centrally for /agentic/* in server middleware.
 
-            logger.info(f"收到Agentic流式对话请求: {request.message[:50]}...")
+            boot_id = ""
+            boot_seq = ""
+            client_id = ""
+            try:
+                fc = request.frontend_context or {}
+                if isinstance(fc, dict):
+                    boot_id = str(fc.get("boot_id") or fc.get("bootId") or "").strip()
+                    boot_seq = str(fc.get("boot_seq") or fc.get("bootSeq") or "").strip()
+                    client_id = str(fc.get("client_id") or fc.get("clientId") or "").strip()
+            except Exception:
+                logger.debug("[chat] parse boot_id/client_id failed (ignored)", exc_info=True)
+
+            meta_parts = []
+            if client_id:
+                meta_parts.append(f"client_id={client_id[:48]}")
+            if boot_id:
+                meta_parts.append(f"boot={boot_id[:48]}")
+            if boot_seq:
+                meta_parts.append(f"boot_seq={boot_seq[:16]}")
+            meta = f" ({' '.join(meta_parts)})" if meta_parts else ""
+
+            logger.info(f"收到Agentic流式对话请求{meta}: {request.message[:50]}...")
 
             async def generate_stream():
                 """生成SSE事件流 - 真正调用ReActAgent"""
@@ -746,6 +776,83 @@ async def agentic_chat_stream(
                 logger.info(
                     f"[响应时间监控] 请求开始时间: {datetime.fromtimestamp(request_start_time).strftime('%Y-%m-%d %H:%M:%S')}"
                 )
+
+                trace_id = str(getattr(req.state, "trace_id", "") or "").strip()
+                tenant_id = str(getattr(req.state, "tenant_id", "") or "").strip()
+
+                snapshot_id = ""
+                snapshot_store = None
+                frontend_context_for_agent = request.frontend_context
+
+                try:
+                    try:
+                        def _as_snapshot_id(value: Any) -> str:
+                            if value is None:
+                                return ""
+                            if isinstance(value, str):
+                                return value.strip()
+                            if isinstance(value, (int, float)):
+                                return str(value).strip()
+                            # Ignore dict/list/etc. (frontends may attach meta objects).
+                            return ""
+
+                        fc = request.frontend_context or {}
+                        snapshot_id = (
+                            _as_snapshot_id(request.doc_snapshot_id)
+                            or _as_snapshot_id(fc.get("doc_snapshot_id"))
+                            or _as_snapshot_id(fc.get("docSnapshotId"))
+                            or _as_snapshot_id(fc.get("doc_snapshot"))
+                            or _as_snapshot_id(fc.get("docSnapshot"))
+                        )
+                    except Exception:
+                        snapshot_id = ""
+
+                    if not snapshot_id:
+                        logger.debug("[doc_snapshot] no snapshot_id provided; proceeding without snapshot")
+
+                    if snapshot_id:
+                        from ah32.doc_snapshots import get_doc_snapshot_store
+
+                        snapshot_store = get_doc_snapshot_store()
+                        try:
+                            snapshot_store.cleanup_expired()
+                        except Exception:
+                            logger.debug("[doc_snapshot] cleanup_expired failed (ignored)", exc_info=True)
+
+                        # Validate existence early so the turn fails fast (and we still delete).
+                        try:
+                            has_extracted = (snapshot_store.root_dir / snapshot_id / "extracted_text.txt").exists()
+                        except Exception:
+                            has_extracted = False
+                        has_doc = False
+                        try:
+                            has_doc = snapshot_store.get_doc_file_path(snapshot_id) is not None
+                        except Exception:
+                            has_doc = False
+                        if not (has_doc or has_extracted):
+                            # Best-effort: do not hard-fail the entire chat turn when snapshot is missing.
+                            # This can happen in remote-backend mode due to disconnect/cancel/TTL cleanup.
+                            logger.warning(
+                                "[doc_snapshot] snapshot not ready or missing; proceed without snapshot id=%s",
+                                snapshot_id,
+                            )
+                            snapshot_id = ""
+
+                        # Ensure the agent sees doc_snapshot_id via frontend_context.
+                        if snapshot_id and isinstance(frontend_context_for_agent, dict):
+                            fc = dict(frontend_context_for_agent)
+                            fc.setdefault("doc_snapshot_id", snapshot_id)
+                            frontend_context_for_agent = fc
+                        elif snapshot_id:
+                            frontend_context_for_agent = {"doc_snapshot_id": snapshot_id}
+                except Exception as e:
+                    logger.error("[doc_snapshot] attach snapshot failed: %s", e, exc_info=True)
+                    error_data = json.dumps(
+                        {"message": str(e), "error": str(e), "trace_id": trace_id, "tenant_id": tenant_id},
+                        ensure_ascii=False,
+                    )
+                    yield f"event: error\ndata: {error_data}\n\n".encode("utf-8")
+                    return
 
                 try:
                     def _elapsed_ms() -> int:
@@ -762,6 +869,10 @@ async def agentic_chat_stream(
                         If we need chunking, chunk the *content field* into multiple `content` events instead.
                         """
                         payload = dict(payload or {})
+                        if trace_id:
+                            payload.setdefault("trace_id", trace_id)
+                        if tenant_id:
+                            payload.setdefault("tenant_id", tenant_id)
                         payload.setdefault("timestamp", datetime.now().isoformat())
                         payload.setdefault("elapsed_ms", _elapsed_ms())
                         data = json.dumps(payload, ensure_ascii=False, default=str)
@@ -773,14 +884,97 @@ async def agentic_chat_stream(
                         llm = load_llm(settings)
                     except ValueError as e:
                         # Frontend expects `message`; keep `error` for backward compat.
-                        error_data = json.dumps({"message": str(e), "error": str(e)}, ensure_ascii=False)
+                        error_data = json.dumps(
+                            {"message": str(e), "error": str(e), "trace_id": trace_id, "tenant_id": tenant_id},
+                            ensure_ascii=False,
+                        )
                         yield f"event: error\ndata: {error_data}\n\n".encode("utf-8")
                         return
 
-                    tools = get_all_tools()
                     memory_system = Ah32MemorySystem()
-                    vector_store = getattr(req.app.state, "_vector_store", None)
-                    skills_registry = getattr(req.app.state, "_skills_registry", None)
+                    # Tenant-scoped RAG vector store.
+                    vector_store = None
+                    try:
+                        tenant_id = str(getattr(req.state, "tenant_id", "") or "").strip()
+                        registry = getattr(req.app.state, "_tenant_vector_stores", None)
+                        if registry is not None:
+                            vector_store = registry.get_rag_store(tenant_id or str(getattr(settings, "default_tenant_id", "public") or "public"))
+                        else:
+                            vector_store = getattr(req.app.state, "_vector_store", None)
+                    except Exception:
+                        vector_store = getattr(req.app.state, "_vector_store", None)
+                    # Tenant-scoped skills registry (server-managed; no client-sent skills_pack).
+                    skills_registry = None
+                    try:
+                        tenant_id = str(getattr(req.state, "tenant_id", "") or "").strip()
+                        tenant_mgr = getattr(req.app.state, "_tenant_skills_registry", None)
+                        if tenant_mgr is not None:
+                            skills_registry = tenant_mgr.get(
+                                tenant_id or str(getattr(settings, "default_tenant_id", "public") or "public")
+                            )
+                        else:
+                            skills_registry = getattr(req.app.state, "_skills_registry", None)
+                    except Exception:
+                        skills_registry = getattr(req.app.state, "_skills_registry", None)
+                    tools = list(get_all_tools() or [])
+
+                    # Client-sent skills packs are not supported in the current R&D architecture.
+
+                    # Strong backend tools (only via LLM tool-call allowlist)
+                    try:
+                        from ah32.agents.agent_modules.network_agent_tools import WebFetchTool, BrowserSnapshotTool
+
+                        tools.append(WebFetchTool())
+                        tools.append(BrowserSnapshotTool())
+                    except Exception as e:
+                        logger.warning("[tools] init network tools failed (ignored): %s", e, exc_info=True)
+
+                    if vector_store is not None:
+                        try:
+                            from ah32.agents.agent_modules.rag_agent_tools import (
+                                RagSearchTool,
+                                RagStatsTool,
+                                RagListDocumentsTool,
+                                RagIngestUrlTool,
+                            )
+
+                            tools.append(RagSearchTool(vector_store))
+                            tools.append(RagStatsTool(vector_store))
+                            tools.append(RagListDocumentsTool(vector_store))
+                            tools.append(RagIngestUrlTool(vector_store))
+                        except Exception as e:
+                            logger.warning("[tools] init rag tools failed (ignored): %s", e, exc_info=True)
+
+                    try:
+                        from ah32.agents.agent_modules.mm_agent_tools import MmGenerateImageTool
+
+                        tools.append(MmGenerateImageTool())
+                    except Exception as e:
+                        logger.warning("[tools] init multimodal tools failed (ignored): %s", e, exc_info=True)
+
+                    # Apply backend LLM tool allowlist (env overrides default; "*" means allow all).
+                    try:
+                        from ah32.config import _default_llm_tool_allowlist
+
+                        allow_raw = str(getattr(settings, "llm_tool_allowlist", "") or "").strip()
+                        if not allow_raw:
+                            allow_raw = str(_default_llm_tool_allowlist() or "").strip()
+                        if allow_raw.lower() not in ("*", "all"):
+                            allowed = {x.strip() for x in re.split(r"[,\n;]+", allow_raw) if x and str(x).strip()}
+                            before_names = [getattr(t, "name", "") for t in tools or [] if getattr(t, "name", "")]
+                            tools = [t for t in tools or [] if getattr(t, "name", None) in allowed]
+                            missing = sorted(allowed - set(getattr(t, "name", "") for t in tools or []))
+                            if missing:
+                                logger.info("[tools] llm_tool_allowlist missing tool(s): %s", ",".join(missing))
+                            logger.info(
+                                "[tools] applied llm_tool_allowlist: kept=%s total_before=%s",
+                                len(tools or []),
+                                len(before_names),
+                            )
+                        else:
+                            logger.info("[tools] llm_tool_allowlist=all")
+                    except Exception as e:
+                        logger.error("[tools] apply llm_tool_allowlist failed: %s", e, exc_info=True)
                     agent = ReActAgent(
                         llm,
                         tools,
@@ -831,7 +1025,7 @@ async def agentic_chat_stream(
                     try:
                         from ah32._internal.failure_context_store import record_failure_context
 
-                        safe_frontend_context = _sanitize_frontend_context_for_failure_store(request.frontend_context)
+                        safe_frontend_context = _sanitize_frontend_context_for_failure_store(frontend_context_for_agent)
                         record_failure_context(
                             session_id=request.session_id,
                             kind="chat",
@@ -849,10 +1043,10 @@ async def agentic_chat_stream(
                         logger.debug("[failure_context] record chat failed: %s", e, exc_info=True)
 
                     # 动态感知：记录前端上下文
-                    if request.frontend_context:
-                        logger.debug(f"收到前端动态感知: document={request.frontend_context.get('document', {}).get('name')}, "
-                                   f"cursor=第{request.frontend_context.get('cursor', {}).get('page')}页, "
-                                   f"hasSelection={request.frontend_context.get('selection', {}).get('hasSelection')}")
+                    if isinstance(frontend_context_for_agent, dict):
+                        logger.debug(f"收到前端动态感知: document={frontend_context_for_agent.get('document', {}).get('name')}, "
+                                   f"cursor=第{frontend_context_for_agent.get('cursor', {}).get('page')}页, "
+                                   f"hasSelection={frontend_context_for_agent.get('selection', {}).get('hasSelection')}")
 
                     yield _encode_event("phase", {"phase": "agent_ready", "stage": "stream_chat"})
 
@@ -866,7 +1060,7 @@ async def agentic_chat_stream(
                                 request.message,
                                 request.session_id,
                                 request.document_name,
-                                frontend_context=request.frontend_context,
+                                frontend_context=frontend_context_for_agent,
                                 rule_files=request.rule_files,
                                 show_rag_hits=(settings.expose_rag_hits or show_rag),
                             ):
@@ -899,10 +1093,32 @@ async def agentic_chat_stream(
 
                     try:
                         while True:
+                            # Client disconnected: stop immediately (do not keep burning LLM/tool tokens).
+                            try:
+                                if await req.is_disconnected():
+                                    logger.info("[agentic-chat] client disconnected; stop streaming")
+                                    break
+                            except Exception as e:
+                                logger.debug(
+                                    "[agentic-chat] is_disconnected probe failed (ignored): %s",
+                                    e,
+                                    exc_info=True,
+                                )
+
                             # If the agent doesn't emit anything for a while, send a heartbeat so the UI can show elapsed.
                             try:
                                 ev = await asyncio.wait_for(q.get(), timeout=5.0)
                             except asyncio.TimeoutError:
+                                try:
+                                    if await req.is_disconnected():
+                                        logger.info("[agentic-chat] client disconnected; stop emitting heartbeats")
+                                        break
+                                except Exception as e:
+                                    logger.debug(
+                                        "[agentic-chat] is_disconnected probe failed (ignored): %s",
+                                        e,
+                                        exc_info=True,
+                                    )
                                 yield _encode_event("heartbeat", {"phase": current_phase})
                                 if producer_done.is_set() and q.empty():
                                     break
@@ -981,6 +1197,11 @@ async def agentic_chat_stream(
                     finally:
                         try:
                             producer_task.cancel()
+                            try:
+                                await producer_task
+                            except asyncio.CancelledError:
+                                # Expected on disconnect/cancellation.
+                                pass
                         except Exception as e:
                             # Cancellation is best-effort; ignore but log for diagnosis.
                             logger.debug(f"[agentic-chat] cancel producer task failed: {e}", exc_info=True)
@@ -993,15 +1214,41 @@ async def agentic_chat_stream(
                     )
                     logger.info(f"[响应时间监控] 总响应时间: {request_duration:.2f}秒")
 
+                except asyncio.CancelledError:
+                    # Client disconnected or request cancelled: stop without emitting "error".
+                    request_end_time = time.time()
+                    request_duration = request_end_time - request_start_time
+                    logger.info(
+                        f"[响应时间监控] 请求被取消: {datetime.fromtimestamp(request_end_time).strftime('%Y-%m-%d %H:%M:%S')}"
+                    )
+                    logger.info(f"[响应时间监控] 总响应时间: {request_duration:.2f}秒")
+                    return
                 except Exception as e:
                     request_end_time = time.time()
                     request_duration = request_end_time - request_start_time
                     logger.error(f"流式生成错误: {e}")
-                    logger.info(f"[响应时间监控] 请求结束时间: {datetime.fromtimestamp(request_end_time).strftime('%Y-%m-%d %H:%M:%S')}")
+                    logger.info(
+                        f"[响应时间监控] 请求结束时间: {datetime.fromtimestamp(request_end_time).strftime('%Y-%m-%d %H:%M:%S')}"
+                    )
                     logger.info(f"[响应时间监控] 总响应时间: {request_duration:.2f}秒")
                     # Frontend expects `message`; keep `error` for backward compat.
-                    error_data = json.dumps({"message": str(e), "error": str(e)}, ensure_ascii=False)
+                    error_data = json.dumps(
+                        {"message": str(e), "error": str(e), "trace_id": trace_id, "tenant_id": tenant_id},
+                        ensure_ascii=False,
+                    )
                     yield f"event: error\ndata: {error_data}\n\n".encode("utf-8")
+                finally:
+                    # Privacy-first: delete doc snapshot immediately after the turn ends (or fails/cancels).
+                    if snapshot_store is not None and snapshot_id:
+                        try:
+                            snapshot_store.delete(snapshot_id, reason="turn_end")
+                        except Exception as e:
+                            logger.warning(
+                                "[doc_snapshot] delete after turn failed snapshot_id=%s err=%s",
+                                snapshot_id,
+                                e,
+                                exc_info=True,
+                            )
 
             return StreamingResponse(
                 generate_stream(),
@@ -1071,66 +1318,105 @@ async def get_agent_status(
         )
 
 
-class SaveDocumentRequest(BaseModel):
-    """保存文档请求模型"""
-    document_name: str
-    content: str
-    doc_type: str  # "tender" or "bidding"
-    source: str = "wps"
+class ClientSkillSummary(BaseModel):
+    """Lightweight skill metadata for frontend routing (prompt-only; no scripts)."""
+
+    id: str
+    name: str
+    version: str = "0.0.0"
+    priority: int = 0
+    description: str = ""
+    group: str = ""
+    default_writeback: str = ""
+    hosts: list[str] = []
+    tags: list[str] = []
+    intents: list[str] = []
+    triggers: list[str] = []
+    examples: list[str] = []
+    output_schema: str = ""
+    style_spec_hints: str = ""
+    prompt_text: Optional[str] = None
 
 
-@router.post("/document/save")
-async def save_document(
-    request: SaveDocumentRequest,
-    api_key: Optional[str] = Header(None, alias="X-API-Key")
+class ClientSkillsCatalogResponse(BaseModel):
+    schema_version: str = "ah32.client_skills_catalog.v1"
+    generated_at: str
+    skills: list[ClientSkillSummary]
+
+
+@router.get("/skills/catalog")
+async def get_client_skills_catalog(
+    req: Request,
+    api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    include_prompt: bool = Query(default=False, description="Include prompt_text for each skill (truncated)."),
+    max_prompt_chars: int = Query(default=6000, ge=0, le=20000),
 ):
-    """保存文档内容到缓存（供前端WPS插件调用）"""
+    """Return client-owned skill routing metadata for deterministic frontend routing.
+
+    Note: this endpoint MUST NOT execute any skill scripts. It only exposes manifest/routing hints.
+    """
     try:
-        if settings.enable_auth and ('pytest' not in sys.modules and 'PYTEST_CURRENT_TEST' not in os.environ):
-            if not api_key or api_key != settings.api_key:
-                raise HTTPException(status_code=401, detail="Invalid API Key")
+        from ah32.config import settings
 
-        # 创建缓存目录
-        cache_dir = Path.home() / ".ah32" / "cache"
-        cache_dir.mkdir(parents=True, exist_ok=True)
+        # Auth is enforced centrally for /agentic/* in server middleware.
 
-        # 生成文件名（去除非法字符）
-        safe_name = re.sub(r'[<>:"/\\|?*]', '_', request.document_name)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        cache_file = cache_dir / f"document_{request.doc_type}_{safe_name}_{timestamp}.txt"
+        tenant_id = str(getattr(req.state, "tenant_id", "") or "").strip() or str(
+            getattr(settings, "default_tenant_id", "public") or "public"
+        ).strip()
+        app_state = getattr(getattr(req, "app", None), "state", None)
+        tenant_mgr = getattr(app_state, "_tenant_skills_registry", None) if app_state is not None else None
+        if tenant_mgr is not None:
+            skills_registry = tenant_mgr.get(tenant_id)
+        else:
+            skills_registry = getattr(app_state, "_skills_registry", None) if app_state is not None else None
+        if skills_registry is None or not getattr(settings, "skills_enabled", True):
+            return ClientSkillsCatalogResponse(generated_at=datetime.utcnow().isoformat() + "Z", skills=[])
 
-        # 保存文档内容
-        with open(cache_file, 'w', encoding='utf-8') as f:
-            f.write(request.content)
+        items: list[ClientSkillSummary] = []
+        try:
+            skills = skills_registry.list_skills()
+        except Exception:
+            skills = []
 
-        # 更新索引文件
-        index_file = cache_dir / "document_index.json"
-        index_data = {}
-        if index_file.exists():
-            with open(index_file, 'r', encoding='utf-8') as f:
-                index_data = json.load(f)
+        for s in skills or []:
+            try:
+                if not getattr(s, "enabled", False):
+                    continue
+                prompt_text = None
+                if include_prompt:
+                    try:
+                        prompt_text = s.load_prompt_text(max_prompt_chars)
+                    except Exception:
+                        prompt_text = None
+                items.append(
+                    ClientSkillSummary(
+                        id=str(getattr(s, "skill_id", "") or ""),
+                        name=str(getattr(s, "name", "") or ""),
+                        version=str(getattr(s, "version", "") or "0.0.0"),
+                        priority=int(getattr(s, "priority", 0) or 0),
+                        description=str(getattr(s, "description", "") or ""),
+                        group=str(getattr(s, "group", "") or ""),
+                        default_writeback=str(getattr(s, "default_writeback", "") or ""),
+                        hosts=[str(x) for x in (getattr(s, "hosts", None) or []) if str(x or "").strip()],
+                        tags=[str(x) for x in (getattr(s, "tags", None) or []) if str(x or "").strip()],
+                        intents=[str(x) for x in (getattr(s, "intents", None) or []) if str(x or "").strip()],
+                        triggers=[str(x) for x in (getattr(s, "triggers", None) or []) if str(x or "").strip()],
+                        examples=[str(x) for x in (getattr(s, "examples", None) or []) if str(x or "").strip()],
+                        output_schema=str(getattr(s, "output_schema", "") or ""),
+                        style_spec_hints=str(getattr(s, "style_spec_hints", "") or ""),
+                        prompt_text=prompt_text,
+                    )
+                )
+            except Exception:
+                logger.debug("[skills] build client catalog item failed (ignored)", exc_info=True)
 
-        index_data[request.doc_type] = {
-            "file": str(cache_file),
-            "name": request.document_name,
-            "saved_at": datetime.now().isoformat()
-        }
-
-        with open(index_file, 'w', encoding='utf-8') as f:
-            json.dump(index_data, f, ensure_ascii=False, indent=2)
-
-        logger.debug(f"文档已保存: {cache_file}")
-
-        return {
-            "success": True,
-            "path": str(cache_file),
-            "message": "文档保存成功"
-        }
-
+        # Stable ordering for UI diffing + caching.
+        items.sort(key=lambda x: (x.priority, x.id), reverse=True)
+        return ClientSkillsCatalogResponse(generated_at=datetime.utcnow().isoformat() + "Z", skills=items)
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"保存文档失败: {e}", exc_info=True)
+        logger.error("[skills] get_client_skills_catalog failed: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -1180,9 +1466,7 @@ async def record_audit_event(
     The frontend sends these for passive diagnostics; failures should never affect UX.
     """
     try:
-        if settings.enable_auth and ("pytest" not in sys.modules and "PYTEST_CURRENT_TEST" not in os.environ):
-            if not api_key or api_key != settings.api_key:
-                raise HTTPException(status_code=401, detail="Invalid API Key")
+        # Auth is enforced centrally for /agentic/* in server middleware.
 
         # Keep the log compact.
         mode = str(request.mode or "unknown")
@@ -1234,9 +1518,7 @@ async def report_execution_error(
     """接收前端JS宏执行错误，用于跨会话学习"""
     try:
         # 验证API密钥
-        if settings.enable_auth and ('pytest' not in sys.modules and 'PYTEST_CURRENT_TEST' not in os.environ):
-            if not api_key or api_key != settings.api_key:
-                raise HTTPException(status_code=401, detail="Invalid API Key")
+        # Auth is enforced centrally for /agentic/* in server middleware.
 
         # Log a compact, privacy-conscious summary for debugging.
         msg_preview = (request.error_message or "").replace("\r", " ").replace("\n", " ")
@@ -1457,9 +1739,7 @@ async def js_macro_generate(
         except Exception as e:
             logger.warning(f"[js-macro/generate] start log failed: {e}", exc_info=True)
 
-        if settings.enable_auth and ("pytest" not in sys.modules and "PYTEST_CURRENT_TEST" not in os.environ):
-            if not api_key or api_key != settings.api_key:
-                raise HTTPException(status_code=401, detail="Invalid API Key")
+        # Auth is enforced centrally for /agentic/* in server middleware.
 
         try:
             from ah32._internal.failure_context_store import record_failure_context
@@ -1764,9 +2044,7 @@ async def js_macro_repair(
     except Exception as e:
         logger.warning(f"[js-macro/repair] failed to dump input payload: {e}", exc_info=True)
     try:
-        if settings.enable_auth and ('pytest' not in sys.modules and 'PYTEST_CURRENT_TEST' not in os.environ):
-            if not api_key or api_key != settings.api_key:
-                raise HTTPException(status_code=401, detail="Invalid API Key")
+        # Auth is enforced centrally for /agentic/* in server middleware.
 
         try:
             from ah32._internal.failure_context_store import record_failure_context
@@ -2069,10 +2347,7 @@ async def js_macro_vibe_coding(
 ):
     """JS宏Vibe Coding可视化处理端点"""
     try:
-        # 验证API密钥
-        if settings.enable_auth and ('pytest' not in sys.modules and 'PYTEST_CURRENT_TEST' not in os.environ):
-            if not api_key or api_key != settings.api_key:
-                raise HTTPException(status_code=401, detail="Invalid API Key")
+        # Auth is enforced centrally for /agentic/* in server middleware.
 
         logger.info(f"收到JS宏Vibe Coding请求: {request.user_query[:50]}...")
 
@@ -2155,10 +2430,7 @@ async def js_macro_vibe_coding_stream(
     """JS宏Vibe Coding流式可视化端点"""
     try:
         t0 = time.perf_counter()
-        # 验证API密钥
-        if settings.enable_auth and ('pytest' not in sys.modules and 'PYTEST_CURRENT_TEST' not in os.environ):
-            if not api_key or api_key != settings.api_key:
-                raise HTTPException(status_code=401, detail="Invalid API Key")
+        # Auth is enforced centrally for /agentic/* in server middleware.
 
         try:
             from ah32._internal.failure_context_store import record_failure_context
@@ -2315,9 +2587,7 @@ async def js_plan_vibe_coding_stream(
         host = "wps"
 
     try:
-        if settings.enable_auth and ("pytest" not in sys.modules and "PYTEST_CURRENT_TEST" not in os.environ):
-            if not api_key or api_key != settings.api_key:
-                raise HTTPException(status_code=401, detail="Invalid API Key")
+        # Auth is enforced centrally for /agentic/* in server middleware.
 
         try:
             llm = load_llm(settings)

@@ -68,6 +68,29 @@ import sys
 log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
 log_level_value = getattr(logging, log_level, logging.INFO)
 
+# Inject tenancy context into all log records (trace_id/tenant_id/user_id).
+# This enables remote-backend troubleshooting without requiring every log call
+# to manually include these fields.
+_old_record_factory = logging.getLogRecordFactory()
+
+
+def _tenancy_record_factory(*args, **kwargs):
+    record = _old_record_factory(*args, **kwargs)
+    try:
+        from ah32.tenancy.context import get_tenant_id, get_trace_id, get_user_id
+
+        record.trace_id = (get_trace_id() or "").strip() or "-"
+        record.tenant_id = (get_tenant_id() or "").strip() or "-"
+        record.user_id = (get_user_id() or "").strip() or "-"
+    except Exception:
+        record.trace_id = "-"
+        record.tenant_id = "-"
+        record.user_id = "-"
+    return record
+
+
+logging.setLogRecordFactory(_tenancy_record_factory)
+
 # Ensure UTF-8 output even when launched directly (avoid mojibake in logs).
 _reconfigure_exc_info = None
 try:
@@ -78,7 +101,7 @@ except Exception:
 
 logging.basicConfig(
     level=log_level_value,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format="%(asctime)s - %(name)s - %(levelname)s - trace=%(trace_id)s tenant=%(tenant_id)s user=%(user_id)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 if _reconfigure_exc_info:
@@ -161,7 +184,9 @@ def cleanup_port(port: int = 5123):
 # 启动前自动清理端口
 cleanup_port(5123)
 # ============================================================
-from fastapi import FastAPI
+import uuid
+
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.security import APIKeyHeader
@@ -184,6 +209,11 @@ from ah32.server.metrics_api import router as metrics_router  # Metrics export A
 from ah32.server.audit_api import router as audit_router  # Audit API
 from ah32.server.runtime_config_api import router as runtime_config_router  # Frontend-safe runtime flags
 from ah32.server.telemetry_api import router as telemetry_router  # Telemetry ingest
+from ah32.server.doc_snapshot_api import router as doc_snapshot_router  # Ephemeral doc snapshot API (v1)
+from ah32.server.asset_api import router as asset_router  # Ephemeral asset store (v1)
+from ah32.server.mm_api import router as mm_router  # Multimodal provider APIs (v1)
+from ah32.server.auth_api import router as auth_router  # JWT token issuance (v1)
+from ah32.server.tenant_user_api import router as tenant_user_router  # Tenant user allowlist (minimal)
 
 from ah32.agents.agentic_coordinator import get_coordinator  # 阿蛤（AH32）协调器
 from ah32.services.tasks import ConversationRepository, TaskRepository
@@ -252,6 +282,103 @@ async def lifespan(app: FastAPI):
                 logger.warning(f"安全警告 [{warning['level']}]: {warning['message']}")
             for error in security_report["errors"]:
                 logger.error(f"安全错误 [{error['level']}]: {error['message']}")
+
+        # Seed demo tenants + users (R&D convenience).
+        # This makes the on-disk JSON formats visible and enables quick manual testing.
+        try:
+            import json
+            import time
+            from pathlib import Path
+
+            from ah32.security.keyring import get_tenant_keyring
+            from ah32.tenancy.user_registry import get_tenant_user_registry
+
+            # Allow overriding seed tenants/users for automation, but keep a sensible default.
+            # Defaults: 3 tenants, each with 5 users.
+            seed_tenants_raw = str(os.environ.get("AH32_SEED_TENANTS", "") or "").strip()
+            if seed_tenants_raw:
+                seed_tenants = [x.strip() for x in seed_tenants_raw.split(",") if x.strip()]
+            else:
+                seed_tenants = ["demo-a", "demo-b", "demo-c"]
+
+            seed_user_prefix = str(os.environ.get("AH32_SEED_USER_PREFIX", "user") or "user").strip() or "user"
+            seed_user_count = 5
+            try:
+                seed_user_count = int(os.environ.get("AH32_SEED_USER_COUNT") or "5")
+                seed_user_count = max(1, min(seed_user_count, 50))
+            except Exception:
+                seed_user_count = 5
+
+            # Per-tenant api keys.
+            # - If you want explicit keys, set AH32_SEED_TENANT_KEYS as "demo-a=key1,demo-b=key2".
+            # - Otherwise keys default to "<tenant_id>-key".
+            seed_keys_raw = str(os.environ.get("AH32_SEED_TENANT_KEYS", "") or "").strip()
+            seed_keys = {}
+            if seed_keys_raw:
+                for pair in [x.strip() for x in seed_keys_raw.split(",") if x.strip()]:
+                    if "=" not in pair:
+                        continue
+                    k, v = pair.split("=", 1)
+                    k = k.strip()
+                    v = v.strip()
+                    if k and v:
+                        seed_keys[k] = v
+
+            # 1) Tenant api-key keyring seed: storage/tenants/keyring.json
+            kr = get_tenant_keyring()
+            keyring_path = Path(getattr(kr, "path", settings.storage_root / "tenants" / "keyring.json"))
+            try:
+                keyring_path.parent.mkdir(parents=True, exist_ok=True)
+                if keyring_path.exists():
+                    try:
+                        raw = keyring_path.read_text(encoding="utf-8")
+                        keyring_obj = json.loads(raw) if raw.strip() else {}
+                        if not isinstance(keyring_obj, dict):
+                            keyring_obj = {}
+                    except Exception:
+                        keyring_obj = {}
+                else:
+                    keyring_obj = {}
+
+                tenants_obj = keyring_obj.get("tenants") if isinstance(keyring_obj.get("tenants"), dict) else {}
+                if not isinstance(tenants_obj, dict):
+                    tenants_obj = {}
+
+                changed = False
+                for tid in seed_tenants[:20]:
+                    key = seed_keys.get(tid) or f"{tid}-key"
+                    if tid not in tenants_obj or not isinstance(tenants_obj.get(tid), dict) or not str(tenants_obj.get(tid, {}).get("api_key") or "").strip():
+                        tenants_obj[tid] = {"api_key": key}
+                        changed = True
+
+                if changed or not keyring_path.exists():
+                    keyring_obj["schema_version"] = keyring_obj.get("schema_version") or "ah32.tenant_keyring.v1"
+                    keyring_obj["updated_at"] = int(time.time())
+                    keyring_obj["tenants"] = tenants_obj
+                    keyring_path.write_text(json.dumps(keyring_obj, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+                    logger.info("[seed] ensured tenant keyring: %s tenants=%s", keyring_path, len(tenants_obj))
+            except Exception as e:
+                logger.error("[seed] ensure keyring failed path=%s err=%s", keyring_path, e, exc_info=True)
+
+            # 2) Tenant user allowlist seed (only triggers when policy file exists)
+            reg = get_tenant_user_registry()
+            for tid in seed_tenants[:20]:
+                try:
+                    # Create the policy file (enforcement ON) if missing, and add a small user set.
+                    # Keep it idempotent: upsert is safe.
+                    if not reg.policy_exists(tid):
+                        note = "seeded for R&D; edit storage/tenants/<tenant_id>/policy/users.json"
+                    else:
+                        note = ""
+
+                    for i in range(1, seed_user_count + 1):
+                        uid = f"{seed_user_prefix}{i}"
+                        reg.upsert_user(tid, uid, enabled=True, note=note)
+                    logger.info("[seed] ensured tenant users policy (enforced): tenant=%s users=%s", tid, seed_user_count)
+                except Exception as e:
+                    logger.error("[seed] ensure users policy failed tenant=%s err=%s", tid, e, exc_info=True)
+        except Exception:
+            logger.error("[seed] demo tenant/user seed failed", exc_info=True)
         
         # 初始化服务
         # Embedding preflight: fail fast in offline mode if the local cache is incomplete.
@@ -275,32 +402,43 @@ async def lifespan(app: FastAPI):
             logger.warning(f"[llm] not configured: {e}")
             app.state._llm = None
 
-        # Hot-loaded skills (prompt-only) - loaded on demand per request, but keep a shared registry.
-        try:
-            from ah32.skills import SkillRegistry
-            from ah32.skills.seed import seed_builtin_skills
-
-            try:
-                seeded = seed_builtin_skills(settings.skills_dir)
-                if seeded:
-                    logger.info(f"[skills] seeded_builtin={seeded} dest={settings.skills_dir}")
-            except Exception as e:
-                logger.warning(f"[skills] seed builtin failed: {e}")
-
-            app.state._skills_registry = SkillRegistry(
-                root_dir=settings.skills_dir,
-                max_total_chars=settings.skills_max_chars,
-            )
-        except Exception as e:
-            logger.warning(f"[skills] registry init failed: {e}")
-            app.state._skills_registry = None
-
         embedding_dim = None
         try:
             # One-time probe; avoids Chroma dimension mismatch when switching models.
             embedding_dim = len(app.state._embedding.embed_query("dimension_probe"))
         except Exception as e:
             logger.warning(f"[embedding] dimension probe failed (will use model-only collection name): {e}")
+
+        # Tenant-scoped vector stores (RAG / skills routing / memory).
+        try:
+            from ah32.tenancy.vector_store_registry import TenantVectorStoreRegistry
+
+            app.state._tenant_vector_stores = TenantVectorStoreRegistry(
+                storage_root=settings.storage_root,
+                embedding=app.state._embedding,
+                embedding_model=settings.embedding_model,
+                embedding_dim=embedding_dim,
+            )
+        except Exception as e:
+            logger.error("[tenant] init TenantVectorStoreRegistry failed: %s", e, exc_info=True)
+            app.state._tenant_vector_stores = None
+
+        # Tenant-scoped skills registries (prompt-only; server-managed).
+        default_tenant_id = str(getattr(settings, "default_tenant_id", "public") or "public").strip() or "public"
+        try:
+            from ah32.tenancy.skills_registry_manager import TenantSkillsRegistryManager
+
+            app.state._tenant_skills_registry = TenantSkillsRegistryManager(
+                storage_root=settings.storage_root,
+                max_total_chars=settings.skills_max_chars,
+                tenant_vector_stores=getattr(app.state, "_tenant_vector_stores", None),
+            )
+            # Convenience pointer for legacy call-sites (default tenant only).
+            app.state._skills_registry = app.state._tenant_skills_registry.get(default_tenant_id)
+        except Exception as e:
+            logger.error("[skills] init TenantSkillsRegistryManager failed: %s", e, exc_info=True)
+            app.state._tenant_skills_registry = None
+            app.state._skills_registry = None
 
         rag_collection_name = make_collection_name(
             "ah32_rag",
@@ -312,24 +450,28 @@ async def lifespan(app: FastAPI):
         # cross-workload contention). The SkillRegistry will use it for similarity
         # routing and keep it in sync with hot-loaded skills.
         try:
-            skills_collection_name = make_collection_name(
-                "skills",
-                settings.embedding_model,
-                embedding_dim=embedding_dim,
-            )
-            app.state._skills_vector_store = LocalVectorStore(
-                persist_path=settings.skills_vector_store_path,
-                embedding=app.state._embedding,
-                config={
-                    "collection_name": skills_collection_name,
-                    "collection_metadata": {
-                        "embedding_model": settings.embedding_model,
-                        "embedding_dim": embedding_dim,
-                        # Explicitly prefer cosine for short "routing_text" embeddings.
-                        "hnsw:space": "cosine",
+            # Backward-compatible default instance for server-managed skills routing (dev fallback).
+            if getattr(app.state, "_tenant_vector_stores", None) is not None:
+                app.state._skills_vector_store = app.state._tenant_vector_stores.get_skills_routing_store(default_tenant_id)
+            else:
+                skills_collection_name = make_collection_name(
+                    "skills",
+                    settings.embedding_model,
+                    embedding_dim=embedding_dim,
+                )
+                app.state._skills_vector_store = LocalVectorStore(
+                    persist_path=settings.skills_vector_store_path,
+                    embedding=app.state._embedding,
+                    config={
+                        "collection_name": skills_collection_name,
+                        "collection_metadata": {
+                            "embedding_model": settings.embedding_model,
+                            "embedding_dim": embedding_dim,
+                            # Explicitly prefer cosine for short "routing_text" embeddings.
+                            "hnsw:space": "cosine",
+                        },
                     },
-                },
-            )
+                )
             try:
                 if app.state._skills_registry is not None and hasattr(
                     app.state._skills_registry, "set_routing_vector_store"
@@ -340,17 +482,20 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"[skills] init routing vector store failed (ignored): {e}")
 
-        app.state._vector_store = LocalVectorStore(
-            persist_path=settings.embeddings_path,
-            embedding=app.state._embedding,
-            config={
-                "collection_name": rag_collection_name,
-                "collection_metadata": {
-                    "embedding_model": settings.embedding_model,
-                    "embedding_dim": embedding_dim,
+        if getattr(app.state, "_tenant_vector_stores", None) is not None:
+            app.state._vector_store = app.state._tenant_vector_stores.get_rag_store(default_tenant_id)
+        else:
+            app.state._vector_store = LocalVectorStore(
+                persist_path=settings.embeddings_path,
+                embedding=app.state._embedding,
+                config={
+                    "collection_name": rag_collection_name,
+                    "collection_metadata": {
+                        "embedding_model": settings.embedding_model,
+                        "embedding_dim": embedding_dim,
+                    },
                 },
-            },
-        )
+            )
         # 初始化阿蛤（AH32）协调器并传递向量存储
         from ah32.agents.agentic_coordinator import get_coordinator
         get_coordinator(app.state._vector_store)
@@ -436,7 +581,54 @@ app.add_middleware(
     allow_headers=["*"],  # 允许所有请求头
     expose_headers=["*"],  # 暴露所有响应头
 )
+
+
+@app.middleware("http")
+async def _trace_and_tenancy(request: Request, call_next):
+    """Attach trace_id and enforce tenant/user/auth context for /agentic/* endpoints."""
+    trace_id = (
+        str(request.headers.get("X-AH32-Trace-Id") or "").strip()
+        or str(request.headers.get("X-Trace-Id") or "").strip()
+        or uuid.uuid4().hex
+    )
+    try:
+        request.state.trace_id = trace_id
+    except Exception:
+        pass
+
+    # Bind trace_id globally (best-effort).
+    try:
+        from ah32.tenancy.context import set_trace_id
+
+        set_trace_id(trace_id)
+    except Exception:
+        pass
+
+    if str(request.url.path or "").startswith("/agentic"):
+        try:
+            from ah32.security.request_context import bind_tenancy_for_request
+
+            with bind_tenancy_for_request(request, trace_id=trace_id):
+                response = await call_next(request)
+        except HTTPException as e:
+            return JSONResponse(
+                status_code=int(getattr(e, "status_code", 500) or 500),
+                content={"ok": False, "error": getattr(e, "detail", str(e)), "trace_id": trace_id},
+            )
+        except Exception as e:
+            logger.error("[middleware] agentic request failed: %s", e, exc_info=True)
+            return JSONResponse(status_code=500, content={"ok": False, "error": str(e), "trace_id": trace_id})
+    else:
+        response = await call_next(request)
+
+    try:
+        response.headers["X-AH32-Trace-Id"] = trace_id
+    except Exception:
+        pass
+    return response
+
 # 注册路由 - 纯Agentic模式
+app.include_router(auth_router)  # JWT token issuance
 app.include_router(agentic_chat_router)  # 唯一用户入口
 app.include_router(document_monitor_router)  # 文档同步API
 app.include_router(rag_router)  # RAG知识库API
@@ -445,6 +637,10 @@ app.include_router(metrics_router)  # Metrics export
 app.include_router(audit_router)  # Audit export
 app.include_router(runtime_config_router)  # Frontend-safe runtime flags
 app.include_router(telemetry_router)  # Telemetry ingest/query (query gated by AH32_ENABLE_DEV_ROUTES)
+app.include_router(doc_snapshot_router)  # Ephemeral doc snapshot transport
+app.include_router(asset_router)  # Ephemeral generated assets (images)
+app.include_router(mm_router)  # Multimodal APIs (vision/image gen)
+app.include_router(tenant_user_router)  # Tenant user allowlist (minimal)
 if settings.enable_dev_routes:
     # Dev-only telemetry UI/query; keep this out of the core server package so it can be excluded.
     from ah32.dev.telemetry_dev_api import router as telemetry_dev_router

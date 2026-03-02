@@ -42,7 +42,7 @@ ah32-ui/.idea/
 
 # Codex / local agent artifacts
 .codex/
-openspec/
+openspec/**
 .codex-loop*/
 .coverage
 scripts/ralph_codex_loop.sh
@@ -50,6 +50,14 @@ scripts/ralph_codex_prompt.md
 
 # Config
 .env
+
+# Track OpenSpec change proposals (collaboration)
+!openspec/changes/
+!openspec/changes/**
+
+# Track OpenSpec main specs (synced from archived changes)
+!openspec/specs/
+!openspec/specs/**
 
 # Build artifacts
 *.spec

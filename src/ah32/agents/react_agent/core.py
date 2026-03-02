@@ -396,14 +396,9 @@ class ReActAgent:
 
         self.skills_registry = skills_registry
 
-        # Skill tools executor (for skill.json tools -> scripts/*.py)
+        # Skill manifest tools (skill.json.tools -> scripts/*.py) are deprecated:
+        # client skills will be executed on the frontend (JS), not on the backend.
         self._skill_tool_executor = None
-        try:
-            from ah32.skills.tool_executor import ToolExecutor as SkillToolExecutor
-
-            self._skill_tool_executor = SkillToolExecutor(max_tool_calls_per_turn=3)
-        except Exception as e:
-            logger.warning(f"[skills] init skill tool executor failed: {e}", exc_info=True)
 
         # Skills selected for current turn (used to resolve skill tools)
         self._selected_skills: List[Any] = []
@@ -1591,6 +1586,13 @@ class ReActAgent:
             from ah32.plan.normalize import normalize_plan_payload
 
             obj = json.loads(payload)
+            # Safety: do not allow embedding base64/data URLs into Plan JSON. Use asset:// instead.
+            try:
+                raw = json.dumps(obj, ensure_ascii=False, default=str)
+                if "data:image/" in raw.lower() or ";base64," in raw.lower():
+                    return None, "invalid_plan:base64_data_url_not_allowed"
+            except Exception:
+                pass
             plan = Plan.model_validate(normalize_plan_payload(obj, host_app=host))
         except ValidationError as e:
             return None, f"invalid_plan:{e.errors(include_url=False)}"
@@ -1770,10 +1772,12 @@ class ReActAgent:
             f"User request:\n{user_query}\n"
         )
 
-        import asyncio as _asyncio
-
         t0 = time.perf_counter()
-        resp = await _asyncio.shield(llm.ainvoke([("system", system), ("system", context), ("user", user)]))
+        try:
+            resp = await llm.ainvoke([("system", system), ("system", context), ("user", user)])
+        except asyncio.CancelledError:
+            logger.info("[writeback] plan generation cancelled")
+            raise
         self._accumulate_token_usage(resp)
         ms = int((time.perf_counter() - t0) * 1000)
         try:
@@ -2339,7 +2343,53 @@ class ReActAgent:
                                     [
                                         f"=== 文档内容(前端提取): {name} ===\n",
                                         f"【统计】字符: {char_count}, 行数: {line_count}",
+                                        (
+                                            "NOTE: document snapshot is missing; this is a client-provided preview and may be incomplete."
+                                            if str(ctx.get("doc_context_mode") or "").strip().lower() == "preview_only"
+                                            else ""
+                                        ),
                                         "来源: frontend_context.active_doc_text\n",
+                                        "=" * 50,
+                                        "",
+                                        content,
+                                        "",
+                                        "=" * 50,
+                                        f"读取完成：{name}",
+                                    ]
+                                )
+                                self._tool_cache[cache_key] = rendered
+                                return rendered
+
+                        # Doc snapshot (v1): when the backend cannot read client-local paths, the frontend can upload
+                        # an ephemeral snapshot and pass `doc_snapshot_id` in frontend_context.
+                        try:
+                            sid = str(
+                                ctx.get("doc_snapshot_id")
+                                or ctx.get("docSnapshotId")
+                                or ctx.get("doc_snapshot")
+                                or ctx.get("docSnapshot")
+                                or ""
+                            ).strip()
+                        except Exception:
+                            sid = ""
+                        if sid:
+                            try:
+                                content_full = str(maybe_extract_active_doc_text_full(ctx) or "")
+                            except Exception:
+                                content_full = ""
+                            if content_full.strip():
+                                name = active_name or requested
+                                content = content_full
+                                if len(content) > 60_000:
+                                    content = content[: 60_000 - 20] + "\n...(truncated)"
+                                char_count = len(content_full)
+                                line_count = content_full.count("\n") + 1 if content_full else 0
+
+                                rendered = "\n".join(
+                                    [
+                                        f"=== 文档内容(快照): {name} ===\n",
+                                        f"【统计】字符: {char_count}, 行数: {line_count}",
+                                        f"来源: doc_snapshot_id={sid}\n",
                                         "=" * 50,
                                         "",
                                         content,
@@ -3383,6 +3433,93 @@ class ReActAgent:
 
                     host = None
 
+                # Frontend-led skill routing (deterministic, no LLM on client):
+                # - If frontend is confident (>= accept_threshold) or explicit switch, force primary skill.
+                # - Else, optionally constrain backend routing to the frontend candidate set.
+                allow_skill_ids = None
+                front_router_metrics = None
+                try:
+                    sel = None
+                    if isinstance(frontend_context, dict):
+                        sel = (
+                            frontend_context.get("client_skill_selection")
+                            or frontend_context.get("clientSkillSelection")
+                            or None
+                        )
+                    if isinstance(sel, dict) and self.skills_registry is not None:
+                        front_primary = str(
+                            sel.get("primary_skill_id")
+                            or sel.get("primarySkillId")
+                            or sel.get("primary")
+                            or ""
+                        ).strip()
+                        try:
+                            front_score = float(sel.get("primary_score") or sel.get("primaryScore") or 0.0)
+                        except Exception:
+                            front_score = 0.0
+                        try:
+                            front_threshold = float(sel.get("accept_threshold") or sel.get("acceptThreshold") or 0.0)
+                        except Exception:
+                            front_threshold = 0.0
+                        try:
+                            front_explicit = bool(sel.get("explicit"))
+                        except Exception:
+                            front_explicit = False
+
+                        cand_ids: list[str] = []
+                        try:
+                            cands = sel.get("candidates")
+                            if isinstance(cands, list):
+                                for c in cands[:12]:
+                                    if not isinstance(c, dict):
+                                        continue
+                                    cid = str(c.get("id") or c.get("skill_id") or c.get("skillId") or "").strip()
+                                    if cid:
+                                        cand_ids.append(cid)
+                        except Exception:
+                            cand_ids = []
+
+                        try:
+                            front_router_metrics = {
+                                "explicit": bool(front_explicit),
+                                "primary_skill_id": str(front_primary or ""),
+                                "primary_score": float(front_score or 0.0),
+                                "accept_threshold": float(front_threshold or 0.0),
+                                "candidates": list(cand_ids[:8]),
+                            }
+                        except Exception:
+                            front_router_metrics = None
+
+                        if front_primary and (front_explicit or (front_threshold > 0.0 and front_score >= front_threshold)):
+                            forced = None
+                            try:
+                                for s in self.skills_registry.list_skills():
+                                    if not getattr(s, "enabled", False):
+                                        continue
+                                    if str(getattr(s, "skill_id", "") or "") == front_primary:
+                                        forced = s
+                                        break
+                            except Exception:
+                                forced = None
+                            if forced is not None:
+                                selected_skills = [forced]
+                                skills_used_payload = [
+                                    {
+                                        "id": forced.skill_id,
+                                        "name": forced.name,
+                                        "version": forced.version,
+                                        "priority": forced.priority,
+                                        "score": round(float(front_score or 0.0), 3),
+                                        "source": "frontend",
+                                    }
+                                ]
+                        elif cand_ids:
+                            allow_skill_ids = cand_ids
+                except Exception as e:
+                    logger.debug(f"[skills] parse/apply frontend skill selection failed (ignored): {e}", exc_info=True)
+                    allow_skill_ids = None
+                    front_router_metrics = None
+
                 # Auto-select relevant skills for this turn to keep prompts small and fast.
 
                 try:
@@ -3503,55 +3640,59 @@ class ReActAgent:
 
 
 
-                    ranked = router.select_for_message(
+                    ranked = []
+                    if not selected_skills:
+                        ranked = router.select_for_message(
 
-                        normalized_message,
+                            normalized_message,
 
-                        embedder=embedder,
+                            embedder=embedder,
 
-                        hints=SkillRoutingHints(
+                            hints=SkillRoutingHints(
 
-                            host=str(host).strip() if host else None,
+                                host=str(host).strip() if host else None,
 
-                            document_name=routing_doc_name,
+                                document_name=routing_doc_name,
 
-                            recent_user_messages=routing_recent_user,
+                                recent_user_messages=routing_recent_user,
 
-                            extra=tuple(routing_extra),
+                                extra=tuple(routing_extra),
 
-                        ),
+                            ),
 
-                        host=host,
+                            host=host,
 
-                        top_k=settings.skills_top_k,
+                            allow_skill_ids=allow_skill_ids,
 
-                        min_score=settings.skills_min_score,
+                            top_k=settings.skills_top_k,
 
-                    )
+                            min_score=settings.skills_min_score,
 
-                    selected_skills = [x.get("skill") for x in ranked if x.get("skill")]
+                        )
 
-                    skills_used_payload = [
+                        selected_skills = [x.get("skill") for x in ranked if x.get("skill")]
 
-                        {
+                        skills_used_payload = [
 
-                            "id": x["skill"].skill_id,
+                            {
 
-                            "name": x["skill"].name,
+                                "id": x["skill"].skill_id,
 
-                            "version": x["skill"].version,
+                                "name": x["skill"].name,
 
-                            "priority": x["skill"].priority,
+                                "version": x["skill"].version,
 
-                            "score": round(float(x.get("score") or 0.0), 3),
+                                "priority": x["skill"].priority,
 
-                        }
+                                "score": round(float(x.get("score") or 0.0), 3),
 
-                        for x in ranked
+                            }
 
-                        if x.get("skill") is not None
+                            for x in ranked
 
-                    ]
+                            if x.get("skill") is not None
+
+                        ]
 
                 except Exception:
 
@@ -3563,45 +3704,49 @@ class ReActAgent:
 
                     router = SkillRouter(self.skills_registry)
 
-                    ranked = router.select_for_message(
+                    ranked = []
+                    if not selected_skills:
+                        ranked = router.select_for_message(
 
-                        normalized_message,
+                            normalized_message,
 
-                        embedder=None,
+                            embedder=None,
 
-                        hints=SkillRoutingHints(host=str(host).strip() if host else None),
+                            hints=SkillRoutingHints(host=str(host).strip() if host else None),
 
-                        host=host,
+                            host=host,
 
-                        top_k=settings.skills_top_k,
+                            allow_skill_ids=allow_skill_ids,
 
-                        min_score=settings.skills_min_score,
+                            top_k=settings.skills_top_k,
 
-                    )
+                            min_score=settings.skills_min_score,
 
-                    selected_skills = [x.get("skill") for x in ranked if x.get("skill")]
+                        )
 
-                    skills_used_payload = [
+                        selected_skills = [x.get("skill") for x in ranked if x.get("skill")]
 
-                        {
+                        skills_used_payload = [
 
-                            "id": x["skill"].skill_id,
+                            {
 
-                            "name": x["skill"].name,
+                                "id": x["skill"].skill_id,
 
-                            "version": x["skill"].version,
+                                "name": x["skill"].name,
 
-                            "priority": x["skill"].priority,
+                                "version": x["skill"].version,
 
-                            "score": round(float(x.get("score") or 0.0), 3),
+                                "priority": x["skill"].priority,
 
-                        }
+                                "score": round(float(x.get("score") or 0.0), 3),
 
-                        for x in ranked
+                            }
 
-                        if x.get("skill") is not None
+                            for x in ranked
 
-                    ]
+                            if x.get("skill") is not None
+
+                        ]
 
 
 
@@ -3683,10 +3828,7 @@ class ReActAgent:
                         lazy_stats_before = self.skills_registry.get_lazy_activation_stats()
                     except Exception as e:
                         logger.debug(f"[skills] lazy stats(before) failed (ignored): {e}", exc_info=True)
-                if selected_skills:
-                    # Convert to tuple for the render method
-                    selected_tuple = tuple(selected_skills) if not isinstance(selected_skills, tuple) else selected_skills
-                    tools_text = self.skills_registry.render_tools_for_prompt(selected_tuple)
+                # NOTE: do not expose skill.json.tools to the backend LLM; client skills run on frontend (JS).
                 if self.skills_registry is not None and hasattr(self.skills_registry, "get_lazy_activation_stats"):
                     try:
                         lazy_stats_after = self.skills_registry.get_lazy_activation_stats()
@@ -4088,6 +4230,8 @@ class ReActAgent:
                             "lazy_activation_cache_hits": int(max(0, lazy_cache_hits_delta)),
                             "lazy_activation_ms": float(max(0.0, lazy_total_ms_delta)),
                             "lazy_activated_skills": list(lazy_activated_skills),
+                            "front_router": front_router_metrics,
+                            "front_allow_skill_ids": list(allow_skill_ids or []),
                         },
 
                         "session_id": session_id,
@@ -4113,6 +4257,8 @@ class ReActAgent:
                             "lazy_activation_cache_hits": int(max(0, lazy_cache_hits_delta)),
                             "lazy_activation_ms": float(max(0.0, lazy_total_ms_delta)),
                             "lazy_activated_skills": list(lazy_activated_skills),
+                            "front_router": front_router_metrics,
+                            "front_allow_skill_ids": list(allow_skill_ids or []),
                         },
 
                         "session_id": session_id,
@@ -4618,11 +4764,11 @@ class ReActAgent:
 
 
 
-            # 🔥 关键修复：使用 asyncio.shield() 保护 LLM 调用不被取消
-
-            import asyncio
-
-            response = await asyncio.shield(self.llm.ainvoke(messages))
+            try:
+                response = await self.llm.ainvoke(messages)
+            except asyncio.CancelledError:
+                logger.info("[LLM监控] 第 %s 步LLM调用被取消", iteration)
+                raise
 
             self._accumulate_token_usage(response)
 
@@ -5385,6 +5531,16 @@ class ReActAgent:
         if not want_writeback:
             stripped = self._strip_fenced_code_blocks(full_response)
             stripped2 = self._strip_internal_json_objects(stripped)
+            try:
+                # Redact accidental data URLs (they can be huge and should never appear in chat).
+                stripped2 = re.sub(
+                    r"data:image/[^;\\s]+;base64,[a-zA-Z0-9+/=\\s]{200,}",
+                    "[data:image;base64 omitted]",
+                    stripped2,
+                    flags=re.IGNORECASE,
+                )
+            except Exception as e:
+                logger.debug("[output-guard] redact data urls failed (ignored): %s", e, exc_info=True)
             if stripped2 != (stripped or ""):
                 logger.info(
                     "[output-guard] stripped internal json (non-writeback) session_id=%s len_before=%s len_after=%s",

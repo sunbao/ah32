@@ -140,6 +140,25 @@ class InsertWordArtAction(_ActionBase):
     italic: bool | None = None
 
 
+class InsertImageAction(_ActionBase):
+    """Insert an image into Writer (WPS) or ET (Excel).
+
+    - Writer: inserted at current selection/cursor (best-effort).
+    - ET: inserted near the current selection; callers may provide sheet_name + cell/range for anchoring.
+
+    Size units: centimeters (cm), consistent with WPP add_image fields. Executor should convert to points.
+    """
+
+    op: Literal["insert_image"] = "insert_image"
+    path: str = Field(min_length=1, max_length=1000, description="asset://<id> | data:image/... | http(s)://... | local path")
+    width: JsonNumber | None = Field(default=None, gt=0, description="Best-effort width in cm")
+    height: JsonNumber | None = Field(default=None, gt=0, description="Best-effort height in cm")
+    # ET-only (best-effort): anchor a position by selecting a range/cell on a sheet.
+    sheet_name: str | None = Field(default=None, max_length=64)
+    cell: str | None = Field(default=None, max_length=64, description="ET cell address like A1")
+    range: str | None = Field(default=None, max_length=128, description="ET range address like A1:D10")
+
+
 class SetTextStyleAction(_ActionBase):
     op: Literal["set_text_style"] = "set_text_style"
     font: str | None = Field(default=None, max_length=200)
@@ -775,6 +794,18 @@ class DeleteBlockAction(_ActionBase):
         return _validate_id(v)
 
 
+class RollbackBlockAction(_ActionBase):
+    """Restore the previous block content from local backup (Writer-only)."""
+
+    op: Literal["rollback_block"] = "rollback_block"
+    block_id: str = Field(min_length=1, max_length=64)
+
+    @field_validator("block_id")
+    @classmethod
+    def _validate_block_id(cls, v: str) -> str:
+        return _validate_id(v)
+
+
 class UpsertBlockAction(_ActionBase):
     op: Literal["upsert_block"] = "upsert_block"
     block_id: str = Field(min_length=1, max_length=64)
@@ -835,7 +866,9 @@ PlanAction = Annotated[
         # 通用操作
         AnswerModeApplyAction,
         DeleteBlockAction,
+        RollbackBlockAction,
         UpsertBlockAction,
+        InsertImageAction,
     ],
     Field(discriminator="op"),
 ]
@@ -852,6 +885,7 @@ def _allowed_ops(host_app: HostApp) -> set[str]:
             "delete_block",
             "set_selection",
             "insert_text",
+            "insert_image",
             "insert_chart_from_selection",
             "set_cell_formula",
             "set_number_format",
@@ -893,6 +927,7 @@ def _allowed_ops(host_app: HostApp) -> set[str]:
     return {
         "upsert_block",
         "delete_block",
+        "rollback_block",
         "set_selection",
         "insert_text",
         "insert_after_text",
@@ -900,6 +935,7 @@ def _allowed_ops(host_app: HostApp) -> set[str]:
         "insert_table",
         "insert_chart_from_selection",
         "insert_word_art",
+        "insert_image",
         "set_text_style",
         "set_paragraph_format",
         "apply_paragraph_style",

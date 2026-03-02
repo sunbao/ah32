@@ -18,3 +18,9 @@ src/ah32/services/docx_extract.py text eol=lf
 qa/checklists/wps-regression.md text eol=lf
 qa/cases/plan-fixtures/*.json text eol=lf
 qa/cases/plan-fixtures/README.md text eol=lf
+
+# Docker / compose
+.dockerignore text eol=lf
+Dockerfile text eol=lf
+compose.yml text eol=lf
+docker/*.sh text eol=lf

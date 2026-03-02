@@ -6,6 +6,9 @@ import App from './App.vue'
 import { pinia } from './stores'
 import '@/styles/common.css'
 import '@/utils/logger'
+import { patchReloadDiag } from '@/utils/reload-diag'
+import { getClientId } from '@/utils/client-id'
+import { getBootId, getBootSeq } from '@/utils/boot-id'
 
 type _LogLevel = 'info' | 'warning' | 'error'
 
@@ -52,7 +55,10 @@ try {
 const _postFrontendLog = (level: _LogLevel, message: string) => {
   try {
     const apiBase = _getApiBase()
-    const url = `${apiBase}/api/log?level=${encodeURIComponent(level)}&message=${encodeURIComponent(String(message || '').slice(0, 900))}`
+    const bootId = getBootId()
+    const bootSeq = getBootSeq()
+    const clientId = getClientId()
+    const url = `${apiBase}/api/log?level=${encodeURIComponent(level)}&boot_id=${encodeURIComponent(bootId)}&boot_seq=${encodeURIComponent(String(bootSeq))}&client_id=${encodeURIComponent(clientId)}&message=${encodeURIComponent(String(message || '').slice(0, 900))}`
     void fetch(url, { method: 'GET' }).catch((e) => {
       // Never recurse via __ah32_reportError here; this is the lowest-level logger.
       console.warn('[main.ts] _postFrontendLog fetch failed:', e)
@@ -242,6 +248,15 @@ const _postFrontendError = (kind: string, err: any, extra?: any) => {
   try {
     const apiBase = _getApiBase()
     const apiKey = _getApiKey()
+    const bootId = (() => {
+      try { return getBootId() } catch (_e) { return '' }
+    })()
+    const bootSeq = (() => {
+      try { return getBootSeq() } catch (_e) { return 0 }
+    })()
+    const clientId = (() => {
+      try { return getClientId() } catch (_e) { return '' }
+    })()
     const msg = (() => {
       if (!err) return ''
       if (typeof err === 'string') return err
@@ -270,6 +285,9 @@ const _postFrontendError = (kind: string, err: any, extra?: any) => {
       error_code: '',
       correction_suggestion: '请截图并反馈给开发者（可在控制台/后台日志中追踪）。',
       user_context: JSON.stringify({
+        boot_id: bootId,
+        boot_seq: bootSeq,
+        client_id: clientId,
         href: (typeof window !== 'undefined') ? window.location.href : '',
         ua: (typeof navigator !== 'undefined') ? navigator.userAgent : '',
         extra: extra || null,
@@ -282,6 +300,9 @@ const _postFrontendError = (kind: string, err: any, extra?: any) => {
           if (typeof window === 'undefined') return { stack }
           const w: any = window as any
           return {
+            boot_id: bootId,
+            boot_seq: bootSeq,
+            client_id: clientId,
             stack,
             last_user_query: w.__BID_LAST_USER_QUERY || '',
              last_rag_summary: w.__BID_LAST_RAG_SUMMARY || '',
@@ -321,6 +342,22 @@ try {
 }
 
 console.log('[main.ts] 开始初始化...')
+
+try {
+  const bootId = getBootId()
+  const bootSeq = getBootSeq()
+  let lastErr = ''
+  let diag = ''
+  try { lastErr = String(localStorage.getItem('ah32_last_error') || '') } catch (_e) { lastErr = '' }
+  try { diag = String(localStorage.getItem('ah32_reload_diag_v1') || '') } catch (_e) { diag = '' }
+  const cap = (s: string, n: number) => (s && s.length > n ? s.slice(0, n) + '…' : s)
+  _postFrontendLog(
+    'info',
+    `[BOOT] phase=bundle_start boot_id=${bootId} boot_seq=${bootSeq} api_base=${_getApiBase()} last_error=${cap(lastErr, 260)} diag=${cap(diag, 520)}`
+  )
+} catch (e) {
+  ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/main.ts', e)
+}
 
 // 最优先设置 window.Vue - 确保即使后续出错也能使用
 if (typeof window !== 'undefined') {
@@ -367,15 +404,35 @@ try {
     // Persist a small reload/boot diagnostic so we can debug "taskpane reloads"
     // even when devtools isn't reachable (some WPS runtimes freeze on crash).
     try {
-      const DIAG_KEY = 'ah32_reload_diag_v1'
-      const raw = localStorage.getItem(DIAG_KEY) || '{}'
-      const diag = JSON.parse(raw)
-      diag.lastVueMountAt = new Date().toISOString()
-      diag.lastVueMountOk = true
-      localStorage.setItem(DIAG_KEY, JSON.stringify(diag))
+      const nowIso = new Date().toISOString()
+      patchReloadDiag({
+        lastVueMountAt: nowIso,
+        lastVueMountOk: true,
+        // Clear stale crash markers so BOOT diag doesn't keep showing old failures forever.
+        lastCrashClearedAt: nowIso,
+        lastCrashAt: '',
+        lastCrashType: '',
+        lastCrashMessage: '',
+        lastCrashExtra: '',
+        // Clear in-flight markers from the previous webview instance (if any).
+        inflight_chat: null,
+        inflight_doc_sync: null,
+        inflight_doc_snapshot: null,
+      })
     } catch (e) {
       console.warn('[main.ts] persist reload diag failed:', e)
       _postFrontendLog('warning', `[main.ts] persist reload diag failed: ${String((e as any)?.message || e)}`)
+    }
+
+    try {
+      const bootId = getBootId()
+      const bootSeq = getBootSeq()
+      const DIAG_KEY = 'ah32_reload_diag_v1'
+      let diag = ''
+      try { diag = String(localStorage.getItem(DIAG_KEY) || '') } catch (_e) { diag = '' }
+      _postFrontendLog('info', `[BOOT] phase=vue_mount_ok boot_id=${bootId} boot_seq=${bootSeq} diag=${diag.slice(0, 700)}`)
+    } catch (e) {
+      ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/main.ts', e)
     }
 
     // Clear last fatal overlay record so stale crashes don't block the UI.

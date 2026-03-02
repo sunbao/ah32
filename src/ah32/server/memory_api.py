@@ -13,7 +13,7 @@ import time
 import uuid
 from typing import Any, Dict, List, Literal, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from ah32.services.memory import (
@@ -28,7 +28,16 @@ from ah32.strategies.llm_driven_strategy import classify_conversation
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/memory", tags=["memory"])
+async def _bind_tenancy(req: Request):
+    """Bind tenant/user/auth context for non-/agentic routes."""
+    trace_id = str(getattr(req.state, "trace_id", "") or "").strip() or uuid.uuid4().hex
+    from ah32.security.request_context import bind_tenancy_for_request
+
+    with bind_tenancy_for_request(req, trace_id=trace_id):
+        yield
+
+
+router = APIRouter(prefix="/memory", tags=["memory"], dependencies=[Depends(_bind_tenancy)])
 
 Scope = Literal["global", "document"]
 Kind = Literal["user_profile", "user_preferences", "project_context", "document_note"]

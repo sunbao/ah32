@@ -23,6 +23,7 @@ def get_plan_generation_prompt(host_app: str = "wps") -> str:
             "insert_table",
             "insert_chart_from_selection",
             "insert_word_art",
+            "insert_image",
             "set_text_style",
             "set_paragraph_format",
             "apply_paragraph_style",
@@ -36,6 +37,7 @@ def get_plan_generation_prompt(host_app: str = "wps") -> str:
             "delete_block",
             "set_selection",
             "insert_text",
+            "insert_image",
             "insert_table",
             "insert_chart_from_selection",
             "set_cell_formula",
@@ -119,6 +121,7 @@ def get_plan_generation_prompt(host_app: str = "wps") -> str:
         f"- host_app MUST be {json.dumps(host)}\n"
         "- The JSON must be strictly valid (double quotes, no trailing commas).\n"
         "- Do NOT output JavaScript.\n"
+        "- Do NOT embed base64/data URLs (e.g. data:image/...;base64,...). Use `asset://<id>` or http(s) URLs.\n"
         "- Do NOT wrap fields in a `params` object (flatten all fields at the action level).\n"
         "- Do NOT use non-schema keys like: params, arguments, inserts, content, format, type.\n"
         "- Each action MUST include: id, title, op.\n"
@@ -169,6 +172,7 @@ def get_plan_repair_prompt(host_app: str = "wps") -> str:
             "insert_table",
             "insert_chart_from_selection",
             "insert_word_art",
+            "insert_image",
             "set_text_style",
             "set_paragraph_format",
             "apply_paragraph_style",
@@ -182,6 +186,7 @@ def get_plan_repair_prompt(host_app: str = "wps") -> str:
             "delete_block",
             "set_selection",
             "insert_text",
+            "insert_image",
             "insert_table",
             "insert_chart_from_selection",
             "set_cell_formula",
@@ -236,6 +241,7 @@ def get_plan_repair_prompt(host_app: str = "wps") -> str:
         "- Keep the plan minimal and fix only what is necessary.\n"
         "- Each action MUST include: id, title, op.\n"
         "- id and block_id must match /^[a-zA-Z0-9_\\-:.]{1,64}$/.\n\n"
+        "- Do NOT embed base64/data URLs (e.g. data:image/...;base64,...). Use `asset://<id>` or http(s) URLs.\n\n"
         "- For op=set_selection:\n"
         "  - wps(Writer): anchor is one of cursor/start_of_document/end_of_document; offset_lines/offset_chars are integers.\n"
         "  - et(Excel): prefer sheet_name + range/cell (A1 or A1:D10). range/cell may also be 'Sheet1!$A$1:$D$10'.\n\n"

@@ -8,7 +8,9 @@ import { wpsBridge, type WPSDocumentInfo } from './wps-bridge'
 import { ref } from 'vue'
 import { getRuntimeConfig } from '@/utils/runtime-config'
 import { getClientId } from '@/utils/client-id'
+import { getBootId, getBootSeq } from '@/utils/boot-id'
 import { setLogToBackend } from '@/utils/logger'
+import { patchReloadDiag } from '@/utils/reload-diag'
 
 // Magic Numbers常量定义
 const MAGIC_NUMBERS = {
@@ -137,9 +139,24 @@ export function logToBackend(message: string, level: 'info' | 'warning' | 'error
     const batchMessage = batchLogs
       .map(log => `[${new Date(log.timestamp).toLocaleTimeString()}] [${log.level.toUpperCase()}] ${log.message}`)
       .join('\n')
+    const clientId = (() => {
+      try { return getClientId() } catch (_e) { return '' }
+    })()
+    const bootId = (() => {
+      try { return getBootId() } catch (_e) { return '' }
+    })()
+    const bootSeq = (() => {
+      try { return getBootSeq() } catch (_e) { return 0 }
+    })()
     
     axios.get(`${apiBase}/api/log`, {
       params: {
+        boot_id: bootId,
+        boot_seq: bootSeq,
+        client_id: clientId,
+        host_app: (() => {
+          try { return wpsBridge.getHostApp() } catch (_e) { return '' }
+        })(),
         message: `[BATCH:${batchLogs.length}] ${batchMessage.substring(0, 800)}`,
         level: batchLevel
       },
@@ -186,11 +203,16 @@ export const syncError = ref<string | null>(null)
  * 获取后端 API 客户端
  */
 function getApiClient() {
+  const cfg = getRuntimeConfig()
   return axios.create({
     baseURL: API_BASE_URL,
     timeout: getDocSyncTimeoutMs(false),
     headers: {
-      'Content-Type': 'application/json'
+      'Content-Type': 'application/json',
+      ...(cfg.apiKey ? { 'X-API-Key': cfg.apiKey } : {}),
+      ...(cfg.tenantId ? { 'X-AH32-Tenant-Id': cfg.tenantId } : {}),
+      ...(cfg.accessToken ? { Authorization: `Bearer ${cfg.accessToken}` } : {}),
+      ...(getClientId() ? { 'X-AH32-User-Id': getClientId() } : {}),
     }
   })
 }
@@ -233,13 +255,41 @@ export async function syncAllDocuments(
   const startedAt = Date.now()
 
   logToBackend(`syncAllDocuments 开始同步(reason=${reason})，文档数: ${documents.length}`)
+  try {
+    const nowIso = new Date().toISOString()
+    patchReloadDiag({
+      inflight_doc_sync: { at: nowIso, reason, docs: documents.length, force },
+      lastDocSyncStartAt: nowIso,
+      lastDocSyncReason: reason,
+      lastDocSyncDocs: documents.length,
+    })
+  } catch (e) {
+    ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/document-sync.ts', e)
+  }
 
   syncInFlight = (async () => {
     try {
       const client = axios.create({
         baseURL: API_BASE_URL,
         timeout: getDocSyncTimeoutMs(force),
-        headers: { 'Content-Type': 'application/json' }
+        headers: {
+          'Content-Type': 'application/json',
+          ...(getRuntimeConfig().apiKey ? { 'X-API-Key': getRuntimeConfig().apiKey } : {}),
+          ...(getRuntimeConfig().tenantId ? { 'X-AH32-Tenant-Id': getRuntimeConfig().tenantId } : {}),
+          ...(getRuntimeConfig().accessToken ? { Authorization: `Bearer ${getRuntimeConfig().accessToken}` } : {}),
+          'X-AH32-Boot-Id': (() => {
+            try { return getBootId() } catch (_e) { return '' }
+          })(),
+          'X-AH32-Boot-Seq': (() => {
+            try { return String(getBootSeq()) } catch (_e) { return '' }
+          })(),
+          'X-AH32-Client-Id': (() => {
+            try { return getClientId() } catch (_e) { return '' }
+          })(),
+          'X-AH32-User-Id': (() => {
+            try { return getClientId() } catch (_e) { return '' }
+          })(),
+        }
       })
       const clientId = getClientId()
       const hostApp = wpsBridge.getHostApp()
@@ -260,6 +310,12 @@ export async function syncAllDocuments(
 
       const apiBase = getRuntimeConfig().apiBase || 'http://localhost:5123'
       await client.post(`${apiBase}/api/documents/sync`, {
+        boot_id: (() => {
+          try { return getBootId() } catch (_e) { return '' }
+        })(),
+        boot_seq: (() => {
+          try { return getBootSeq() } catch (_e) { return 0 }
+        })(),
         client_id: clientId,
         host_app: hostApp,
         documents: syncedDocs
@@ -273,6 +329,16 @@ export async function syncAllDocuments(
 
       const elapsed = Date.now() - startedAt
       logToBackend(`syncAllDocuments 同步成功: ${syncedDocs.length} 个文档（${elapsed}ms）`)
+      try {
+        patchReloadDiag({
+          inflight_doc_sync: null,
+          lastDocSyncOk: true,
+          lastDocSyncElapsedMs: elapsed,
+          lastDocSyncEndAt: new Date().toISOString(),
+        })
+      } catch (e) {
+        ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/document-sync.ts', e)
+      }
       return true
     } catch (error: any) {
       const d = describeAxiosError(error)
@@ -293,6 +359,17 @@ export async function syncAllDocuments(
           + `streak=${syncFailureStreak} backoff_ms=${backoffMs} elapsed_ms=${elapsed} reason=${reason} msg=${d.message}`,
         'warning'
       )
+      try {
+        patchReloadDiag({
+          inflight_doc_sync: null,
+          lastDocSyncOk: false,
+          lastDocSyncElapsedMs: elapsed,
+          lastDocSyncEndAt: new Date().toISOString(),
+          lastDocSyncError: { kind: d.kind, code: d.code || '', status: d.status || 0, msg: d.message || '' },
+        })
+      } catch (e) {
+        ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/document-sync.ts', e)
+      }
       return false
     } finally {
       isSyncing.value = false

@@ -1,4 +1,5 @@
 import { getRuntimeConfig } from '@/utils/runtime-config'
+import { getClientId } from '@/utils/client-id'
 
 export type MemoryScope = 'global' | 'document'
 export type MemoryKind = 'user_profile' | 'user_preferences' | 'project_context' | 'document_note'
@@ -29,11 +30,15 @@ export interface CommitResponse {
 export const memoryApi = {
   async suggest(params: { sessionId?: string | null; message: string; messageRole?: string; messageId?: string }): Promise<SuggestResponse> {
     const cfg = getRuntimeConfig()
+    const uid = (() => { try { return getClientId() } catch (_e) { return '' } })()
     const res = await fetch(`${cfg.apiBase}/memory/suggest`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        ...(cfg.apiKey ? { 'X-API-Key': cfg.apiKey } : {})
+        ...(cfg.apiKey ? { 'X-API-Key': cfg.apiKey } : {}),
+        ...(cfg.tenantId ? { 'X-AH32-Tenant-Id': cfg.tenantId } : {}),
+        ...(cfg.accessToken ? { Authorization: `Bearer ${cfg.accessToken}` } : {}),
+        ...(uid ? { 'X-AH32-User-Id': uid } : {}),
       },
       body: JSON.stringify({
         session_id: params.sessionId || null,
@@ -51,11 +56,15 @@ export const memoryApi = {
 
   async commit(params: { sessionId?: string | null; patches: MemoryPatch[] }): Promise<CommitResponse> {
     const cfg = getRuntimeConfig()
+    const uid = (() => { try { return getClientId() } catch (_e) { return '' } })()
     const res = await fetch(`${cfg.apiBase}/memory/commit`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        ...(cfg.apiKey ? { 'X-API-Key': cfg.apiKey } : {})
+        ...(cfg.apiKey ? { 'X-API-Key': cfg.apiKey } : {}),
+        ...(cfg.tenantId ? { 'X-AH32-Tenant-Id': cfg.tenantId } : {}),
+        ...(cfg.accessToken ? { Authorization: `Bearer ${cfg.accessToken}` } : {}),
+        ...(uid ? { 'X-AH32-User-Id': uid } : {}),
       },
       body: JSON.stringify({
         session_id: params.sessionId || null,

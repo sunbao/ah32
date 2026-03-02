@@ -28,6 +28,18 @@ except ImportError:
     logger.info("未安装 langchain-deepseek，将使用 ChatOpenAI")
 
 
+def _truthy_env(name: str, *, default: bool = False) -> bool:
+    s = str(os.getenv(name, "") or "").strip().lower()
+    if not s:
+        return bool(default)
+    return s in ("1", "true", "yes", "y", "on")
+
+
+def _llm_strict_mode() -> bool:
+    # Default: strict (do not silently downgrade providers).
+    return _truthy_env("AH32_LLM_STRICT", default=True)
+
+
 def _resolve_provider_base_url(model: str) -> tuple[str, str | None]:
     provider = (os.getenv("AH32_LLM_PROVIDER") or "").strip().lower()
     base_url = (os.getenv("AH32_LLM_BASE_URL") or "").strip() or None
@@ -116,6 +128,7 @@ class LLMManager:
         provider, base_url = _resolve_provider_base_url(model)
         api_key = _resolve_api_key(settings, provider=provider)
         is_deepseek = provider == "deepseek"
+        strict = _llm_strict_mode()
 
         logger.info(
             "Creating LLM (override): model=%s provider=%s base_url=%s temperature=%s",
@@ -127,6 +140,22 @@ class LLMManager:
 
         # Prefer langchain-deepseek for DeepSeek models (native reasoning_content support).
         # NOTE: ChatDeepSeek does not accept a custom base_url in older versions; only use it for default endpoint.
+        if is_deepseek and strict:
+            if not HAS_DEEPSEEK_PACKAGE or ChatDeepSeek is None:
+                raise ValueError("缺少依赖：请安装 langchain-deepseek（strict 模式不允许降级到 ChatOpenAI）")
+            if base_url and base_url != DEEPSEEK_DEFAULT_BASE_URL:
+                raise ValueError(
+                    "DeepSeek strict 模式不支持自定义 base_url（请移除 AH32_LLM_BASE_URL 或关闭 AH32_LLM_STRICT）"
+                )
+            logger.info("Using ChatDeepSeek (override, strict)")
+            return ChatDeepSeek(
+                model=model,
+                temperature=temperature,
+                api_key=api_key,
+                request_timeout=1800,
+                max_retries=3,
+            )
+
         if (
             is_deepseek
             and (not base_url or base_url == DEEPSEEK_DEFAULT_BASE_URL)
@@ -169,6 +198,7 @@ class LLMManager:
         provider, base_url = _resolve_provider_base_url(model)
         api_key = _resolve_api_key(settings, provider=provider)
         is_deepseek = provider == "deepseek"
+        strict = _llm_strict_mode()
 
         logger.info(
             "创建LLM实例: model=%s provider=%s base_url=%s temperature=%s",
@@ -180,6 +210,22 @@ class LLMManager:
 
         try:
             # 优先使用 langchain-deepseek 包（原生支持 reasoning_content）
+            if is_deepseek and strict:
+                if not HAS_DEEPSEEK_PACKAGE or ChatDeepSeek is None:
+                    raise ValueError("缺少依赖：请安装 langchain-deepseek（strict 模式不允许降级到 ChatOpenAI）")
+                if base_url and base_url != DEEPSEEK_DEFAULT_BASE_URL:
+                    raise ValueError(
+                        "DeepSeek strict 模式不支持自定义 base_url（请移除 AH32_LLM_BASE_URL 或关闭 AH32_LLM_STRICT）"
+                    )
+                logger.info("使用 ChatDeepSeek（strict，原生支持 reasoning_content）")
+                return ChatDeepSeek(
+                    model=model,
+                    temperature=temperature,
+                    api_key=api_key,
+                    request_timeout=1800,
+                    max_retries=3,
+                )
+
             if (
                 is_deepseek
                 and (not base_url or base_url == DEEPSEEK_DEFAULT_BASE_URL)

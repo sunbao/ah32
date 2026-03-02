@@ -20,9 +20,53 @@
       var ERROR_KEY = 'ah32_last_error'
       var DIAG_KEY = 'ah32_reload_diag_v1'
       var overlayId = 'ah32-fatal-error-overlay'
+      var BOOT_ID_KEY = 'ah32_boot_id_v1'
+      var BOOT_SEQ_KEY = 'ah32_boot_seq_v1'
+      var bootId = ''
+      var bootSeq = 0
 
       function _readLocalStorage(key) {
         try { return localStorage.getItem(key) } catch (e) { return '' }
+      }
+
+      function _resolveClientId() {
+        try {
+          return String(_readLocalStorage('ah32_client_id') || _readLocalStorage('ah32_client_id_v1') || '').trim()
+        } catch (e) {
+          return ''
+        }
+      }
+
+      function _genBootId() {
+        try {
+          if (typeof crypto !== 'undefined' && crypto && typeof crypto.randomUUID === 'function') {
+            return 'boot_' + String(crypto.randomUUID())
+          }
+        } catch (e) {}
+        return 'boot_' + String(Date.now()) + '_' + Math.random().toString(36).slice(2, 10)
+      }
+
+      function _bumpBootSeq() {
+        try {
+          var raw = String(_readLocalStorage(BOOT_SEQ_KEY) || '0')
+          var n = parseInt(raw, 10)
+          if (!isFinite(n)) n = 0
+          n = n + 1
+          localStorage.setItem(BOOT_SEQ_KEY, String(n))
+          return n
+        } catch (e) {
+          return 0
+        }
+      }
+
+      try {
+        bootSeq = _bumpBootSeq()
+        bootId = _genBootId()
+        try { localStorage.setItem(BOOT_ID_KEY, bootId) } catch (e) {}
+        try { window.__AH32_BOOT_ID__ = bootId } catch (e) {}
+      } catch (e) {
+        bootId = ''
+        bootSeq = 0
       }
 
       function _readRuntimeConfig() {
@@ -77,7 +121,11 @@
         }
         try {
           var apiBase = _resolveApiBase()
-          var url = apiBase + '/api/log?level=' + encodeURIComponent(lv) + '&message=' + encodeURIComponent('[taskpane][' + String(scope || 'unknown') + '] ' + msg)
+          var url = apiBase + '/api/log?level=' + encodeURIComponent(lv)
+            + '&boot_id=' + encodeURIComponent(String(bootId || ''))
+            + '&boot_seq=' + encodeURIComponent(String(bootSeq || 0))
+            + '&client_id=' + encodeURIComponent(_resolveClientId())
+            + '&message=' + encodeURIComponent('[taskpane][' + String(scope || 'unknown') + '] ' + msg)
           fetch(url, { method: 'GET' }).catch(function (e3) {
             try { console.warn('[taskpane] /api/log failed', e3) } catch (e33) { console.error(e33) }
           })
@@ -92,6 +140,13 @@
         window.reportTaskpaneError = reportTaskpaneError
       } catch (e5) {
         reportTaskpaneError('bind_global_reporter', e5, 'warning')
+      }
+
+      try {
+        window.__ah32_resolveApiBase = _resolveApiBase
+        window.__ah32_resolveApiKey = _resolveApiKey
+      } catch (e6) {
+        reportTaskpaneError('bind_global_resolvers', e6, 'warning')
       }
 
       function safeJsonParse(text) {
@@ -210,10 +265,36 @@
 
       // Track loads/unloads for "taskpane reload diagnosis".
       recordDiag({
+        bootId: bootId || '',
+        bootSeq: bootSeq || 0,
         lastLoadAt: new Date().toISOString(),
         lastNavigationType: getNavigationType()
       })
       renderLastDiag()
+
+      try {
+        var apiBase = _resolveApiBase()
+        var msg = '[BOOT] phase=taskpane_load boot_id=' + String(bootId || '') + ' boot_seq=' + String(bootSeq || 0)
+          + ' nav=' + String(getNavigationType())
+        try {
+          var lastErr = String(_readLocalStorage(ERROR_KEY) || '')
+          if (lastErr) msg = msg + ' last_error=' + lastErr.slice(0, 260)
+        } catch (e0) {}
+        try {
+          var diagRaw = String(_readLocalStorage(DIAG_KEY) || '')
+          if (diagRaw) msg = msg + ' diag=' + diagRaw.slice(0, 520)
+        } catch (e1) {}
+        var url = apiBase + '/api/log?level=info'
+          + '&boot_id=' + encodeURIComponent(String(bootId || ''))
+          + '&boot_seq=' + encodeURIComponent(String(bootSeq || 0))
+          + '&client_id=' + encodeURIComponent(_resolveClientId())
+          + '&message=' + encodeURIComponent(msg.slice(0, 900))
+        fetch(url, { method: 'GET' }).catch(function (e2) {
+          try { console.warn('[taskpane] boot /api/log failed', e2) } catch (e22) { console.error(e22) }
+        })
+      } catch (e3) {
+        reportTaskpaneError('boot_log', e3, 'warning')
+      }
 
       window.addEventListener('pagehide', function () {
         recordDiag({ lastUnloadAt: new Date().toISOString() })
@@ -254,7 +335,7 @@
               error_message: detail.message || event.message || '',
               error_code: '',
               correction_suggestion: '请截图并反馈给开发者（可在后台日志中追踪）。',
-              user_context: JSON.stringify({ href: location.href, extra: detail.extra || '' }).slice(0, 5000),
+              user_context: JSON.stringify({ boot_id: bootId || '', boot_seq: bootSeq || 0, href: location.href, extra: detail.extra || '' }).slice(0, 5000),
               severity: 'high'
             })
           }).catch(function (e) { reportTaskpaneError('window.error.report.fetch', e, 'warning') })
@@ -363,6 +444,38 @@
   -->
   <script>
     (function () {
+      function safeReport(scope, error, level) {
+        try {
+          var g = (typeof globalThis !== 'undefined') ? globalThis : (typeof window !== 'undefined' ? window : null)
+          var fn = g && (g.__ah32_reportTaskpaneError || g.reportTaskpaneError)
+          if (typeof fn === 'function') {
+            fn(scope, error, level)
+            return
+          }
+        } catch (e) {
+          try { console.warn('[taskpane] safeReport reporter failed', e) } catch (e0) { console.error(e0) }
+        }
+        try { console.warn('[taskpane][' + String(scope || 'unknown') + ']', error) } catch (e2) { console.error(e2) }
+      }
+
+      function safeResolveApiBase() {
+        try {
+          var g = (typeof globalThis !== 'undefined') ? globalThis : (typeof window !== 'undefined' ? window : null)
+          var fn = g && g.__ah32_resolveApiBase
+          if (typeof fn === 'function') return fn()
+        } catch (e) { safeReport('bootstrap.resolve_api_base', e, 'warning') }
+        return 'http://127.0.0.1:5123'
+      }
+
+      function safeResolveApiKey() {
+        try {
+          var g = (typeof globalThis !== 'undefined') ? globalThis : (typeof window !== 'undefined' ? window : null)
+          var fn = g && g.__ah32_resolveApiKey
+          if (typeof fn === 'function') return fn()
+        } catch (e) { safeReport('bootstrap.resolve_api_key', e, 'warning') }
+        return ''
+      }
+
       function loadScript(src, type) {
         return new Promise(function (resolve, reject) {
           var el = document.createElement('script')
@@ -415,8 +528,8 @@
             }
 
             // Best-effort: report to backend for later tracing.
-            var apiBase = _resolveApiBase()
-            var apiKey = _resolveApiKey()
+            var apiBase = safeResolveApiBase()
+            var apiKey = safeResolveApiKey()
             fetch(apiBase + '/agentic/error/report', {
               method: 'POST',
               headers: Object.assign({ 'Content-Type': 'application/json' }, apiKey ? { 'X-API-Key': apiKey } : {}),
@@ -428,8 +541,8 @@
                 user_context: JSON.stringify({ href: location.href }).slice(0, 5000),
                 severity: 'high'
               })
-            }).catch(function (e) { reportTaskpaneError('bootstrap.report.fetch', e, 'warning') })
-          } catch (e) { reportTaskpaneError('bootstrap.report', e, 'warning') }
+            }).catch(function (e) { safeReport('bootstrap.report.fetch', e, 'warning') })
+          } catch (e) { safeReport('bootstrap.report', e, 'warning') }
         })
     })()
   </script>

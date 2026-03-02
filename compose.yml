@@ -1,0 +1,23 @@
+services:
+  ah32-backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple/}
+        PIP_TORCH_INDEX_URL: ${PIP_TORCH_INDEX_URL:-https://download.pytorch.org/whl/cpu}
+    ports:
+      - "5123:5123"
+    environment:
+      AH32_SERVER_HOST: "0.0.0.0"
+      AH32_SERVER_PORT: "5123"
+      # Seed demo tenants/users on boot (R&D convenience).
+      AH32_SEED_TENANTS: "demo-a,demo-b,demo-c"
+      AH32_SEED_USER_PREFIX: "user"
+      AH32_SEED_USER_COUNT: "5"
+    volumes:
+      - ./storage:/app/storage
+      - ./logs:/app/logs
+      # Use local repo .env for secrets/config, but keep Docker-safe overrides in entrypoint.
+      - ./.env:/app/.env.host:ro
+    restart: unless-stopped

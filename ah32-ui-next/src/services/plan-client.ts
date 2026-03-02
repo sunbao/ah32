@@ -1,6 +1,7 @@
 import { logger } from '@/utils/logger'
 import { getRuntimeConfig } from '@/utils/runtime-config'
 import { wpsBridge, type WPSHostApp } from './wps-bridge'
+import { getClientId } from '@/utils/client-id'
 
 export interface PlanGenerateResult {
   success: boolean
@@ -29,12 +30,16 @@ export class PlanClient {
     try {
       const cfg = getRuntimeConfig()
       const capabilities = wpsBridge.getCapabilities(false)
+      const uid = (() => { try { return getClientId() } catch (_e) { return '' } })()
 
       const response = await fetch(`${cfg.apiBase}/agentic/plan/generate`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...(cfg.apiKey ? { 'X-API-Key': cfg.apiKey } : {})
+          ...(cfg.apiKey ? { 'X-API-Key': cfg.apiKey } : {}),
+          ...(cfg.tenantId ? { 'X-AH32-Tenant-Id': cfg.tenantId } : {}),
+          ...(cfg.accessToken ? { Authorization: `Bearer ${cfg.accessToken}` } : {}),
+          ...(uid ? { 'X-AH32-User-Id': uid } : {}),
         },
         body: JSON.stringify({
           user_query: userQuery,
@@ -68,12 +73,16 @@ export class PlanClient {
     try {
       const cfg = getRuntimeConfig()
       const capabilities = wpsBridge.getCapabilities(false)
+      const uid = (() => { try { return getClientId() } catch (_e) { return '' } })()
 
       const response = await fetch(`${cfg.apiBase}/agentic/plan/repair`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...(cfg.apiKey ? { 'X-API-Key': cfg.apiKey } : {})
+          ...(cfg.apiKey ? { 'X-API-Key': cfg.apiKey } : {}),
+          ...(cfg.tenantId ? { 'X-AH32-Tenant-Id': cfg.tenantId } : {}),
+          ...(cfg.accessToken ? { Authorization: `Bearer ${cfg.accessToken}` } : {}),
+          ...(uid ? { 'X-AH32-User-Id': uid } : {}),
         },
         body: JSON.stringify({
           session_id: this.sessionId,

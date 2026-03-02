@@ -69,11 +69,15 @@ export async function flushTelemetryNow(): Promise<number> {
   try {
     const cfg = runtime()
     const events = q.splice(0, Math.max(1, batchSize))
+    const uid = (() => { try { return getClientId() } catch (_e) { return '' } })()
     const resp = await fetch(`${cfg.apiBase}/telemetry/events`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        ...(cfg.apiKey ? { 'X-API-Key': cfg.apiKey } : {})
+        ...(cfg.apiKey ? { 'X-API-Key': cfg.apiKey } : {}),
+        ...(cfg.tenantId ? { 'X-AH32-Tenant-Id': cfg.tenantId } : {}),
+        ...(cfg.accessToken ? { Authorization: `Bearer ${cfg.accessToken}` } : {}),
+        ...(uid ? { 'X-AH32-User-Id': uid } : {}),
       },
       body: JSON.stringify({ events })
     })

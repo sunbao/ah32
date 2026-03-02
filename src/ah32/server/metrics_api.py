@@ -1,18 +1,16 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Header
 from fastapi.responses import PlainTextResponse
 
-from ah32.config import settings
 from ah32.core.metrics_recorder import metrics_recorder
 
 router = APIRouter(prefix="/agentic/metrics", tags=["metrics"])
 
 
-def _auth(api_key: str | None) -> None:
-    if settings.enable_auth:
-        if not api_key or api_key != settings.api_key:
-            raise HTTPException(status_code=401, detail="Invalid API Key")
+def _auth(_: str | None) -> None:
+    # Auth is enforced centrally for /agentic/* in server middleware.
+    return
 
 
 @router.get("/summary")

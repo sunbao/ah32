@@ -61,6 +61,7 @@ class SkillRouter:
         embedder: Any = None,
         hints: Optional[SkillRoutingHints] = None,
         host: Optional[str] = None,
+        allow_skill_ids: Optional[Iterable[str]] = None,
         top_k: int = 4,
         min_score: float = 0.18,
     ) -> List[Dict[str, Any]]:
@@ -71,6 +72,7 @@ class SkillRouter:
             query,
             embedder=embedder,
             host=resolved_host,
+            allow_skill_ids=allow_skill_ids,
             top_k=top_k,
             min_score=min_score,
         )

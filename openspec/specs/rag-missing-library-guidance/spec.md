@@ -1,0 +1,30 @@
+# rag-missing-library-guidance Specification
+
+## Purpose
+TBD - created by archiving change bidding-rag-ingest-and-source-policy. Update Purpose after archive.
+## Requirements
+### Requirement: 缺库必须明确反馈
+当检索链路（向量检索）返回 0 命中时，系统 MUST 明确告知用户：当前项目知识库/案例库/合同库/模板库等暂无相关资料，无法基于库内证据回答；系统 MUST 不得将缺库状态伪装成“已检索到但未展示”或凭空生成结论。
+
+#### Scenario: RAG 0 命中时反馈缺口
+- **WHEN** 系统对用户问题执行 RAG 向量检索且结果为 0 命中
+- **THEN** 系统输出中 MUST 包含“库中暂无资料/未导入/缺库”的明确说明
+
+### Requirement: 必须给出补库路径（上传/导入与 URL 抓取）
+当出现缺库反馈时，系统 MUST 同时提供至少两条可执行的补库路径：
+
+1) 用户上传文件/导入目录到 RAG；2) 用户提供 URL，系统抓取网页正文并入库后再检索。
+
+#### Scenario: 缺库时提供两条补库路径
+- **WHEN** 系统判定当前问题相关知识在 RAG 中缺失（0 命中）
+- **THEN** 系统 MUST 给出“上传/导入资料”和“提供 URL 抓取入库”两种操作路径
+
+### Requirement: URL 抓取失败必须给出兜底（粘贴纯文本）
+当用户选择 URL 抓取路径但抓取失败（例如：不可达、反爬/captcha、登录限制、正文提取为空）时，系统 MUST 明确说明抓取失败原因（至少分类说明），并 MUST 提示用户改为“粘贴原文纯文本”或“上传文件”以完成入库；系统 MUST 不得要求用户提供图片作为兜底（在未支持图片前）。
+
+#### Scenario: URL 抓取失败时提示粘贴纯文本
+- **WHEN** 系统尝试抓取用户提供的 URL 但失败
+- **THEN** 系统 MUST 提示用户复制粘贴原文纯文本或上传文件作为兜底方式
+
+---
+

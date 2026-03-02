@@ -64,7 +64,45 @@
           </span>
         </div>
 
-        <!-- 本轮阶段 -->
+        <!-- 租户/登录 -->
+
+        <div class="detail-item">
+
+          <span class="detail-label">
+
+            <el-icon><Monitor /></el-icon>
+
+            租户
+
+          </span>
+
+          <span class="detail-value">
+
+            {{ tenantDisplay }}
+
+          </span>
+
+        </div>
+
+        <div class="detail-item">
+
+          <span class="detail-label">
+
+            <el-icon><Connection /></el-icon>
+
+            登录
+
+          </span>
+
+          <span class="detail-value">
+
+            {{ loginDisplay }}
+
+          </span>
+
+        </div>
+
+        <!-- 本轮阶段 -->
         <div v-if="phaseDisplay" class="detail-item">
           <span class="detail-label">
             <el-icon><Monitor /></el-icon>
@@ -111,6 +149,8 @@
         <div v-if="devUiEnabled && devToolsEnabled" class="detail-item dev-item dev-block">
           <component :is="MacroBenchWidget" v-if="MacroBenchWidget" />
         </div>
+        <el-button type="default" size="small" @click="doLogin">登录/切换</el-button>
+        <el-button type="danger" size="small" @click="doLogout">退出</el-button>
       </div>
 
       <div class="panel-footer">
@@ -130,7 +170,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, nextTick, watch, defineAsyncComponent } from 'vue'
+import { ref, computed, onMounted, onUnmounted, nextTick, watch, defineAsyncComponent } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   CircleCheck,
   WarningFilled,
@@ -142,8 +183,10 @@ import {
   Tools,
   Refresh
 } from '@element-plus/icons-vue'
-import { getRuntimeConfig } from '@/utils/runtime-config'
-import { isDevUiEnabled } from '@/utils/dev-ui'
+	import { clearTenantAuth, getRuntimeConfig, setAccessToken, setTenantId } from '@/utils/runtime-config'
+	import { isDevUiEnabled } from '@/utils/dev-ui'
+	import { getClientId } from '@/utils/client-id'
+	import { getBootId, getBootSeq } from '@/utils/boot-id'
 
 // Dev UI master switch:
 // - Dev UI is controlled only by `.env` `VITE_ENABLE_DEV_UI=true|false`.
@@ -183,6 +226,8 @@ const backendConnected = ref(false)
 const lastCheckTime = ref<Date | null>(null)
 const showDetails = ref(false)
 const refreshing = ref(false)
+
+const authVersion = ref(0)
 
 // Dev tools are conventionally available only when the dev UI is enabled (build-time).
 const devToolsEnabled = computed(() => !!devUiEnabled)
@@ -289,7 +334,95 @@ const formatLastCheckTime = (date: Date) => {
   return `${hours}小时前`
 }
 
-// 检测WPS连接
+const tenantDisplay = computed(() => {
+  void authVersion.value
+  const cfg = getRuntimeConfig()
+  return String(cfg.tenantId || '').trim() || '(默认)'
+})
+
+const loginDisplay = computed(() => {
+  void authVersion.value
+  const cfg = getRuntimeConfig()
+  return String(cfg.accessToken || '').trim() ? '已登录' : '未登录'
+})
+
+const doLogin = async () => {
+  const cfg = getRuntimeConfig()
+  const uid = (() => { try { return getClientId() } catch (_e) { return '' } })()
+  if (!uid) {
+    ElMessage.error('缺少 user_id（client_id）')
+    return
+  }
+
+  const currentTenant = String(cfg.tenantId || '').trim()
+  let tenantIdRaw: any = ''
+  try {
+    const r = await ElMessageBox.prompt(
+      '输入租户ID（留空=默认租户）',
+      '切换租户',
+      { inputValue: currentTenant, confirmButtonText: '下一步', cancelButtonText: '取消' }
+    )
+    tenantIdRaw = (r as any)?.value
+  } catch (_e) {
+    return
+  }
+  const tenantId = String(tenantIdRaw || '').trim()
+  if (!tenantId) {
+    clearTenantAuth()
+    authVersion.value++
+    ElMessage.success('已切换为默认租户')
+    return
+  }
+
+  let apiKeyRaw: any = ''
+  try {
+    const r = await ElMessageBox.prompt(
+      '输入租户 API Key（可留空；开启鉴权时必填）',
+      '登录',
+      { inputType: 'password', confirmButtonText: '登录', cancelButtonText: '取消' }
+    )
+    apiKeyRaw = (r as any)?.value
+  } catch (_e) {
+    return
+  }
+  const apiKey = String(apiKeyRaw || '').trim()
+
+  try {
+    const resp = await fetch(`${cfg.apiBase}/agentic/auth/token`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(tenantId ? { 'X-AH32-Tenant-Id': tenantId } : {}),
+        ...(uid ? { 'X-AH32-User-Id': uid } : {}),
+        ...(apiKey ? { 'X-AH32-Api-Key': apiKey } : {}),
+        ...(cfg.apiKey ? { 'X-API-Key': cfg.apiKey } : {}),
+      },
+      body: '{}',
+    })
+    if (!resp.ok) {
+      const txt = await resp.text().catch(() => '')
+      throw new Error(txt || `HTTP ${resp.status}`)
+    }
+    const data = (await resp.json()) as any
+    const token = String(data?.access_token || '').trim()
+    const tid = String(data?.tenant_id || tenantId).trim()
+    if (!token) throw new Error('missing access_token')
+    setTenantId(tid || tenantId)
+    setAccessToken(token)
+    authVersion.value++
+    ElMessage.success(`登录成功（tenant=${tid || tenantId}）`)
+  } catch (e: any) {
+    ElMessage.error(`登录失败：${String(e?.message || e).slice(0, 200)}`)
+  }
+}
+
+const doLogout = async () => {
+  clearTenantAuth()
+  authVersion.value++
+  ElMessage.success('已退出登录')
+}
+
+// 检测WPS连接
 const checkWPSConnection = async () => {
   try {
     const hasWPS = typeof (window as any).WPS !== 'undefined' ||
@@ -307,11 +440,20 @@ const checkBackendConnection = async () => {
   const startTime = Date.now()
   try {
     const controller = new AbortController()
-    const timeoutId = setTimeout(() => controller.abort(), 3000)
+    const timeoutId = setTimeout(() => controller.abort(), 3000)
+
+    const cfg = getRuntimeConfig()
+    const uid = (() => { try { return getClientId() } catch (_e) { return '' } })()
 
     const response = await fetch(`${props.backendUrl}/api/documents`, {
       method: 'GET',
-      signal: controller.signal
+      headers: {
+        ...(cfg.apiKey ? { 'X-API-Key': cfg.apiKey } : {}),
+        ...(cfg.tenantId ? { 'X-AH32-Tenant-Id': cfg.tenantId } : {}),
+        ...(cfg.accessToken ? { Authorization: `Bearer ${cfg.accessToken}` } : {}),
+        ...(uid ? { 'X-AH32-User-Id': uid } : {}),
+      },
+      signal: controller.signal
     })
 
     clearTimeout(timeoutId)
@@ -395,17 +537,31 @@ const showThoughtsEnabled = computed(() => {
   try { return !!getRuntimeConfig().showThoughts && !!serverAllowsThoughts.value } catch (e) { return false }
 })
 
-const loadBackendFlags = async () => {
-  try {
-    const cfg = getRuntimeConfig()
-    const resp = await fetch(`${cfg.apiBase}/api/runtime-config`, {
-      method: 'GET',
-      headers: { ...(cfg.apiKey ? { 'X-API-Key': cfg.apiKey } : {}) }
-    })
-    if (!resp.ok) throw new Error(`runtime-config status=${resp.status}`)
-    const data = await resp.json()
-    const allow = !!(data && data.expose_agent_thoughts)
-    serverAllowsThoughts.value = allow
+	const loadBackendFlags = async () => {
+	  try {
+	    const cfg = getRuntimeConfig()
+	    const bootId = (() => {
+	      try { return getBootId() } catch (_e) { return '' }
+	    })()
+	    const bootSeq = (() => {
+	      try { return getBootSeq() } catch (_e) { return 0 }
+	    })()
+	    const clientId = (() => {
+	      try { return getClientId() } catch (_e) { return '' }
+	    })()
+	    const resp = await fetch(`${cfg.apiBase}/api/runtime-config`, {
+	      method: 'GET',
+	      headers: {
+	        ...(cfg.apiKey ? { 'X-API-Key': cfg.apiKey } : {}),
+	        ...(bootId ? { 'X-AH32-Boot-Id': bootId } : {}),
+	        ...(bootSeq ? { 'X-AH32-Boot-Seq': String(bootSeq) } : {}),
+	        ...(clientId ? { 'X-AH32-Client-Id': clientId } : {}),
+	      }
+	    })
+	    if (!resp.ok) throw new Error(`runtime-config status=${resp.status}`)
+	    const data = await resp.json()
+	    const allow = !!(data && data.expose_agent_thoughts)
+	    serverAllowsThoughts.value = allow
   } catch (e) {
     try {
       const now = Date.now()

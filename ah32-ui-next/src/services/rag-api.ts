@@ -5,6 +5,7 @@
 
 import axios from 'axios'
 import { getRuntimeConfig } from '@/utils/runtime-config'
+import { getClientId } from '@/utils/client-id'
 
 // 后端API基础URL
 const API_BASE_URL = getRuntimeConfig().apiBase || '/'
@@ -24,6 +25,18 @@ const apiClient = axios.create({
 apiClient.interceptors.request.use(
   (config) => {
     if (DEBUG) console.log(`[RAG API] ${config.method?.toUpperCase()} ${config.url}`)
+    try {
+      const cfg = getRuntimeConfig()
+      const uid = getClientId()
+      ;(config.headers as any) = (config.headers as any) || {}
+      ;(config.headers as any)['X-AH32-User-Id'] = uid
+      // Backward-compatible dev header; backend accepts it when enabled.
+      if (cfg.apiKey) (config.headers as any)['X-API-Key'] = cfg.apiKey
+      if (cfg.tenantId) (config.headers as any)['X-AH32-Tenant-Id'] = cfg.tenantId
+      if (cfg.accessToken) (config.headers as any)['Authorization'] = `Bearer ${cfg.accessToken}`
+    } catch (e) {
+      ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/rag-api.ts', e)
+    }
     return config
   },
   (error) => {
@@ -224,30 +237,91 @@ export const ragApi = {
    * 返回关闭函数
    */
   streamTask(taskId: string, onEvent: (data: any) => void | Promise<void>, onError?: (e: any) => void): () => void {
-    const base = getRuntimeConfig().apiBase || 'http://127.0.0.1:5123'
+    // Use fetch streaming instead of EventSource so we can attach auth headers.
+    const cfg = getRuntimeConfig()
+    const base = cfg.apiBase || 'http://127.0.0.1:5123'
     const url = `${base}/api/rag/tasks/${encodeURIComponent(taskId)}/stream`
-    const es = new EventSource(url)
+    const uid = (() => { try { return getClientId() } catch (_e) { return '' } })()
 
-    es.addEventListener('task', (evt) => {
+    const headers: Record<string, string> = {
+      Accept: 'text/event-stream',
+      ...(cfg.apiKey ? { 'X-API-Key': cfg.apiKey } : {}),
+      ...(cfg.tenantId ? { 'X-AH32-Tenant-Id': cfg.tenantId } : {}),
+      ...(cfg.accessToken ? { Authorization: `Bearer ${cfg.accessToken}` } : {}),
+      ...(uid ? { 'X-AH32-User-Id': uid } : {}),
+    }
+
+    const ac = new AbortController()
+
+    const emitErr = (e: any) => {
+      try { onError?.(e) } catch (e2) { (globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/rag-api.ts', e2) }
+    }
+
+    ;(async () => {
       try {
-        const parsed = JSON.parse((evt as MessageEvent).data)
-        Promise.resolve(onEvent(parsed)).catch((e) => onError?.(e))
+        const resp = await fetch(url, { method: 'GET', headers, signal: ac.signal })
+        if (!resp.ok) {
+          const txt = await resp.text().catch(() => '')
+          throw new Error(txt || `HTTP ${resp.status}`)
+        }
+        if (!resp.body) throw new Error('no response body')
+
+        const reader = resp.body.getReader()
+        const decoder = new TextDecoder()
+        let buffer = ''
+        let currentEvent: string | null = null
+        let currentData = ''
+
+        const flushFrame = async (frame: string) => {
+          const lines = String(frame || '').split(/\r?\n/)
+          for (const ln of lines) {
+            const line = String(ln || '')
+            if (line.startsWith('event:')) {
+              currentEvent = line.slice('event:'.length).trim()
+              continue
+            }
+            if (line.startsWith('data:')) {
+              const part = line.slice('data:'.length).trim()
+              currentData = currentData ? `${currentData}\n${part}` : part
+              continue
+            }
+          }
+
+          const ev = currentEvent || 'message'
+          const raw = currentData
+          currentEvent = null
+          currentData = ''
+          if (!raw) return
+          if (ev === 'ping') return
+
+          try {
+            const parsed = JSON.parse(raw)
+            await Promise.resolve(onEvent(parsed))
+          } catch (e) {
+            emitErr(e)
+          }
+        }
+
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          buffer += decoder.decode(value, { stream: true })
+          while (true) {
+            const idx = buffer.indexOf('\n\n')
+            if (idx < 0) break
+            const frame = buffer.slice(0, idx)
+            buffer = buffer.slice(idx + 2)
+            await flushFrame(frame)
+          }
+        }
       } catch (e) {
-        onError?.(e)
+        if ((e as any)?.name === 'AbortError') return
+        emitErr(e)
       }
-    })
-
-    es.addEventListener('ping', () => {
-      // keepalive
-    })
-
-    es.addEventListener('error', (evt) => {
-      onError?.(evt)
-      try { es.close() } catch (e) { (globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/rag-api.ts', e) }
-    })
+    })()
 
     return () => {
-      try { es.close() } catch (e) { (globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/rag-api.ts', e) }
+      try { ac.abort() } catch (e) { (globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/rag-api.ts', e) }
     }
   },
 

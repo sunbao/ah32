@@ -5,32 +5,105 @@
 
 from __future__ import annotations
 
-import asyncio
-import logging
-import os
-import threading
-from datetime import datetime
-from typing import Dict, List, Any, Optional
+import asyncio
+import logging
+import os
+import json
+import re
+import threading
+from datetime import datetime
+from typing import Dict, List, Any, Optional
 
-from ah32.config import settings
+from ah32.config import settings
+from ah32.tenancy.context import get_tenant_id
 
 from ..services.memory import get_memory_manager, get_global_user_memory, get_task_memory
 
 logger = logging.getLogger(__name__)
 
 
-# 全局向量存储缓存
-_vector_store_cache = None
-_vector_store_write_lock = threading.Lock()
+# Tenant-scoped vector store cache
+_vector_store_cache_by_tenant: Dict[str, Any] = {}
+_vector_store_write_lock = threading.Lock()
 
 # Default: do NOT block chat/macro responses on embedding/vector DB I/O.
 _memory_vector_write_sync = os.getenv("AH32_MEMORY_VECTOR_WRITE_SYNC", "").lower() in ("1", "true", "yes")
 # Default: only vectorize cross-session/global memory, not every session turn.
 _memory_vectorize_session = os.getenv("AH32_MEMORY_VECTORIZE_SESSION", "").lower() in ("1", "true", "yes")
-_memory_vector_max_chars = int(os.getenv("AH32_MEMORY_VECTOR_MAX_CHARS", "2000") or "2000")
-
-
-def _truncate_for_embedding(text: str, max_chars: int) -> str:
+_memory_vector_max_chars = int(os.getenv("AH32_MEMORY_VECTOR_MAX_CHARS", "2000") or "2000")
+
+_PLAN_SCHEMA_VERSION = "ah32.plan.v1"
+_PLAN_JSON_FENCE_RE = re.compile(r"```json\\s*([\\s\\S]*?)```", re.IGNORECASE)
+
+
+def _maybe_parse_plan_response(text: str) -> Optional[Dict[str, Any]]:
+    s = str(text or "").strip()
+    if not s:
+        return None
+
+    blob = None
+    m = _PLAN_JSON_FENCE_RE.search(s)
+    if m:
+        blob = (m.group(1) or "").strip()
+    elif s.startswith("{") and s.endswith("}"):
+        blob = s
+    if not blob:
+        return None
+
+    try:
+        obj = json.loads(blob)
+    except Exception:
+        return None
+
+    if not isinstance(obj, dict):
+        return None
+    if obj.get("schema_version") != _PLAN_SCHEMA_VERSION:
+        return None
+    return obj
+
+
+def _summarize_plan_for_memory(plan: Dict[str, Any]) -> str:
+    try:
+        host = str(plan.get("host_app") or "").strip()
+        actions = plan.get("actions") if isinstance(plan.get("actions"), list) else []
+        action_count = len(actions)
+
+        ops: List[str] = []
+        block_ids: List[str] = []
+
+        def walk(xs: Any) -> None:
+            if not isinstance(xs, list):
+                return
+            for a in xs:
+                if not isinstance(a, dict):
+                    continue
+                op = a.get("op")
+                if isinstance(op, str) and op.strip():
+                    ops.append(op.strip())
+                bid = a.get("block_id")
+                if isinstance(bid, str) and bid.strip():
+                    block_ids.append(bid.strip())
+                walk(a.get("actions"))
+
+        walk(actions)
+
+        ops_uniq = sorted(set(ops))[:12]
+        blocks_uniq = sorted(set(block_ids))[:6]
+
+        extras: List[str] = []
+        if ops_uniq:
+            extras.append(f"ops={','.join(ops_uniq)}")
+        if blocks_uniq:
+            extras.append(f"blocks={','.join(blocks_uniq)}")
+        extra_text = (" " + " ".join(extras)) if extras else ""
+
+        return f"[plan] schema={_PLAN_SCHEMA_VERSION} host={host or '?'} actions={action_count}{extra_text}"
+    except Exception as e:
+        logger.debug("[memory] summarize plan failed (ignored): %s", e, exc_info=True)
+        return f"[plan] schema={_PLAN_SCHEMA_VERSION}"
+
+
+def _truncate_for_embedding(text: str, max_chars: int) -> str:
     if not text:
         return ""
     if max_chars <= 0:
@@ -52,14 +125,19 @@ def _log_task_exception(task: asyncio.Task, *, desc: str) -> None:
         logger.warning(f"[memory] background task '{desc}' failed: {exc}")
 
 
-def _get_vector_store():
-    """获取全局向量存储（懒加载单例）"""
-    global _vector_store_cache
-    if _vector_store_cache is None:
-        try:
-            from ..knowledge.store import ChromaDBStore
-            from ..knowledge.chroma_utils import make_collection_name
-            from ..knowledge.embeddings import resolve_embedding
+def _get_vector_store():
+    """获取租户级向量存储（懒加载；按 tenant_id 分区）"""
+    tenant_id = (
+        str(get_tenant_id() or "").strip()
+        or str(getattr(settings, "default_tenant_id", "public") or "public").strip()
+    )
+
+    store = _vector_store_cache_by_tenant.get(tenant_id)
+    if store is None:
+        try:
+            from ..knowledge.store import ChromaDBStore
+            from ..knowledge.chroma_utils import make_collection_name
+            from ..knowledge.embeddings import resolve_embedding
 
             persist_path = _get_storage_path()
             embedding = resolve_embedding(settings)
@@ -68,35 +146,40 @@ def _get_vector_store():
                 embedding_dim = len(embedding.embed_query("dimension_probe"))
             except Exception as e:
                 logger.warning(f"[embedding] dimension probe failed for memory store: {e}")
-            collection_name = make_collection_name(
-                "ah32_memory",
-                settings.embedding_model,
-                embedding_dim=embedding_dim,
-            )
-            _vector_store_cache = ChromaDBStore(
-                persist_path=persist_path,
-                embedding=embedding,
-                reset=False,
-                config={
-                    "collection_name": collection_name,
-                    "collection_metadata": {
-                        "embedding_model": settings.embedding_model,
-                        "embedding_dim": embedding_dim,
-                    },
-                },
-            )
-            logger.info(f"向量存储初始化成功: {persist_path} (collection={collection_name})")
-        except Exception as e:
-            logger.error(f"向量存储初始化失败: {e}")
-            return None
-    return _vector_store_cache
+            collection_name = make_collection_name(
+                "ah32_memory",
+                settings.embedding_model,
+                embedding_dim=embedding_dim,
+            )
+            store = ChromaDBStore(
+                persist_path=persist_path,
+                embedding=embedding,
+                reset=False,
+                config={
+                    "collection_name": collection_name,
+                    "collection_metadata": {
+                        "tenant_id": tenant_id,
+                        "embedding_model": settings.embedding_model,
+                        "embedding_dim": embedding_dim,
+                    },
+                },
+            )
+            _vector_store_cache_by_tenant[tenant_id] = store
+            logger.info(f"向量存储初始化成功: {persist_path} (tenant={tenant_id}, collection={collection_name})")
+        except Exception as e:
+            logger.error(f"向量存储初始化失败: {e}")
+            return None
+    return store
 
 
-def _get_storage_path():
-    """获取向量存储路径"""
-    # 开发阶段规则：不做向后兼容，始终使用最新规范目录（与 rag/skills 同层）：
-    #   storage/memory_vector_store
-    return settings.memory_vector_store_path
+def _get_storage_path():
+    """获取向量存储路径"""
+    tenant_id = (
+        str(get_tenant_id() or "").strip()
+        or str(getattr(settings, "default_tenant_id", "public") or "public").strip()
+    )
+    # Tenant-scoped storage unit: storage/tenants/<tenant_id>/memory/
+    return settings.storage_root / "tenants" / tenant_id / "memory"
 
 
 class Ah32MemorySystem:
@@ -118,8 +201,8 @@ class Ah32MemorySystem:
             "global_memory": "global_memory"
         }
 
-    async def store_conversation(self, session_id: str, user_message: str,
-                                 assistant_response: str, metadata: Dict[str, Any] = None):
+    async def store_conversation(self, session_id: str, user_message: str,
+                                 assistant_response: str, metadata: Dict[str, Any] = None):
         """存储对话到记忆系统（支持智能分类）
 
         Args:
@@ -129,8 +212,20 @@ class Ah32MemorySystem:
             metadata: 元数据
         """
         logger.debug(f"[记忆存储] 开始存储对话，session_id: {session_id}")
-        logger.debug(f"[记忆存储] 用户消息: {user_message[:100]}...")
-        logger.debug(f"[记忆存储] 助手响应: {assistant_response[:100]}...")
+        assistant_response_for_memory = assistant_response
+        assistant_is_plan = False
+        try:
+            plan = _maybe_parse_plan_response(assistant_response)
+            if plan is not None:
+                assistant_is_plan = True
+                assistant_response_for_memory = _summarize_plan_for_memory(plan)
+        except Exception as e:
+            logger.warning("[memory] detect plan response failed (ignored): %s", e, exc_info=True)
+            assistant_response_for_memory = assistant_response
+            assistant_is_plan = False
+
+        logger.debug(f"[记忆存储] 用户消息: {user_message[:100]}...")
+        logger.debug(f"[记忆存储] 助手响应: {assistant_response_for_memory[:100]}...")
         # 确保session_id不为空
         if not session_id:
             import uuid
@@ -151,7 +246,8 @@ class Ah32MemorySystem:
         # 2. 确定存储类型
         storage_type = "session_memory"  # 默认存储类型
         classification_dict = None
-        bench_mode = bool((metadata or {}).get("bench"))
+        # Treat Plan JSON writeback as "non-memorable": never promote/vectorize backend execution payloads.
+        bench_mode = bool((metadata or {}).get("bench")) or assistant_is_plan
 
         if classification_result and not bench_mode:
             # 根据分类结果确定存储类型
@@ -179,13 +275,13 @@ class Ah32MemorySystem:
             storage_type=storage_type,
             classification_result=classification_dict
         )
-        session_memory.add_conversation(
-            role="assistant",
-            message=assistant_response,
-            section_id=metadata.get("section_id") if metadata else None,
-            storage_type=storage_type,
-            classification_result=classification_dict
-        )
+        session_memory.add_conversation(
+            role="assistant",
+            message=assistant_response_for_memory,
+            section_id=metadata.get("section_id") if metadata else None,
+            storage_type=storage_type,
+            classification_result=classification_dict
+        )
 
         # 5) Vector store (optional):
         # - Do not block interactive UX on embeddings/vector DB I/O by default.
@@ -196,9 +292,9 @@ class Ah32MemorySystem:
         )
         if should_vectorize:
             conversation_text = _truncate_for_embedding(
-                f"用户: {user_message}\n助手: {assistant_response}",
-                _memory_vector_max_chars,
-            )
+                f"用户: {user_message}\n助手: {assistant_response}",
+                _memory_vector_max_chars,
+            )
             document_hash = ""
             try:
                 from ..session.session_id_generator import SessionIdGenerator

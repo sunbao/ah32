@@ -15,6 +15,87 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+_DOC_SNAPSHOT_ID_KEYS = (
+    "doc_snapshot_id",
+    "docSnapshotId",
+    "doc_snapshot",
+    "docSnapshot",
+)
+
+
+def _extract_doc_snapshot_id(frontend_context: Optional[dict]) -> str:
+    try:
+        if not isinstance(frontend_context, dict):
+            return ""
+        for k in _DOC_SNAPSHOT_ID_KEYS:
+            v = frontend_context.get(k)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+            if isinstance(v, dict):
+                sid = v.get("snapshot_id") or v.get("snapshotId") or v.get("id")
+                if isinstance(sid, str) and sid.strip():
+                    return sid.strip()
+    except Exception:
+        logger.debug("[docx_extract] extract doc_snapshot_id failed (ignored)", exc_info=True)
+    return ""
+
+
+def _doc_snapshot_extract_max_bytes() -> int:
+    # Keep conservative by default, but allow larger docs when explicitly configured.
+    try:
+        v = int(os.getenv("AH32_DOC_SNAPSHOT_EXTRACT_MAX_BYTES") or "50000000")
+        return max(1_000_000, min(v, 500_000_000))
+    except Exception:
+        return 50_000_000
+
+
+def _doc_snapshot_fulltext_max_chars() -> int:
+    # Prevent pathological memory blow-ups when extracting full text from large snapshots.
+    try:
+        v = int(os.getenv("AH32_DOC_SNAPSHOT_FULLTEXT_MAX_CHARS") or "800000")
+        return max(50_000, min(v, 5_000_000))
+    except Exception:
+        return 800_000
+
+
+def _maybe_read_snapshot_extracted_text(snapshot_id: str) -> str:
+    sid = str(snapshot_id or "").strip()
+    if not sid:
+        return ""
+    try:
+        from ah32.doc_snapshots import get_doc_snapshot_store
+
+        store = get_doc_snapshot_store()
+        p = store.root_dir / sid / "extracted_text.txt"
+        if not p.exists():
+            return ""
+        # Bound by policy (avoid huge prompt payloads).
+        return p.read_text(encoding="utf-8")[: _doc_snapshot_fulltext_max_chars()]
+    except Exception:
+        logger.debug("[docx_extract] read snapshot extracted_text failed (ignored)", exc_info=True)
+        return ""
+
+
+def _maybe_extract_docx_from_snapshot(snapshot_id: str, *, max_chars: int) -> str:
+    sid = str(snapshot_id or "").strip()
+    if not sid:
+        return ""
+    try:
+        from ah32.doc_snapshots import get_doc_snapshot_store
+
+        store = get_doc_snapshot_store()
+        p = store.get_doc_file_path(sid)
+        if not p:
+            return ""
+        return extract_docx_text(
+            str(p),
+            max_chars=max_chars,
+            max_bytes=_doc_snapshot_extract_max_bytes(),
+        )
+    except Exception:
+        logger.debug("[docx_extract] extract snapshot docx failed (ignored)", exc_info=True)
+        return ""
+
 
 def _cap_text(s: str, *, max_chars: int) -> str:
     out = str(s or "")
@@ -122,12 +203,29 @@ def maybe_extract_active_doc_text_full(frontend_context: Optional[dict]) -> str:
             if isinstance(direct, str) and direct.strip():
                 return direct
 
+            # v1 doc snapshot: prefer the uploaded snapshot over local path probing.
+            sid = _extract_doc_snapshot_id(frontend_context)
+            if sid:
+                txt = _maybe_read_snapshot_extracted_text(sid)
+                if txt:
+                    return txt
+                # For "full text", still cap to avoid memory blow-ups.
+                snap_text = _maybe_extract_docx_from_snapshot(
+                    sid,
+                    max_chars=_doc_snapshot_fulltext_max_chars(),
+                )
+                if snap_text:
+                    return snap_text
+
         active = (frontend_context or {}).get("activeDocument") or {}
         p = (active.get("fullPath") or active.get("path") or "").strip()
         # max_chars<=0 => no cap (caller expects full).
         return extract_docx_text(p, max_chars=0)
     except Exception:
-        logger.warning("[docx_extract] maybe_extract_active_doc_text_full failed (ignored)", exc_info=True)
+        logger.warning(
+            "[docx_extract] maybe_extract_active_doc_text_full failed (ignored)",
+            exc_info=True,
+        )
         return ""
 
 
@@ -149,6 +247,15 @@ def maybe_extract_active_docx(frontend_context: Optional[dict], *, max_chars: in
             )
             if isinstance(direct, str) and direct.strip():
                 return _cap_text(direct, max_chars=max_chars)
+
+            sid = _extract_doc_snapshot_id(frontend_context)
+            if sid:
+                txt = _maybe_read_snapshot_extracted_text(sid)
+                if txt:
+                    return _cap_text(txt, max_chars=max_chars)
+                snap_text = _maybe_extract_docx_from_snapshot(sid, max_chars=max_chars)
+                if snap_text:
+                    return snap_text
 
         active = (frontend_context or {}).get("activeDocument") or {}
         p = (active.get("fullPath") or active.get("path") or "").strip()
