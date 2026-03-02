@@ -108,12 +108,15 @@ def get_tenant_keyring(*, path: Path | None = None) -> TenantKeyring:
 
     from ah32.config import settings
 
+    configured_path: Path | None = path or getattr(settings, "tenant_keyring_path", None)
+    if configured_path is None:
+        configured_path = settings.storage_root / "tenants" / "keyring.json"
+
     kr = TenantKeyring(
-        path=path or getattr(settings, "tenant_keyring_path", (settings.storage_root / "tenants" / "keyring.json")),
+        path=configured_path,
         max_tenants=int(getattr(settings, "max_tenants", 100) or 100),
         reload_interval_sec=int(getattr(settings, "tenant_keyring_reload_sec", 5) or 5),
     )
     if path is None:
         _KEYRING = kr
     return kr
-
