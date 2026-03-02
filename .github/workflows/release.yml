@@ -248,18 +248,19 @@ jobs:
             fi
 
             echo "[release] splitting oversized asset: $file ($size bytes)"
+            base="$(basename "$file")"
             sha256sum "$file" > "${file}.full.sha256"
             split -b "$split_size" -d -a 3 "$file" "${file}.part-"
             sha256sum "${file}.part-"* > "${file}.parts.sha256"
-            cat > "${file}.README.txt" <<TXT
-This file was split because GitHub Release enforces a 2GB limit per asset.
-
-Rebuild command (Linux/macOS):
-cat $(basename "$file").part-* > $(basename "$file")
-
-Rebuild command (Windows PowerShell):
-Get-Content -Encoding Byte $(basename "$file").part-* | Set-Content -Encoding Byte $(basename "$file")
-TXT
+            {
+              echo "This file was split because GitHub Release enforces a 2GB limit per asset."
+              echo
+              echo "Rebuild command (Linux/macOS):"
+              echo "cat ${base}.part-* > ${base}"
+              echo
+              echo "Rebuild command (Windows PowerShell):"
+              echo "Get-Content -Encoding Byte ${base}.part-* | Set-Content -Encoding Byte ${base}"
+            } > "${file}.README.txt"
             rm -f "$file"
           done
           ls -lah dist
