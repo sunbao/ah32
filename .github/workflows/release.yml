@@ -160,11 +160,14 @@ jobs:
     strategy:
       matrix:
         include:
-          - runner: macos-13
-            platform: macos-x64
-          - runner: macos-14
-            platform: macos-arm64
-    runs-on: ${{ matrix.runner }}
+          # GitHub-hosted macOS x64 runners may not always be available.
+          # Build both artifacts on Apple Silicon (macos-14) by selecting the
+          # matching Python architecture (x64 runs under Rosetta).
+          - platform: macos-x64
+            python_arch: x64
+          - platform: macos-arm64
+            python_arch: arm64
+    runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
 
@@ -172,9 +175,15 @@ jobs:
         run: |
           test -f .env || cp .env.example .env
 
+      - name: Ensure Rosetta (macos-x64)
+        if: ${{ matrix.python_arch == 'x64' }}
+        run: |
+          /usr/sbin/softwareupdate --install-rosetta --agree-to-license
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          architecture: ${{ matrix.python_arch }}
 
       - name: Install packaging deps
         run: |
