@@ -886,6 +886,7 @@ def _allowed_ops(host_app: HostApp) -> set[str]:
             "set_selection",
             "insert_text",
             "insert_image",
+            "insert_table",
             "insert_chart_from_selection",
             "set_cell_formula",
             "set_number_format",

@@ -624,66 +624,105 @@ async def plan_generate(
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
 
-        system = get_plan_generation_prompt(host)
-        user = (
-            f"session_id: {request.session_id}\n"
-            f"document_name: {request.document_name}\n"
-            f"host_app: {host}\n"
-            f"capabilities: {json.dumps(request.capabilities, ensure_ascii=False, default=str) if request.capabilities else ''}\n\n"
-            f"User request:\n{request.user_query}\n"
-        )
-
-        response = await llm.ainvoke([("system", system), ("user", user)])
-        raw = (getattr(response, "content", "") or "").strip()
-        payload = _extract_json_payload(raw)
-        if not payload:
-            resp = PlanGenerateResponse(success=False, error="empty model response")
-            metrics_recorder.record(
-                op="plan_generate",
-                success=resp.success,
-                duration_ms=int((time.perf_counter() - t0) * 1000),
-                extra={"host_app": host},
-            )
-            return resp
-
         from ah32.plan.schema import Plan
         from ah32.plan.normalize import normalize_plan_payload
 
-        try:
-            plan_obj = json.loads(payload)
-            plan = Plan.model_validate(normalize_plan_payload(plan_obj, host_app=host))
-        except (ValidationError, json.JSONDecodeError, TypeError, ValueError) as e:
-            if isinstance(e, ValidationError):
-                resp = PlanGenerateResponse(success=False, error=f"invalid plan: {e.errors(include_url=False)}")
-            else:
-                resp = PlanGenerateResponse(success=False, error=f"invalid plan: {str(e)}")
+        caps_text = (
+            json.dumps(request.capabilities, ensure_ascii=False, default=str) if request.capabilities else ""
+        )
+
+        system_generate = get_plan_generation_prompt(host)
+        user_generate = (
+            f"session_id: {request.session_id}\n"
+            f"document_name: {request.document_name}\n"
+            f"host_app: {host}\n"
+            f"capabilities: {caps_text}\n\n"
+            f"User request:\n{request.user_query}\n"
+        )
+
+        max_attempts = 3
+        attempt_count = 0
+        error_type = ""
+        error_message = ""
+        original_plan_obj: Dict[str, Any] = {}
+
+        for attempt in range(1, max_attempts + 1):
+            attempt_count = attempt
+
+            system = system_generate
+            user = user_generate
+            if attempt > 1:
+                # Best-effort: repair invalid/partial plans. If the model output isn't a dict, fall back to re-generate.
+                if original_plan_obj:
+                    system = get_plan_repair_prompt(host)
+                    user = (
+                        f"session_id: {request.session_id}\n"
+                        f"document_name: {request.document_name}\n"
+                        f"host_app: {host}\n"
+                        f"capabilities: {caps_text}\n"
+                        f"attempt: {attempt}\n\n"
+                        f"User request:\n{request.user_query}\n\n"
+                        f"error_type: {error_type}\n"
+                        f"error_message: {error_message}\n\n"
+                        f"Original plan:\n{json.dumps(original_plan_obj, ensure_ascii=False, default=str)}\n"
+                    )
+
+            response = await llm.ainvoke([("system", system), ("user", user)])
+            raw = (getattr(response, "content", "") or "").strip()
+            payload = _extract_json_payload(raw)
+            if not payload:
+                error_type = "empty_model_response"
+                error_message = "empty model response"
+                original_plan_obj = {}
+                continue
+
+            try:
+                plan_obj = json.loads(payload)
+                original_plan_obj = plan_obj if isinstance(plan_obj, dict) else {}
+            except json.JSONDecodeError as e:
+                error_type = "invalid_json"
+                error_message = str(e)
+                original_plan_obj = {}
+                continue
+
+            try:
+                plan = Plan.model_validate(normalize_plan_payload(plan_obj, host_app=host))
+            except (ValidationError, TypeError, ValueError) as e:
+                error_type = "invalid_plan"
+                if isinstance(e, ValidationError):
+                    error_message = json.dumps(e.errors(include_url=False), ensure_ascii=False, default=str)
+                else:
+                    error_message = str(e)
+                continue
+
+            if plan.host_app != host:
+                error_type = "host_app_mismatch"
+                error_message = f"host_app mismatch: request={host!r} plan={plan.host_app!r}"
+                continue
+
+            resp = PlanGenerateResponse(success=True, plan=plan.model_dump(mode="json"))
             metrics_recorder.record(
                 op="plan_generate",
                 success=resp.success,
                 duration_ms=int((time.perf_counter() - t0) * 1000),
-                extra={"host_app": host},
+                extra={"host_app": host, "attempt_count": attempt_count},
             )
             return resp
 
-        if plan.host_app != host:
-            resp = PlanGenerateResponse(
-                success=False,
-                error=f"host_app mismatch: request={host!r} plan={plan.host_app!r}",
-            )
-            metrics_recorder.record(
-                op="plan_generate",
-                success=resp.success,
-                duration_ms=int((time.perf_counter() - t0) * 1000),
-                extra={"host_app": host},
-            )
-            return resp
+        err = "empty model response"
+        if error_type == "invalid_plan":
+            err = f"invalid plan: {error_message}"
+        elif error_type == "host_app_mismatch":
+            err = error_message or "host_app mismatch"
+        elif error_type == "invalid_json":
+            err = f"invalid json: {error_message}"
 
-        resp = PlanGenerateResponse(success=True, plan=plan.model_dump(mode="json"))
+        resp = PlanGenerateResponse(success=False, error=err)
         metrics_recorder.record(
             op="plan_generate",
             success=resp.success,
             duration_ms=int((time.perf_counter() - t0) * 1000),
-            extra={"host_app": host},
+            extra={"host_app": host, "attempt_count": attempt_count, "error_type": error_type},
         )
         return resp
 

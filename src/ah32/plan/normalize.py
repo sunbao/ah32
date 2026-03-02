@@ -521,9 +521,25 @@ def _normalize_action(action: Any, *, fallback_id: str, host: HostApp) -> dict[s
         return out
 
     if op == "set_cell_formula":
-        cell = a1.get("cell") if isinstance(a1.get("cell"), str) else a1.get("address")
-        formula = a1.get("formula") if isinstance(a1.get("formula"), str) else a1.get("text")
-        if not isinstance(cell, str) or not cell.strip() or not isinstance(formula, str) or not formula.strip():
+        cell = (
+            _to_str_opt(a1.get("cell"))
+            or _to_str_opt(a1.get("address"))
+            or _to_str_opt(a1.get("range"))
+            or _to_str_opt(a1.get("cell_a1"))
+            or _to_str_opt(a1.get("cellA1"))
+            or _to_str_opt(a1.get("a1"))
+            or _to_str_opt(a1.get("target_cell"))
+            or _to_str_opt(a1.get("target"))
+            or _to_str_opt(a1.get("to"))
+        )
+        formula = (
+            _to_str_opt(a1.get("formula"))
+            or _to_str_opt(a1.get("text"))
+            or _to_str_opt(a1.get("expr"))
+            or _to_str_opt(a1.get("expression"))
+            or _to_str_opt(a1.get("value"))
+        )
+        if not cell or not formula:
             return {"id": action_id, "title": title, "op": "set_cell_formula"}
         out = {
             "id": action_id,
@@ -639,16 +655,27 @@ def _normalize_action(action: Any, *, fallback_id: str, host: HostApp) -> dict[s
         transform = _to_str_opt(a1.get("transform")) or "transpose"
         if transform not in ("transpose",):
             transform = "transpose"
+        source_range = (
+            _to_str_opt(a1.get("source_range"))
+            or _to_str_opt(a1.get("source"))
+            or _to_str_opt(a1.get("from"))
+            or _to_str_opt(a1.get("range"))
+            or _to_str_opt(a1.get("sourceRange"))
+            or _to_str_opt(a1.get("src"))
+        )
+        destination = (
+            _to_str_opt(a1.get("destination"))
+            or _to_str_opt(a1.get("dest"))
+            or _to_str_opt(a1.get("to"))
+            or _to_str_opt(a1.get("target"))
+            or _to_str_opt(a1.get("destinationRange"))
+        )
         out = {
             "id": action_id,
             "title": title,
             "op": "transform_range",
-            "source_range": (
-                a1.get("source_range") if isinstance(a1.get("source_range"), str) else a1.get("source")
-            ),
-            "destination": (
-                a1.get("destination") if isinstance(a1.get("destination"), str) else a1.get("dest")
-            ),
+            "source_range": source_range,
+            "destination": destination,
             "transform": transform,
             "clear_existing": bool(a1.get("clear_existing") if a1.get("clear_existing") is not None else True),
         }
