@@ -189,6 +189,13 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[packaging]"
+          # Linux x64 on PyPI often pulls CUDA-enabled torch wheels with massive
+          # nvidia-* runtime deps, which can push release assets beyond GitHub's 2GB limit.
+          # Force CPU-only torch for packaging to keep artifacts publishable.
+          pip uninstall -y torch torchvision torchaudio || true
+          pip freeze | awk -F== '/^nvidia-|^triton$/{print $1}' | xargs -r pip uninstall -y
+          pip install --index-url https://download.pytorch.org/whl/cpu torch
+          pip check
 
       - name: Build backend tar.gz
         run: |
