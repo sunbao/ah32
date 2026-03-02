@@ -234,6 +234,36 @@ jobs:
         run: |
           ls -la dist
 
+      - name: Split oversized assets for GitHub release limit
+        run: |
+          set -euo pipefail
+          limit_bytes=2147483648
+          split_size=1900m
+          shopt -s nullglob
+          for file in dist/*; do
+            [ -f "$file" ] || continue
+            size=$(stat -c%s "$file")
+            if [ "$size" -lt "$limit_bytes" ]; then
+              continue
+            fi
+
+            echo "[release] splitting oversized asset: $file ($size bytes)"
+            sha256sum "$file" > "${file}.full.sha256"
+            split -b "$split_size" -d -a 3 "$file" "${file}.part-"
+            sha256sum "${file}.part-"* > "${file}.parts.sha256"
+            cat > "${file}.README.txt" <<TXT
+This file was split because GitHub Release enforces a 2GB limit per asset.
+
+Rebuild command (Linux/macOS):
+cat $(basename "$file").part-* > $(basename "$file")
+
+Rebuild command (Windows PowerShell):
+Get-Content -Encoding Byte $(basename "$file").part-* | Set-Content -Encoding Byte $(basename "$file")
+TXT
+            rm -f "$file"
+          done
+          ls -lah dist
+
       - name: Publish GitHub Release assets
         uses: softprops/action-gh-release@v2
         with:
