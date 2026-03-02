@@ -2,17 +2,37 @@
 
 [English](README.en.md) | [中文](README.md)
 
-AH32 (product name: **Aha**) is a local-first office assistant for **WPS Office**. Inspired by the overall architecture and interaction patterns of *VibeCoding*, it helps users extract value from everyday office documents (summarization, alignment, search, structured notes, etc.) through **chat + executable actions** (default: writeback via Plan JSON).
+AH32 (product name: **Aha**) is an enterprise office assistant for **WPS Office**, designed for “private deployment + internal knowledge base + writeback to documents”. In chat, the model outputs an executable **Plan JSON** and the WPS add-in applies it to your document (text/tables/formatting/images) deterministically.
 
 Note: due to historical reasons, the backend Python package directory remains `src/ah32/` (import path is still `ah32`).
 
-## Core Capabilities (incl. Bidding/Tendering)
+## What it’s for (use cases)
 
-- **Skill-based scenarios**: Skills for different business scenarios (e.g., bidding docs analysis, compliance checks, meeting minutes, PPT/spreadsheet assistance). A router selects the best skill automatically or via user intent.
-- **Bidding/tendering (example: `bidding-helper`)**: Generates structured outputs that can be used directly in the workflow, such as compliance/deviation matrices, clarification questions, risks & recommendations, and milestone timelines.
-- **RAG (retrieval augmentation)**: Knowledge bases (contracts, cases, templates, policies) can come from user uploads/imports, or from URL ingestion into the RAG library for later retrieval in conversations.
-- **Missing-library awareness**: If a scenario relies on RAG but retrieval returns no hits, the system explicitly reports "no hits / library needs data" and guides the user to upload materials or provide URLs for ingestion.
-- **Source display policy**: By default, sources/URLs are not shown in the main body or writeback content to avoid messing up formatting; sources are appended only when users explicitly ask for "source/citation/link".
+- **Bidding / tender docs**: extract requirements, deviations, clarification questions, risks, and write them back into the working document.
+- **Policies / compliance / contracts**: check key clauses and missing items, produce actionable review notes and checklists.
+- **Meeting minutes & reports**: turn messy notes into outlines/action items and write back in a consistent format.
+- **Spreadsheets (ET)**: summarize and structure data; optionally generate tables/charts via writeback.
+- **Enterprise knowledge base (RAG)**: ingest contracts/cases/templates/policies; retrieve relevant snippets during chat; clearly indicates when the library needs more data.
+
+## Enterprise / private deployment (recommended)
+
+Typical shape: **WPS add-in (client) + AH32 backend (your intranet/cloud) + tenant-scoped storage (per org)**.
+
+- **Data isolation**: on-disk storage is split by `storage/tenants/<tenant_id>/...` to avoid cross-tenant mixing.
+- **Document context**: in remote-backend mode, the client uploads a “doc snapshot” and chat requests only reference `doc_snapshot_id` (keeps requests small and stable).
+- **Governance**: auth is off by default; enterprises can enable API Key/JWT; outbound web access supports a blacklist policy + audit logs (fits intranet/bank environments).
+
+## Quick start (private / intranet)
+
+Backend (server/intranet machine):
+
+```bash
+docker compose up -d --build
+```
+
+Default address: `http://127.0.0.1:5123`
+
+Client (install WPS add-in): see “Install the WPS Plugin (connect to a remote backend)” below.
 
 ## Download & Install
 
