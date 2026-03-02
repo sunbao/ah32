@@ -296,9 +296,133 @@
         reportTaskpaneError('boot_log', e3, 'warning')
       }
 
-      window.addEventListener('pagehide', function () {
-        recordDiag({ lastUnloadAt: new Date().toISOString() })
+      function _safeVisibilityState() {
+        try {
+          if (typeof document !== 'undefined' && document && document.visibilityState) {
+            return String(document.visibilityState)
+          }
+        } catch (e) {}
+        return ''
+      }
+
+      function _writeDiagLife(patch) {
+        try { recordDiag(patch || {}) } catch (e) { reportTaskpaneError('diag_lifecycle', e, 'warning') }
+      }
+
+      function _logLife(level, msg) {
+        try {
+          var apiBase = _resolveApiBase()
+          var url = apiBase + '/api/log?level=' + encodeURIComponent(String(level || 'info'))
+            + '&boot_id=' + encodeURIComponent(String(bootId || ''))
+            + '&boot_seq=' + encodeURIComponent(String(bootSeq || 0))
+            + '&client_id=' + encodeURIComponent(_resolveClientId())
+            + '&message=' + encodeURIComponent(String(msg || '').slice(0, 900))
+          fetch(url, { method: 'GET' }).catch(function (e2) {
+            try { console.warn('[taskpane] lifecycle /api/log failed', e2) } catch (e22) { console.error(e22) }
+          })
+        } catch (e) {
+          reportTaskpaneError('lifecycle_log', e, 'warning')
+        }
+      }
+
+      // Keep a lightweight heartbeat in localStorage so BOOT diag can show "last seen" within ~1s.
+      // Do NOT send network logs here (avoid log spam).
+      try {
+        var hbSeq = 0
+        setInterval(function () {
+          hbSeq = hbSeq + 1
+          var usedMb = null
+          try {
+            var pm = performance && performance.memory ? performance.memory : null
+            if (pm && typeof pm.usedJSHeapSize === 'number') {
+              usedMb = Math.round(pm.usedJSHeapSize / 1024 / 1024)
+            }
+          } catch (e) { usedMb = null }
+          _writeDiagLife({
+            lastHeartbeatAt: new Date().toISOString(),
+            lastHeartbeatSeq: hbSeq,
+            lastVisibilityState: _safeVisibilityState(),
+            lastOnline: (typeof navigator !== 'undefined' && typeof navigator.onLine === 'boolean') ? navigator.onLine : null,
+            lastJsHeapUsedMb: usedMb
+          })
+        }, 1000)
+      } catch (e) {
+        reportTaskpaneError('heartbeat_init', e, 'warning')
+      }
+
+      try {
+        document.addEventListener('visibilitychange', function () {
+          var st = _safeVisibilityState()
+          _writeDiagLife({ lastVisibilityChangeAt: new Date().toISOString(), lastVisibilityState: st })
+          _logLife('info', '[LIFECYCLE] visibilitychange state=' + st)
+        })
+      } catch (e) {
+        reportTaskpaneError('bind_visibilitychange', e, 'warning')
+      }
+
+      window.addEventListener('pagehide', function (event) {
+        var st = _safeVisibilityState()
+        var persisted = false
+        try { persisted = !!(event && event.persisted) } catch (e) { persisted = false }
+        _writeDiagLife({
+          lastPagehideAt: new Date().toISOString(),
+          lastUnloadAt: new Date().toISOString(),
+          lastVisibilityState: st,
+          lastPagehidePersisted: persisted
+        })
+        _logLife('info', '[LIFECYCLE] pagehide persisted=' + (persisted ? '1' : '0') + ' state=' + st)
       })
+
+      try {
+        window.addEventListener('beforeunload', function () {
+          var st = _safeVisibilityState()
+          _writeDiagLife({ lastBeforeUnloadAt: new Date().toISOString(), lastVisibilityState: st })
+          _logLife('info', '[LIFECYCLE] beforeunload state=' + st)
+        })
+      } catch (e) {
+        reportTaskpaneError('bind_beforeunload', e, 'warning')
+      }
+
+      try {
+        window.addEventListener('unload', function () {
+          var st = _safeVisibilityState()
+          _writeDiagLife({ lastUnloadAt: new Date().toISOString(), lastVisibilityState: st })
+          _logLife('info', '[LIFECYCLE] unload state=' + st)
+        })
+      } catch (e) {
+        reportTaskpaneError('bind_unload', e, 'warning')
+      }
+
+      // Page Lifecycle (best-effort; not all WPS runtimes support it).
+      try {
+        window.addEventListener('freeze', function () {
+          var st = _safeVisibilityState()
+          _writeDiagLife({ lastFreezeAt: new Date().toISOString(), lastVisibilityState: st })
+          _logLife('info', '[LIFECYCLE] freeze state=' + st)
+        })
+        window.addEventListener('resume', function () {
+          var st = _safeVisibilityState()
+          _writeDiagLife({ lastResumeAt: new Date().toISOString(), lastVisibilityState: st })
+          _logLife('info', '[LIFECYCLE] resume state=' + st)
+        })
+      } catch (e) {
+        reportTaskpaneError('bind_freeze_resume', e, 'warning')
+      }
+
+      try {
+        window.addEventListener('blur', function () {
+          var st = _safeVisibilityState()
+          _writeDiagLife({ lastBlurAt: new Date().toISOString(), lastVisibilityState: st })
+          _logLife('info', '[LIFECYCLE] blur state=' + st)
+        })
+        window.addEventListener('focus', function () {
+          var st = _safeVisibilityState()
+          _writeDiagLife({ lastFocusAt: new Date().toISOString(), lastVisibilityState: st })
+          _logLife('info', '[LIFECYCLE] focus state=' + st)
+        })
+      } catch (e) {
+        reportTaskpaneError('bind_focus_blur', e, 'warning')
+      }
 
       window.addEventListener('error', function (event) {
         var stack = ''
