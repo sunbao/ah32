@@ -203,6 +203,23 @@ export const useChatStore = defineStore('chat', () => {
     }>(null)
     const pendingRenameTargetBlockId = ref<string | null>(null)
 
+    // When the backend expects writeback but the model didn't output a Plan JSON,
+    // we prompt the user to choose an intent (instead of showing a hard "writeback failed" error).
+    const pendingWritebackPlanPick = ref<null | {
+        sessionId: string
+        assistantMessageId: string
+        assistantPreview: string
+        docContext: {
+            docId: string
+            docKey: string
+            name: string
+            path: string
+            hostApp: string
+        } | null
+        suggestions: Array<{ id: string; title: string; instruction: string }>
+        createdAt: string
+    }>(null)
+
     // Macro artifact "shortcuts" (list/rename/delete/update).
     // Keep these conservative to avoid intercepting normal document requests.
     const _hasAny = (t: string, words: string[]): boolean => {
@@ -1440,6 +1457,113 @@ export const useChatStore = defineStore('chat', () => {
         }
     }
 
+    const _extractWritebackSuggestionsFromAssistantText = (text: string): Array<{ id: string; title: string; instruction: string }> => {
+        try {
+            const raw = String(text || '')
+            const lines = raw.split(/\r?\n/g)
+
+            const items: Array<{ num: number; parts: string[] }> = []
+            let cur: { num: number; parts: string[] } | null = null
+
+            const pushCur = () => {
+                if (!cur) return
+                const joined = cur.parts.join(' ').replace(/\s+/g, ' ').trim()
+                if (joined) items.push({ num: cur.num, parts: [joined] })
+                cur = null
+            }
+
+            for (const lineRaw of lines) {
+                const line = String(lineRaw || '').trim()
+                if (!line) continue
+
+                const m = line.match(/^(\d{1,2})\s*[\.．、\)]\s*(.+)$/)
+                if (m) {
+                    pushCur()
+                    const num = Number(m[1])
+                    const body = String(m[2] || '').trim()
+                    if (Number.isFinite(num) && num > 0 && body) {
+                        cur = { num, parts: [body] }
+                        continue
+                    }
+                }
+
+                if (cur) cur.parts.push(line)
+            }
+            pushCur()
+
+            items.sort((a, b) => a.num - b.num)
+
+            const seen = new Set<string>()
+            const out: Array<{ id: string; title: string; instruction: string }> = []
+            for (const it of items.slice(0, 8)) {
+                const instruction = String(it.parts[0] || '').trim()
+                const key = instruction.replace(/\s+/g, ' ').toLowerCase()
+                if (!instruction) continue
+                if (seen.has(key)) continue
+                seen.add(key)
+
+                const title = (() => {
+                    const first = instruction.split(/[：:]/)[0] || instruction
+                    const t = first.trim().replace(/[。；;，,]\s*$/, '')
+                    return t.length > 32 ? `${t.slice(0, 32)}…` : t
+                })()
+                out.push({ id: `s${out.length + 1}`, title: title || `选项${out.length + 1}`, instruction })
+            }
+            return out
+        } catch (e) {
+            ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/stores/chat.ts', e)
+            return []
+        }
+    }
+
+    const _openWritebackPlanPick = (args: {
+        assistantMsg: Message
+        sessionId: string
+        docContext: any | null
+    }) => {
+        try {
+            const sid = normalizeSessionId(args.sessionId)
+            if (!sid) return
+
+            const assistantMsg = args.assistantMsg
+            const dc = args.docContext || null
+            const content = String((assistantMsg as any)?.content || '')
+
+            const suggestions = _extractWritebackSuggestionsFromAssistantText(content)
+            const preview = (() => {
+                const t = content.replace(/\s+/g, ' ').trim()
+                if (!t) return ''
+                return t.length > 220 ? `${t.slice(0, 220)}…` : t
+            })()
+
+            // Keep this best-effort and deterministic: only store, do not enqueue any macro job.
+            pendingWritebackPlanPick.value = {
+                sessionId: sid,
+                assistantMessageId: String(assistantMsg?.id || '').trim(),
+                assistantPreview: preview,
+                docContext: dc
+                    ? {
+                        docId: String(dc?.docId || '').trim(),
+                        docKey: String(dc?.docKey || '').trim(),
+                        name: String(dc?.name || '').trim(),
+                        path: String(dc?.path || '').trim(),
+                        hostApp: String(dc?.hostApp || wpsBridge.getHostApp() || '').trim()
+                    }
+                    : null,
+                suggestions,
+                createdAt: _nowIso(),
+            }
+
+            _addSystemMessageToSessionBucketSafe(
+                sid,
+                '【需要补充写回计划】本轮没有检测到可执行的 Plan JSON。请选择要执行的动作后，我会重新生成 Plan 并写回。',
+                dc || undefined
+            )
+        } catch (e) {
+            ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/stores/chat.ts', e)
+        }
+    }
+
     const _macroErrorNotifyDedup = new Map<string, number>()
     const _notifyMacroWritebackError = (args: { job: MacroJob; blockId: string; error: string; errCode?: string }) => {
         try {
@@ -2607,27 +2731,37 @@ export const useChatStore = defineStore('chat', () => {
                         ? '检测到 JS 宏代码块；当前分支仅支持 Plan JSON 写回。'
                         : '未检测到可执行 Plan JSON 代码块。'
 
-                    _notifyMacroWritebackError({
-                        job: {
-                            id: _randId('macrojob'),
-                            createdAt: _nowIso(),
+                    const dc = docContext
+                        ? {
+                            docId: String(docContext.docId || '').trim(),
+                            docKey: String(docContext.docKey || '').trim(),
+                            name: String(docContext.name || '').trim(),
+                            path: String(docContext.path || '').trim(),
+                            hostApp: String(docContext.hostApp || wpsBridge.getHostApp() || '').trim()
+                        }
+                        : null
+
+                    if (errCode === 'no_plan_block') {
+                        _openWritebackPlanPick({
+                            assistantMsg,
                             sessionId: normalizeSessionId(_findSessionIdForMessageId(assistantMsg.id) || currentSessionId.value || '__default__'),
-                            messageId: assistantMsg.id,
-                            docContext: docContext
-                                ? {
-                                    docId: String(docContext.docId || '').trim(),
-                                    docKey: String(docContext.docKey || '').trim(),
-                                    name: String(docContext.name || '').trim(),
-                                    path: String(docContext.path || '').trim(),
-                                    hostApp: String(docContext.hostApp || wpsBridge.getHostApp() || '').trim()
-                                }
-                                : null,
-                            blocks: [],
-                        },
-                        blockId: updateTargetBlockId ? String(updateTargetBlockId) : `plan_${assistantMsg.id}`,
-                        error: errMsg,
-                        errCode,
-                    })
+                            docContext: dc,
+                        })
+                    } else {
+                        _notifyMacroWritebackError({
+                            job: {
+                                id: _randId('macrojob'),
+                                createdAt: _nowIso(),
+                                sessionId: normalizeSessionId(_findSessionIdForMessageId(assistantMsg.id) || currentSessionId.value || '__default__'),
+                                messageId: assistantMsg.id,
+                                docContext: dc,
+                                blocks: [],
+                            },
+                            blockId: updateTargetBlockId ? String(updateTargetBlockId) : `plan_${assistantMsg.id}`,
+                            error: errMsg,
+                            errCode,
+                        })
+                    }
                     emitTelemetryEvent(
                         'macro.exec_done',
                         { ok: false, type: 'plan', error: errCode },
@@ -2724,6 +2858,76 @@ export const useChatStore = defineStore('chat', () => {
         } catch (e: any) {
             logger.debug('[MacroQueue] enqueueMacroJobForAssistantMessage failed', e)
         }
+    }
+
+    const clearPendingWritebackPlanPick = () => {
+        pendingWritebackPlanPick.value = null
+    }
+
+    const submitPendingWritebackPlanPick = async (args: {
+        suggestionId?: string
+        customInstruction?: string
+        outputSheetName?: string
+        startCell?: string
+        clearExisting?: boolean
+    }) => {
+        const pending = pendingWritebackPlanPick.value
+        if (!pending) throw new Error('writeback_plan_pick_missing')
+
+        const suggestionId = String(args?.suggestionId || '').trim()
+        const customInstruction = String(args?.customInstruction || '').trim()
+        const suggestion = suggestionId
+            ? (pending.suggestions || []).find((s) => String(s.id || '').trim() === suggestionId) || null
+            : null
+
+        const instruction = (suggestion?.instruction || customInstruction || '').trim()
+        if (!instruction) throw new Error('writeback_plan_pick_instruction_required')
+
+        const dc = pending.docContext || null
+        const hostApp = String(dc?.hostApp || wpsBridge.getHostApp() || 'wps').trim().toLowerCase()
+
+        // Best-effort: bring the original document to front before we request snapshot/chat.
+        try {
+            if (dc && (dc.docId || dc.path || dc.name)) {
+                wpsBridge.activateDocumentByContext({ docId: dc.docId, fullPath: dc.path, name: dc.name })
+            }
+        } catch (e) {
+            ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/stores/chat.ts', e)
+        }
+
+        const outputSheetName = String(args?.outputSheetName || '分析摘要').trim()
+        const startCell = String(args?.startCell || 'A1').trim()
+        const clearExisting = args?.clearExisting !== false
+
+        const header = hostApp === 'et'
+            ? `请基于当前 Excel 工作簿执行以下操作，并将结果输出到工作表“${outputSheetName}”从 ${startCell} 开始（若工作表已存在则${clearExisting ? '清空并覆盖' : '尽量不清空，仅覆盖必要单元格'}）。`
+            : '请基于当前文档执行以下操作，并将结果写入文档中合适位置（避免覆盖无关内容）。'
+
+        const prompt = [
+            header,
+            '',
+            `操作：${instruction}`,
+            '',
+            '要求：',
+            `- 只输出可执行的 Plan JSON（schema_version="ah32.plan.v1", host_app="${hostApp === 'et' || hostApp === 'wpp' ? hostApp : 'wps'}"）`,
+            '- 不要输出任何解释文字、不要输出 Markdown 代码块外的文本',
+        ].join('\n')
+
+        // Clear first to avoid double dialogs if the next turn also fails.
+        pendingWritebackPlanPick.value = null
+
+        await sendMessage(prompt, pending.sessionId, {
+            ensureDocSync: true,
+            frontendContextPatch: {
+                writeback_plan_pick: {
+                    assistant_message_id: pending.assistantMessageId,
+                    suggestion_id: suggestionId || null,
+                    output_sheet: outputSheetName,
+                    start_cell: startCell,
+                    clear_existing: clearExisting,
+                }
+            }
+        })
     }
 
     const enqueueRollbackForBlockId = (args: { blockId: string; messageId: string; docContext?: any }) => {
@@ -4279,6 +4483,7 @@ export const useChatStore = defineStore('chat', () => {
         lastMacroBlockId,
         lastTokenUsage,
         macroArtifacts,
+        pendingWritebackPlanPick,
 
         // 方法
         addMessage,
@@ -4306,6 +4511,8 @@ export const useChatStore = defineStore('chat', () => {
         registerMacroArtifact,
         enqueueWritebackForAssistantMessage: enqueueMacroJobForAssistantMessage,
         enqueueRollbackForBlockId,
+        clearPendingWritebackPlanPick,
+        submitPendingWritebackPlanPick,
         isMacroMessageExecuted,
         markMacroMessageExecuted,
         getMacroBlockRun,

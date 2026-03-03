@@ -302,15 +302,74 @@
 	    </div>
 	  </div>
 
-	  <RememberMemoryDialog
-	    v-model="rememberVisible"
-	    :patches="rememberPatches"
-	    :default-selected="rememberDefaultSelected"
-	    :auto-confirm-seconds="5"
-	    @confirm="handleRememberConfirm"
-	    @cancel="handleRememberCancel"
-	  />
-	</template>
+		  <RememberMemoryDialog
+		    v-model="rememberVisible"
+		    :patches="rememberPatches"
+		    :default-selected="rememberDefaultSelected"
+		    :auto-confirm-seconds="5"
+		    @confirm="handleRememberConfirm"
+		    @cancel="handleRememberCancel"
+		  />
+
+      <el-dialog
+        v-model="writebackPlanPickVisible"
+        title="生成写回计划"
+        width="520px"
+        :close-on-click-modal="false"
+      >
+        <div class="writeback-plan-pick">
+          <div class="writeback-plan-pick-desc">
+            这条回复没有可执行的 Plan JSON，无法直接写回。请选择要执行的动作，我会重新生成 Plan 并自动写回。
+          </div>
+
+          <div v-if="(pendingWritebackPlanPick?.assistantPreview || '').trim()" class="writeback-plan-pick-preview">
+            <div class="label">原回复摘要</div>
+            <div class="text">{{ pendingWritebackPlanPick?.assistantPreview }}</div>
+          </div>
+
+          <div class="writeback-plan-pick-section">
+            <div class="label">要执行的动作</div>
+            <el-radio-group v-model="writebackPlanPickChoice">
+              <el-radio
+                v-for="s in (pendingWritebackPlanPick?.suggestions || [])"
+                :key="s.id"
+                :label="s.id"
+              >
+                {{ s.title }}
+              </el-radio>
+              <el-radio label="custom">自定义</el-radio>
+            </el-radio-group>
+            <el-input
+              v-if="writebackPlanPickChoice === 'custom'"
+              v-model="writebackPlanPickCustom"
+              type="textarea"
+              :rows="3"
+              placeholder="例如：统计“升级风险”高/中/低数量并生成柱状图"
+            />
+          </div>
+
+          <div v-if="writebackPlanPickHostApp === 'et'" class="writeback-plan-pick-section">
+            <div class="label">输出位置</div>
+            <div class="row">
+              <span class="k">工作表</span>
+              <el-input v-model="writebackPlanPickSheet" size="small" style="width: 160px" />
+              <span class="k">起始单元格</span>
+              <el-input v-model="writebackPlanPickCell" size="small" style="width: 90px" />
+              <el-checkbox v-model="writebackPlanPickClear" style="margin-left: 8px">
+                清空并覆盖
+              </el-checkbox>
+            </div>
+          </div>
+        </div>
+
+        <template #footer>
+          <el-button @click="writebackPlanPickVisible = false">取消</el-button>
+          <el-button type="primary" :loading="writebackPlanPickSubmitting" @click="confirmWritebackPlanPick">
+            生成并写回
+          </el-button>
+        </template>
+      </el-dialog>
+		</template>
 
 	<script setup lang="ts">
 	import { ref, nextTick, watch, onMounted, onUnmounted, computed } from 'vue'
@@ -338,7 +397,7 @@ const emit = defineEmits<{
 
 	const chatStore = useChatStore()
 	const documentStore = useDocumentStore()
-	const { currentSessionId } = storeToRefs(chatStore)
+	const { currentSessionId, pendingWritebackPlanPick } = storeToRefs(chatStore)
 
 // 核心响应式数据
 const inputText = ref('')
@@ -501,6 +560,98 @@ const cancelWritebackQueue = () => {
     else ElMessage.success(`已取消 ${jobs} 个待写回任务`)
   } catch (e: any) {
     ElMessage.error(`取消写回失败：${String(e?.message || e)}`)
+  }
+}
+
+// Missing Plan JSON writeback picker (friendly UX)
+const writebackPlanPickVisible = computed({
+  get: () => !!pendingWritebackPlanPick.value,
+  set: (v: boolean) => {
+    if (v) return
+    try { (chatStore as any).clearPendingWritebackPlanPick?.() } catch (e) { (globalThis as any).__ah32_reportError?.('ah32-ui-next/src/components/chat/ChatPanel.vue', e) }
+  }
+})
+
+const writebackPlanPickHostApp = computed(() => {
+  try {
+    const dc: any = (pendingWritebackPlanPick.value as any)?.docContext || null
+    const host = String(dc?.hostApp || wpsBridge.getHostApp() || 'wps').trim().toLowerCase()
+    return (host === 'et' || host === 'wpp') ? host : 'wps'
+  } catch (e) {
+    ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/components/chat/ChatPanel.vue', e)
+    return 'wps'
+  }
+})
+
+const writebackPlanPickChoice = ref<string>('custom')
+const writebackPlanPickCustom = ref<string>('')
+const writebackPlanPickSheet = ref<string>('分析摘要')
+const writebackPlanPickCell = ref<string>('A1')
+const writebackPlanPickClear = ref<boolean>(true)
+const writebackPlanPickSubmitting = ref<boolean>(false)
+
+watch(
+  pendingWritebackPlanPick,
+  (v) => {
+    try {
+      if (!v) return
+      const suggestions: any[] = Array.isArray((v as any)?.suggestions) ? (v as any).suggestions : []
+      writebackPlanPickChoice.value = (suggestions[0]?.id ? String(suggestions[0].id) : 'custom') || 'custom'
+      writebackPlanPickCustom.value = ''
+      writebackPlanPickSheet.value = '分析摘要'
+      writebackPlanPickCell.value = 'A1'
+      writebackPlanPickClear.value = true
+    } catch (e) {
+      ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/components/chat/ChatPanel.vue', e)
+    }
+  },
+  { immediate: true }
+)
+
+const confirmWritebackPlanPick = async () => {
+  if (writebackPlanPickSubmitting.value) return
+  const pending: any = pendingWritebackPlanPick.value as any
+  if (!pending) return
+
+  const choice = String(writebackPlanPickChoice.value || '').trim()
+  const suggestionId = (choice && choice !== 'custom') ? choice : undefined
+  const customInstruction = (choice === 'custom') ? String(writebackPlanPickCustom.value || '').trim() : undefined
+
+  if (!suggestionId && !(customInstruction || '').trim()) {
+    ElMessage.warning('请选择一个动作，或输入自定义指令。')
+    return
+  }
+
+  if (writebackPlanPickHostApp.value === 'et') {
+    if (!String(writebackPlanPickSheet.value || '').trim()) {
+      ElMessage.warning('请输入输出工作表名称。')
+      return
+    }
+    if (!String(writebackPlanPickCell.value || '').trim()) {
+      ElMessage.warning('请输入起始单元格（如 A1）。')
+      return
+    }
+  }
+
+  writebackPlanPickSubmitting.value = true
+  try {
+    await (chatStore as any).submitPendingWritebackPlanPick?.({
+      suggestionId,
+      customInstruction,
+      outputSheetName: writebackPlanPickSheet.value,
+      startCell: writebackPlanPickCell.value,
+      clearExisting: writebackPlanPickClear.value,
+    })
+  } catch (e: any) {
+    ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/components/chat/ChatPanel.vue', e)
+    const msg = String(e?.message || e || 'unknown_error')
+    if (msg === 'writeback_plan_pick_instruction_required') {
+      ElMessage.error('指令不能为空：请选择一个动作或输入自定义指令。')
+    } else {
+      ElMessage.error(`生成写回计划失败：${msg}`)
+    }
+  } finally {
+    writebackPlanPickSubmitting.value = false
   }
 }
 
@@ -1916,6 +2067,60 @@ watch(
         }
       }
     }
+  }
+}
+
+.writeback-plan-pick {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.writeback-plan-pick-desc {
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.writeback-plan-pick-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+
+  .label {
+    font-size: 12px;
+    color: var(--text-secondary);
+  }
+
+  .row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .k {
+    font-size: 12px;
+    color: var(--text-secondary);
+  }
+}
+
+.writeback-plan-pick-preview {
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.02);
+  padding: 8px 10px;
+
+  .label {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-bottom: 4px;
+  }
+
+  .text {
+    font-size: 12px;
+    color: var(--text-primary);
+    line-height: 1.4;
   }
 }
 
