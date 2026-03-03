@@ -59,9 +59,8 @@
      - `wpp_placeholder_text_equals(kind,index,text)` 或 `wpp_placeholder_filled(kind,index)`
    - 这样可以把“真的填了占位符”与“只是加了个文本框”区分开。
 
-## 需要你确认的问题（开工前必须定）
+## 已确认（v1）
 
-1) `strict` 默认值选哪一个？（我倾向：默认 strict=true，避免偷偷 fallback 造成重叠）
-2) 若 strict=false：是否允许 fallback_to_add_textbox？还是直接失败但提示用户换模板/版式？
-3) `fill_placeholder` 是否允许指定 `slide_index`（推荐允许，便于多页生成）？
-
+- `strict` 默认 `true`（避免偷偷 fallback 造成重叠/越界），但支持 `strict=false`
+- `fallback_to_add_textbox` 作为显式开关支持（仅当 strict=false 时才会走）
+- 支持指定 `slide_index`（便于多页生成/多页回归）

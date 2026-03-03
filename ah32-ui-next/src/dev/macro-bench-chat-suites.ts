@@ -52,6 +52,7 @@ export type ChatBenchAssert =
   | { type: 'wpp_slide_count_at_least'; min: number; points?: number }
   | { type: 'wpp_last_slide_shapes_at_least'; min: number; points?: number }
   | { type: 'wpp_slide_text_contains'; text: string; points?: number }
+  | { type: 'wpp_placeholder_text_contains'; kind: 'title' | 'body' | 'subtitle'; text: string; index?: number; points?: number }
   | { type: 'wpp_last_slide_within_bounds'; margin?: number; points?: number }
   | { type: 'wpp_last_slide_no_overlap'; points?: number }
 
@@ -435,6 +436,71 @@ const STORIES: ChatBenchStory[] = [
     ],
   },
 
+  {
+    id: storyId('answer-mode', 'wps', 'precise_locate_v1'),
+    suiteId: 'answer-mode',
+    host: 'wps',
+    name: '精准定位：重复锚点 occurrence（Writer）',
+    description: '构造两个相同锚点，要求分别在第1/第2处后插入不同文本，验证定位能力不会写错位置。',
+    setupActions: [{ type: 'ensure_bench_document', title: 'Bench-精准定位' }, { type: 'set_cursor', pos: 'start' }],
+    turns: [
+      {
+        id: 't1_locate',
+        name: '第N处锚点定位写入',
+        artifactId: 'bench_precise_locate_v1',
+        actionsBeforeSend: [
+          { type: 'clear_document' },
+          { type: 'insert_text', text: '段落A：这里是A【插入点】' },
+          { type: 'insert_text', text: '段落B：这里是B【插入点】' },
+        ],
+        asserts: [
+          { type: 'writer_text_contains', text: '段落A：这里是A【插入点】OK1' },
+          { type: 'writer_text_contains', text: '段落B：这里是B【插入点】OK2' },
+        ],
+        query:
+          '请在第1处“【插入点】”后插入文本 OK1；在第2处“【插入点】”后插入文本 OK2。\n' +
+          '要求：只能在对应位置插入，不要把 OK2 插到第1处；优先使用 set_selection_by_text（occurrence=1/2）实现。',
+      },
+    ],
+  },
+
+  {
+    id: storyId('meeting-minutes', 'wps', 'table_cell_edit_v1'),
+    suiteId: 'meeting-minutes',
+    host: 'wps',
+    name: '表格改单元格：不新增表格（Writer）',
+    description: '先插入表格，再只改指定单元格内容，验证 set_table_cell_text 能力。',
+    setupActions: [{ type: 'ensure_bench_document', title: 'Bench-表格改单元格' }, { type: 'set_cursor', pos: 'start' }],
+    turns: [
+      {
+        id: 't1_make_table',
+        name: '插入表格（含待改单元格）',
+        artifactId: 'bench_table_cell_edit_v1',
+        actionsBeforeSend: [{ type: 'clear_document' }],
+        asserts: [
+          { type: 'writer_table_exists', minRows: 3, minCols: 3 },
+          { type: 'writer_text_contains', text: '待改_CELL_22' },
+        ],
+        query:
+          '在当前光标处插入一个 3 行 3 列表格。\n' +
+          '表头：列1=事项，列2=负责人，列3=状态。\n' +
+          '第2行第2列写入“待改_CELL_22”，其他单元格写简短示例值。',
+      },
+      {
+        id: 't2_edit_cell',
+        name: '只改单元格（不新增表格）',
+        artifactId: 'bench_table_cell_edit_v1',
+        asserts: [
+          { type: 'writer_text_contains', text: '已改_CELL_22' },
+          { type: 'writer_text_not_contains', text: '待改_CELL_22' },
+        ],
+        query:
+          '请把上面那张表格的第2行第2列从“待改_CELL_22”改成“已改_CELL_22”。\n' +
+          '要求：不要新增/重复插入表格；优先使用 set_table_cell_text。',
+      },
+    ],
+  },
+
   // ----------------------- ET (spreadsheets) -----------------------
   {
     id: storyId('finance-audit', 'et', 'finance_sheet_v1'),
@@ -794,6 +860,39 @@ const STORIES: ChatBenchStory[] = [
         query:
           '再生成1页“交付里程碑”：用4个阶段（启动/设计/实施/验收）做一条简洁时间线。\n' +
           '样式要求：时间线对齐整齐，配色一致，标题大号。',
+      },
+    ],
+  },
+
+  {
+    id: storyId('bidding-helper', 'wpp', 'placeholder_fill_v1'),
+    suiteId: 'bidding-helper',
+    host: 'wpp',
+    name: '占位符填充：标题/正文（WPP）',
+    description: '优先填占位符（标题/正文），减少坐标猜测导致的重叠/越界。',
+    setupActions: [
+      { type: 'ensure_bench_document', title: 'Bench-WPP占位符' },
+      { type: 'ensure_slide', index: 1 },
+      { type: 'select_slide', index: 1 },
+    ],
+    turns: [
+      {
+        id: 't1_fill',
+        name: '填充标题与正文占位符',
+        artifactId: 'bench_wpp_placeholder_fill_v1',
+        styleSpec: STYLE_SPECS.wpp_bid_deck_v1,
+        asserts: [
+          { type: 'wpp_slide_count_at_least', min: 1 },
+          { type: 'wpp_placeholder_text_contains', kind: 'title', text: '占位符标题_TEST' },
+          { type: 'wpp_placeholder_text_contains', kind: 'body', text: '要点1' },
+          { type: 'wpp_last_slide_within_bounds', margin: 4 },
+          { type: 'wpp_last_slide_no_overlap' },
+        ],
+        query:
+          '请在第1页完成占位符填充：\n' +
+          '- 标题占位符写入“占位符标题_TEST”；\n' +
+          '- 正文占位符写 3 条要点：要点1/要点2/要点3。\n' +
+          '要求：优先使用 fill_placeholder（strict=true），不要用坐标去猜位置。',
       },
     ],
   },

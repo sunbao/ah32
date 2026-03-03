@@ -108,6 +108,34 @@ export interface SetSelectionAction extends PlanBaseAction {
 
 }
 
+export interface SetSelectionByTextAction extends PlanBaseAction {
+  op: 'set_selection_by_text'
+  anchor_text: string
+  occurrence?: number | null
+  position?: 'before' | 'after' | 'start' | 'end' | null
+  offset_chars?: number | null
+  block_id?: string | null
+  strict?: boolean | null
+}
+
+export interface SetSelectionByBlockAction extends PlanBaseAction {
+  op: 'set_selection_by_block'
+  block_id: string
+  position?: 'start' | 'end' | null
+  offset_chars?: number | null
+  strict?: boolean | null
+}
+
+export interface SetTableCellTextAction extends PlanBaseAction {
+  op: 'set_table_cell_text'
+  row: number
+  col: number
+  text?: string | null
+  block_id?: string | null
+  table_index?: number | null
+  strict?: boolean | null
+}
+
 export interface EnsureSheetAction extends PlanBaseAction {
   op: 'ensure_sheet'
   sheet_name: string
@@ -452,6 +480,17 @@ export interface AddTextboxAction extends PlanBaseAction {
   slide_index?: number | null
 }
 
+export interface FillPlaceholderAction extends PlanBaseAction {
+  op: 'fill_placeholder'
+  text: string
+  placeholder_kind?: string | null
+  placeholder_type?: number | null
+  placeholder_index?: number | null
+  slide_index?: number | null
+  strict?: boolean | null
+  fallback_to_add_textbox?: boolean | null
+}
+
 export interface AddImageAction extends PlanBaseAction {
   op: 'add_image'
   path: string
@@ -605,6 +644,9 @@ export interface UpsertBlockAction extends PlanBaseAction {
 
 export type PlanAction =
   | SetSelectionAction
+  | SetSelectionByTextAction
+  | SetSelectionByBlockAction
+  | SetTableCellTextAction
   | EnsureSheetAction
 
   | InsertTextAction
@@ -637,6 +679,7 @@ export type PlanAction =
   // WPP新增操作
   | AddSlideAction
   | AddTextboxAction
+  | FillPlaceholderAction
   | AddImageAction
   | AddChartAction
   | AddTableAction
@@ -888,6 +931,7 @@ export class PlanExecutor {
       return new Set([
         'upsert_block',
         'delete_block',
+        'fill_placeholder',
         'insert_text',
         'insert_word_art',
         'set_slide_background',
@@ -918,6 +962,9 @@ export class PlanExecutor {
       'delete_block',
       'rollback_block',
       'set_selection',
+      'set_selection_by_text',
+      'set_selection_by_block',
+      'set_table_cell_text',
       'insert_text',
       'insert_after_text',
       'insert_before_text',
@@ -1020,8 +1067,12 @@ export class PlanExecutor {
         setTableStyle: 'set_table_style',
 
         setSelection: 'set_selection',
+        setSelectionByText: 'set_selection_by_text',
+        setSelectionByBlock: 'set_selection_by_block',
+        setTableCellText: 'set_table_cell_text',
         ensureSheet: 'ensure_sheet',
         answerModeApply: 'answer_mode_apply',
+        fillPlaceholder: 'fill_placeholder',
       }
       return map[s] || s
     }
@@ -1067,6 +1118,7 @@ export class PlanExecutor {
           sourceRange: 'source_range',
           sheetName: 'sheet_name',
           selectA1: 'select_a1',
+          tableIndex: 'table_index',
           tableName: 'table_name',
           replaceExisting: 'replace_existing',
           valueFields: 'values',
@@ -1079,6 +1131,7 @@ export class PlanExecutor {
           lastRow: 'last_row',
           bandedRows: 'banded_rows',
           bandedColumns: 'banded_columns',
+          fallbackToAddTextbox: 'fallback_to_add_textbox',
           schema: 'schema_version',
           hostApp: 'host_app'
         }
@@ -1404,6 +1457,18 @@ export class PlanExecutor {
           (action as any).offset_chars
         )
 
+        return
+
+      case 'set_selection_by_text':
+        this.setSelectionByText(ctx.doc, ctx.selection, action as any)
+        return
+
+      case 'set_selection_by_block':
+        this.setSelectionByBlock(ctx.doc, ctx.selection, action as any)
+        return
+
+      case 'set_table_cell_text':
+        this.setTableCellText(ctx.doc, ctx.selection, action as any)
         return
 
       case 'insert_text':
@@ -2378,6 +2443,63 @@ export class PlanExecutor {
     return null
   }
 
+  private resolveBlockInnerRange(
+    doc: any,
+    blockId: string
+  ): { range: any; start: number; end: number; source: 'bookmark' | 'markers' } | null {
+    const id = String(blockId || '').trim()
+    if (!id) return null
+
+    try {
+      const bmName = this.bookmarkName(id)
+      const bmRange = this.getBookmarkRange(doc, bmName)
+      const s = bmRange ? this.safe(() => (bmRange as any).Start) : null
+      const e = bmRange ? this.safe(() => (bmRange as any).End) : null
+      if (typeof s === 'number' && typeof e === 'number' && e >= s) {
+        const r = this.getDocRange(doc, s, e) || bmRange
+        if (r) return { range: r, start: s, end: e, source: 'bookmark' }
+      }
+    } catch (e) {
+      ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e)
+    }
+
+    try {
+      const startTag = this.tag(id, 'START')
+      const endTag = this.tag(id, 'END')
+      const startR = this.findTextRange(doc, startTag)
+      const endR = startR ? this.findTextRange(doc, endTag, (startR as any).End) : null
+      const innerStart = startR ? this.safe(() => (startR as any).End) : null
+      const innerEnd = endR ? this.safe(() => (endR as any).Start) : null
+      if (typeof innerStart === 'number' && typeof innerEnd === 'number' && innerEnd >= innerStart) {
+        const r = this.getDocRange(doc, innerStart, innerEnd)
+        if (r) return { range: r, start: innerStart, end: innerEnd, source: 'markers' }
+      }
+    } catch (e) {
+      ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e)
+    }
+
+    return null
+  }
+
+  private setSelectionToPos(doc: any, selection: any, pos: number) {
+    if (!selection) throw new Error('selection not available')
+    const p = Number(pos)
+    if (!Number.isFinite(p)) throw new Error('invalid selection pos')
+
+    const ok =
+      this.safe(() => (typeof selection.SetRange === 'function' ? selection.SetRange(p, p) : null)) ||
+      this.safe(() => (selection.Range?.SetRange ? selection.Range.SetRange(p, p) : null)) ||
+      null
+
+    if (ok) return
+
+    const r = this.getDocRange(doc, p, p)
+    if (r && typeof (r as any).Select === 'function') {
+      this.safe(() => (r as any).Select())
+      return
+    }
+  }
+
   private findTextRange(doc: any, text: string, startAt?: number): any {
     try {
       const r = doc.Range()
@@ -2547,6 +2669,266 @@ export class PlanExecutor {
         throw new Error(`set_selection: failed to offset_chars=${String(offsetChars)}`)
       }
     }
+  }
+
+  private setSelectionByText(doc: any, selection: any, action: SetSelectionByTextAction) {
+    const anchorText = String((action as any)?.anchor_text || '').trim()
+    if (!anchorText) throw new Error('set_selection_by_text: anchor_text is required')
+
+    const occurrenceRaw = (action as any)?.occurrence
+    const occurrence = Math.max(1, Number.isFinite(Number(occurrenceRaw)) ? Number(occurrenceRaw) : 1)
+
+    const positionRaw = String((action as any)?.position || 'after').trim().toLowerCase()
+    const position =
+      positionRaw === 'before' || positionRaw === 'after' || positionRaw === 'start' || positionRaw === 'end'
+        ? positionRaw
+        : 'after'
+
+    const offsetCharsRaw = (action as any)?.offset_chars
+    const offsetChars = Number.isFinite(Number(offsetCharsRaw)) ? Number(offsetCharsRaw) : 0
+
+    const strict = (action as any)?.strict !== false
+    const blockId = String((action as any)?.block_id || '').trim()
+
+    let scopeStart: number | null = null
+    let scopeEnd: number | null = null
+    if (blockId) {
+      const scope = this.resolveBlockInnerRange(doc, blockId)
+      if (!scope) {
+        if (strict) throw new Error(`set_selection_by_text: block not found: ${blockId}`)
+        _planDiag('warning', `set_selection_by_text: block not found; skip block_id=${blockId}`)
+        this.emitCapabilityEvent('plan.capability_matrix', {
+          host_app: 'wps',
+          op: 'set_selection_by_text',
+          branch: 'resolveBlock',
+          fallback: true,
+          success: false,
+          block_id: blockId,
+        })
+        return
+      }
+      scopeStart = scope.start
+      scopeEnd = scope.end
+    }
+
+    let found: any = null
+    let startAt = typeof scopeStart === 'number' ? scopeStart : undefined
+    for (let i = 1; i <= occurrence; i++) {
+      const r = this.findTextRange(doc, anchorText, startAt)
+      if (!r) {
+        found = null
+        break
+      }
+      const endPos = this.safe(() => (r as any).End)
+      if (typeof scopeEnd === 'number' && typeof endPos === 'number' && endPos > scopeEnd) {
+        found = null
+        break
+      }
+      found = r
+      if (i < occurrence && typeof endPos === 'number') startAt = endPos
+    }
+
+    if (!found) {
+      this.emitCapabilityEvent('plan.capability_matrix', {
+        host_app: 'wps',
+        op: 'set_selection_by_text',
+        branch: 'findText',
+        fallback: true,
+        success: false,
+        block_id: blockId || undefined,
+        occurrence,
+      })
+      if (strict) {
+        throw new Error(
+          `set_selection_by_text: anchor not found: ${anchorText.slice(0, 80)} (occurrence=${occurrence})`
+        )
+      }
+      _planDiag('warning', `set_selection_by_text: anchor not found; continue (strict=false)`)
+      return
+    }
+
+    const startPos = this.safe(() => (found as any).Start)
+    const endPos = this.safe(() => (found as any).End)
+    const pos =
+      position === 'before' || position === 'start'
+        ? (typeof startPos === 'number' ? startPos : null)
+        : (typeof endPos === 'number' ? endPos : null)
+
+    if (typeof pos !== 'number') throw new Error('set_selection_by_text: failed to resolve target position')
+
+    this.setSelectionToPos(doc, selection, pos)
+
+    if (offsetChars) {
+      const wdMove = 0
+      const wdCharacter = 1
+      try {
+        if (offsetChars > 0) selection.MoveRight(wdCharacter, offsetChars, wdMove)
+        else selection.MoveLeft(wdCharacter, Math.abs(offsetChars), wdMove)
+      } catch (e) {
+        ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e)
+        if (strict) throw new Error(`set_selection_by_text: failed to offset_chars=${String(offsetChars)}`)
+      }
+    }
+
+    this.emitCapabilityEvent('plan.capability_matrix', {
+      host_app: 'wps',
+      op: 'set_selection_by_text',
+      branch: 'setSelectionByText',
+      fallback: false,
+      success: true,
+      block_id: blockId || undefined,
+      occurrence,
+    })
+  }
+
+  private setSelectionByBlock(doc: any, selection: any, action: SetSelectionByBlockAction) {
+    const blockId = String((action as any)?.block_id || '').trim()
+    if (!blockId) throw new Error('set_selection_by_block: block_id is required')
+
+    const strict = (action as any)?.strict !== false
+    const positionRaw = String((action as any)?.position || 'start').trim().toLowerCase()
+    const position = positionRaw === 'end' ? 'end' : 'start'
+
+    const offsetCharsRaw = (action as any)?.offset_chars
+    const offsetChars = Number.isFinite(Number(offsetCharsRaw)) ? Number(offsetCharsRaw) : 0
+
+    const scope = this.resolveBlockInnerRange(doc, blockId)
+    if (!scope) {
+      this.emitCapabilityEvent('plan.capability_matrix', {
+        host_app: 'wps',
+        op: 'set_selection_by_block',
+        branch: 'resolveBlock',
+        fallback: true,
+        success: false,
+        block_id: blockId,
+      })
+      if (strict) throw new Error(`set_selection_by_block: block not found: ${blockId}`)
+      _planDiag('warning', `set_selection_by_block: block not found; continue (strict=false) block_id=${blockId}`)
+      return
+    }
+
+    const pos = position === 'end' ? scope.end : scope.start
+    this.setSelectionToPos(doc, selection, pos)
+
+    if (offsetChars) {
+      const wdMove = 0
+      const wdCharacter = 1
+      try {
+        if (offsetChars > 0) selection.MoveRight(wdCharacter, offsetChars, wdMove)
+        else selection.MoveLeft(wdCharacter, Math.abs(offsetChars), wdMove)
+      } catch (e) {
+        ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e)
+        if (strict) throw new Error(`set_selection_by_block: failed to offset_chars=${String(offsetChars)}`)
+      }
+    }
+
+    this.emitCapabilityEvent('plan.capability_matrix', {
+      host_app: 'wps',
+      op: 'set_selection_by_block',
+      branch: 'setSelectionByBlock',
+      fallback: false,
+      success: true,
+      block_id: blockId,
+      position,
+    })
+  }
+
+  private setTableCellText(doc: any, selection: any, action: SetTableCellTextAction) {
+    const row = Number((action as any)?.row)
+    const col = Number((action as any)?.col)
+    if (!Number.isFinite(row) || row < 1 || !Number.isFinite(col) || col < 1) {
+      throw new Error('set_table_cell_text: row/col must be >= 1')
+    }
+
+    const strict = (action as any)?.strict !== false
+    const blockId = String((action as any)?.block_id || '').trim()
+    const tableIndexRaw = (action as any)?.table_index
+    const hasTableIndex = Number.isFinite(Number(tableIndexRaw)) && Number(tableIndexRaw) >= 1
+    const tableIndex = hasTableIndex ? Number(tableIndexRaw) : 1
+    const text = (action as any)?.text == null ? '' : String((action as any).text)
+
+    let tables: any = null
+    let tableScope: 'block' | 'document' | 'selection' = 'selection'
+
+    if (blockId) {
+      const scope = this.resolveBlockInnerRange(doc, blockId)
+      if (!scope) {
+        this.emitCapabilityEvent('plan.capability_matrix', {
+          host_app: 'wps',
+          op: 'set_table_cell_text',
+          branch: 'resolveBlock',
+          fallback: true,
+          success: false,
+          block_id: blockId,
+        })
+        if (strict) throw new Error(`set_table_cell_text: block not found: ${blockId}`)
+        _planDiag('warning', `set_table_cell_text: block not found; continue (strict=false) block_id=${blockId}`)
+        return
+      }
+      tables = this.safe(() => (scope.range as any).Tables) || null
+      tableScope = 'block'
+    } else if (hasTableIndex) {
+      tables = this.safe(() => (doc as any).Tables) || null
+      tableScope = 'document'
+    } else {
+      tables =
+        this.safe(() => (selection as any)?.Range?.Tables) ||
+        this.safe(() => (selection as any)?.Tables) ||
+        null
+      tableScope = 'selection'
+    }
+
+    const count = Number(this.safe(() => (tables as any)?.Count, 0)) || 0
+    if (!tables || count < tableIndex) {
+      this.emitCapabilityEvent('plan.capability_matrix', {
+        host_app: 'wps',
+        op: 'set_table_cell_text',
+        branch: 'resolveTables',
+        fallback: true,
+        success: false,
+        block_id: blockId || undefined,
+        table_index: tableIndex,
+        scope: tableScope,
+      })
+      if (strict) {
+        throw new Error(`set_table_cell_text: table not found (scope=${tableScope} index=${tableIndex} count=${count})`)
+      }
+      _planDiag('warning', `set_table_cell_text: table not found; skip (strict=false)`)
+      return
+    }
+
+    const table =
+      this.safe(() => (tables as any).Item?.(tableIndex)) ||
+      this.safe(() => (tables as any).Item(tableIndex)) ||
+      this.safe(() => (tables as any)(tableIndex)) ||
+      null
+    if (!table) throw new Error('set_table_cell_text: failed to resolve table')
+
+    try {
+      const cell = this.safe(() => (table as any).Cell(row, col))
+      const rng = cell ? this.safe(() => (cell as any).Range) : null
+      if (!rng) throw new Error('cell range not available')
+      this.clearHiddenFormattingForRange(rng)
+      this.safe(() => ((rng as any).Text = text))
+    } catch (e) {
+      ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e)
+      if (strict) throw new Error(`set_table_cell_text failed: ${_errMsg(e)}`)
+      _planDiag('warning', `set_table_cell_text failed (strict=false): ${_errMsg(e)}`)
+      return
+    }
+
+    this.emitCapabilityEvent('plan.capability_matrix', {
+      host_app: 'wps',
+      op: 'set_table_cell_text',
+      branch: 'setTableCellText',
+      fallback: false,
+      success: true,
+      block_id: blockId || undefined,
+      table_index: tableIndex,
+      scope: tableScope,
+      row,
+      col,
+    })
   }
 
   private insertText(selection: any, text: string, before?: boolean, after?: boolean) {
@@ -6326,6 +6708,113 @@ export class PlanExecutor {
     })
   }
 
+  private fillPlaceholderWpp(ctx: { app: any; pres: any; slide?: any }, action: FillPlaceholderAction) {
+    const slide = this.resolveTargetSlideWpp(ctx, (action as any)?.slide_index)
+    if (!slide) throw new Error('target slide not available')
+
+    const text = String((action as any)?.text || '').trim()
+    if (!text) throw new Error('fill_placeholder: text is required')
+
+    const strict = (action as any)?.strict !== false
+    const fallbackToAddTextbox = (action as any)?.fallback_to_add_textbox === true
+
+    const shapes = this.safe(() => slide.Shapes)
+    if (!shapes) throw new Error('shapes not available')
+
+    const placeholderKind = String((action as any)?.placeholder_kind || '').trim().toLowerCase()
+    const placeholderTypeRaw = (action as any)?.placeholder_type
+    const placeholderIndexRaw = (action as any)?.placeholder_index
+    const placeholderIndex = Math.max(1, Number(placeholderIndexRaw || 1) || 1)
+
+    const kindMap: Record<string, number> = { title: 1, body: 2, subtitle: 4 }
+    const placeholderType =
+      Number.isFinite(Number(placeholderTypeRaw)) ? Number(placeholderTypeRaw) :
+      (placeholderKind && placeholderKind in kindMap ? kindMap[placeholderKind] : null)
+
+    if (placeholderType == null) {
+      throw new Error('fill_placeholder: placeholder_kind or placeholder_type is required')
+    }
+
+    const getPlaceholderShape = (pt: number, idx: number, kind: string) => {
+      let target: any = null
+      try {
+        if (kind === 'title') {
+          target = this.safe(() => (shapes as any).Title)
+        }
+      } catch (e) {
+        ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e)
+        target = null
+      }
+
+      if (!target) {
+        const candidates: any[] = []
+        const count = Number(this.safe(() => (shapes as any).Count, 0)) || 0
+        for (let i = 1; i <= count; i++) {
+          const sh = this.safe(() => (shapes as any).Item(i))
+          if (!sh) continue
+          const pf = this.safe(() => (sh as any).PlaceholderFormat)
+          if (!pf) continue
+          const t = Number(this.safe(() => (pf as any).PlaceholderType, -1)) || -1
+          if (t === pt) candidates.push(sh)
+        }
+        target = candidates[Math.min(candidates.length - 1, idx - 1)] || candidates[0] || null
+      }
+      return target
+    }
+
+    const target = getPlaceholderShape(placeholderType, placeholderIndex, placeholderKind)
+    if (target) {
+      const tf = this.safe(() => (target as any).TextFrame)
+      const tr = tf ? this.safe(() => (tf as any).TextRange) : null
+      if (tr) {
+        this.safe(() => ((tr as any).Text = text))
+        this.emitCapabilityEvent('plan.capability_matrix', {
+          host_app: 'wpp',
+          op: 'fill_placeholder',
+          branch: 'fillPlaceholder',
+          fallback: false,
+          success: true,
+          placeholder_kind: placeholderKind || undefined,
+          placeholder_type: placeholderType,
+          placeholder_index: placeholderIndex,
+        })
+        return
+      }
+    }
+
+    this.emitCapabilityEvent('plan.capability_matrix', {
+      host_app: 'wpp',
+      op: 'fill_placeholder',
+      branch: 'fillPlaceholder',
+      fallback: true,
+      success: false,
+      placeholder_kind: placeholderKind || undefined,
+      placeholder_type: placeholderType,
+      placeholder_index: placeholderIndex,
+    })
+
+    if (strict) {
+      throw new Error(
+        `fill_placeholder: placeholder not found kind=${placeholderKind || ''} type=${String(placeholderType)} index=${String(
+          placeholderIndex
+        )}`
+      )
+    }
+
+    if (fallbackToAddTextbox) {
+      this.addTextboxWpp(ctx, {
+        id: action.id,
+        title: action.title,
+        op: 'add_textbox',
+        text,
+        placeholder_kind: placeholderKind || null,
+        placeholder_type: placeholderType,
+        placeholder_index: placeholderIndex,
+        slide_index: (action as any)?.slide_index ?? null,
+      } as any)
+    }
+  }
+
   private addTextboxWpp(ctx: { app: any; pres: any; slide?: any }, action: AddTextboxAction) {
     const slide = this.resolveTargetSlideWpp(ctx, (action as any)?.slide_index)
     if (!slide) throw new Error('target slide not available')
@@ -8295,6 +8784,10 @@ export class PlanExecutor {
           }
           case 'set_table_style': {
             this.setTableStyleWpp(ctx, action as any)
+            break
+          }
+          case 'fill_placeholder': {
+            this.fillPlaceholderWpp(ctx, action as any)
             break
           }
           // WPP新增操作

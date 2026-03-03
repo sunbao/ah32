@@ -98,6 +98,9 @@ def _norm_op(op: Any) -> str:
         "deleteBlock": "delete_block",
         "rollbackBlock": "rollback_block",
         "setSelection": "set_selection",
+        "setSelectionByText": "set_selection_by_text",
+        "setSelectionByBlock": "set_selection_by_block",
+        "setTableCellText": "set_table_cell_text",
         "ensureSheet": "ensure_sheet",
         "insertText": "insert_text",
         "insertAfterText": "insert_after_text",
@@ -141,6 +144,7 @@ def _norm_op(op: Any) -> str:
         "setAnimationTiming": "set_animation_timing",
         "addHyperlink": "add_hyperlink",
         "setPresentationProps": "set_presentation_props",
+        "fillPlaceholder": "fill_placeholder",
     }
     return m.get(s, s)
 
@@ -197,6 +201,7 @@ def _map_key(k: str) -> str:
         "visibleDropdown": "visible_dropdown",
         "sourceRange": "source_range",
         "destRange": "destination",
+        "tableIndex": "table_index",
         "tableName": "table_name",
         "replaceExisting": "replace_existing",
         "valueFields": "values",
@@ -224,6 +229,7 @@ def _map_key(k: str) -> str:
         "placeholderKind": "placeholder_kind",
         "placeholderType": "placeholder_type",
         "placeholderIndex": "placeholder_index",
+        "fallbackToAddTextbox": "fallback_to_add_textbox",
         "sheetName": "sheet_name",
         "selectA1": "select_a1",
         "shapeType": "shape_type",
@@ -378,6 +384,68 @@ def _normalize_action(action: Any, *, fallback_id: str, host: HostApp) -> dict[s
         if range_addr is not None:
             out["range"] = range_addr[:128]
         return out
+
+    if op == "set_selection_by_text":
+        anchor_text = _to_str_opt(a1.get("anchor_text") or a1.get("text") or a1.get("anchor"))
+        if anchor_text is None:
+            return {"id": action_id, "title": title, "op": "set_selection_by_text"}
+        out2: dict[str, Any] = {
+            "id": action_id,
+            "title": title,
+            "op": "set_selection_by_text",
+            "anchor_text": anchor_text[:10_000],
+            "occurrence": _to_int(a1.get("occurrence"), default=1),
+            "position": _to_str_opt(a1.get("position")) or "after",
+            "offset_chars": _to_int(a1.get("offset_chars"), default=0),
+        }
+        block_id = _to_str_opt(a1.get("block_id"))
+        if block_id is not None:
+            out2["block_id"] = block_id[:64]
+        strict = _to_bool_opt(a1.get("strict"))
+        if strict is not None:
+            out2["strict"] = strict
+        return out2
+
+    if op == "set_selection_by_block":
+        block_id2 = _to_str_opt(a1.get("block_id"))
+        if block_id2 is None:
+            return {"id": action_id, "title": title, "op": "set_selection_by_block"}
+        out3: dict[str, Any] = {
+            "id": action_id,
+            "title": title,
+            "op": "set_selection_by_block",
+            "block_id": block_id2[:64],
+            "position": _to_str_opt(a1.get("position")) or "start",
+            "offset_chars": _to_int(a1.get("offset_chars"), default=0),
+        }
+        strict = _to_bool_opt(a1.get("strict"))
+        if strict is not None:
+            out3["strict"] = strict
+        return out3
+
+    if op == "set_table_cell_text":
+        row = _to_int_opt(a1.get("row") or a1.get("r"))
+        col = _to_int_opt(a1.get("col") or a1.get("c"))
+        if row is None or col is None:
+            return {"id": action_id, "title": title, "op": "set_table_cell_text"}
+        out4: dict[str, Any] = {
+            "id": action_id,
+            "title": title,
+            "op": "set_table_cell_text",
+            "row": row,
+            "col": col,
+            "text": "" if a1.get("text") is None else str(a1.get("text")),
+        }
+        block_id = _to_str_opt(a1.get("block_id"))
+        if block_id is not None:
+            out4["block_id"] = block_id[:64]
+        table_index = _to_int_opt(a1.get("table_index"))
+        if table_index is not None:
+            out4["table_index"] = table_index
+        strict = _to_bool_opt(a1.get("strict"))
+        if strict is not None:
+            out4["strict"] = strict
+        return out4
 
     if op == "ensure_sheet":
         sheet_name = _to_str_opt(a1.get("sheet_name") or a1.get("name"))
@@ -966,6 +1034,36 @@ def _normalize_action(action: Any, *, fallback_id: str, host: HostApp) -> dict[s
         if slide_index is not None:
             out["slide_index"] = slide_index
         return out
+
+    if op == "fill_placeholder":
+        text_value = _to_str_opt(a1.get("text") or a1.get("content"))
+        if text_value is None:
+            return {"id": action_id, "title": title, "op": "fill_placeholder"}
+        out5: dict[str, Any] = {
+            "id": action_id,
+            "title": title,
+            "op": "fill_placeholder",
+            "text": text_value[:200_000],
+        }
+        placeholder_kind = _to_str_opt(a1.get("placeholder_kind"))
+        if placeholder_kind is not None:
+            out5["placeholder_kind"] = placeholder_kind
+        placeholder_type = _to_int_opt(a1.get("placeholder_type"))
+        if placeholder_type is not None:
+            out5["placeholder_type"] = placeholder_type
+        placeholder_index = _to_int_opt(a1.get("placeholder_index"))
+        if placeholder_index is not None:
+            out5["placeholder_index"] = max(1, min(50, placeholder_index))
+        slide_index = _to_int_opt(a1.get("slide_index"))
+        if slide_index is not None:
+            out5["slide_index"] = slide_index
+        strict = _to_bool_opt(a1.get("strict"))
+        if strict is not None:
+            out5["strict"] = strict
+        fallback = _to_bool_opt(a1.get("fallback_to_add_textbox"))
+        if fallback is not None:
+            out5["fallback_to_add_textbox"] = fallback
+        return out5
 
     if op == "add_image":
         path = _to_str_opt(a1.get("path") or a1.get("url") or a1.get("image_path"))

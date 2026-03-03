@@ -37,6 +37,7 @@ Writer（WPS 文档）里很多写回失败/写错位置，本质不是“不会
 - `position`（可选，默认 `after`）：`before|after|start|end`
 - `offset_chars`（可选，默认 `0`）：在定位点基础上再偏移
 - `block_id`（可选）：若提供，则只在该 `block_id` 对应范围内查找（更安全）
+- `strict`（可选，默认 `true`）：找不到匹配时是否直接失败；`false` 表示 best-effort（不抛错但会记录失败事件）
 
 失败策略（v1）：找不到匹配就 **硬失败**（避免误写）。
 
@@ -49,6 +50,7 @@ Writer（WPS 文档）里很多写回失败/写错位置，本质不是“不会
 - `block_id`（必填）
 - `position`（可选，默认 `start`）：`start|end`（表示块内起点/块内终点）
 - `offset_chars`（可选，默认 `0`）
+- `strict`（可选，默认 `true`）：找不到 block 时是否直接失败；`false` 表示 best-effort（不抛错但会记录失败事件）
 
 失败策略（v1）：找不到 block marker 就硬失败（并输出可追踪日志）。
 
@@ -73,9 +75,8 @@ Writer（WPS 文档）里很多写回失败/写错位置，本质不是“不会
    - 文件：`scripts/macro_bench.py`
    - 新增 1 条 case：明确要求使用 `set_selection_by_text`（occurrence=2）来定位第二处锚点并写入
 
-## 需要你确认的问题（开工前必须定）
+## 已确认（v1）
 
-1) v1 是否先做 **两条 OP**（`set_selection_by_text` + `set_selection_by_block`）？还是只做 `set_selection_by_text`？
-2) `set_selection_by_text` 找不到时：v1 是否必须硬失败？（我倾向：是，避免误写）
-3) `block_id` 限定搜索是否作为 v1 的推荐安全默认？（例如：如果提供了 block_id，强制只在 block 内找）
-
+- v1 实现两条 OP：`set_selection_by_text` + `set_selection_by_block`
+- 默认 `strict=true`（避免误写）；但支持 `strict=false` 走 best-effort（用于“尽量做、找不到也别崩”的对话）
+- `block_id` 是可选安全限定：提供时只在 block 内查找；不提供则全文查找

@@ -41,6 +41,8 @@
 | OP | 能做什么 | 关键字段（常用） | 做不到/限制（v1） |
 |---|---|---|---|
 | `set_selection` | 移动光标/选区（按锚点+偏移）。 | `anchor`(`cursor/start_of_document/end_of_document`), `offset_lines`, `offset_chars` | 不能“按标题/页码/书签名”精准定位；对复杂文档定位稳定性有限。 |
+| `set_selection_by_text` | 按文本锚点定位光标（可指定第 N 处匹配；可选限定在某个 `block_id` 内）。 | `anchor_text`, `occurrence?`, `position?`, `block_id?`, `strict?` | 仍是“基于文本查找”，不是结构化定位；锚点文本变化/被改写后会失败（strict=true）或降级（strict=false）。 |
+| `set_selection_by_block` | 把光标定位到某个 `block_id` 产物块的起点/终点，用于后续追加或块内操作。 | `block_id`, `position?`, `strict?` | 依赖 block marker/书签存在；如果块被手工破坏/删除会失败或降级。 |
 | `insert_text` | 在当前选区插入文本（可前后换行）。 | `text`, `new_paragraph_before/after` | 只能插纯文本；不负责样式（需再用样式类 OP）；如果选区非插入点，可能覆盖选中内容。 |
 | `insert_after_text` | 找到 `anchor_text`（首次匹配）后插入文本。 | `anchor_text`, `text` | 多处重复文本时不可控（默认命中第一处）；匹配失败会硬失败。 |
 | `insert_before_text` | 同上，但插入到锚点前。 | `anchor_text`, `text` | 同上。 |
@@ -54,6 +56,7 @@
 | `normalize_headings` | 尝试把标题层级规范化（best-effort）。 | `apply_to_selection?`, `max_paragraphs?`, `levels?` | 依赖启发式；不可逆且容易“改多/改少”。 |
 | `apply_text_style_to_matches` | 查找文本并批量改样式（可限制范围和命中数）。 | `find_text`, `max_matches?`, `case_sensitive?`, `whole_word?`, `block_id?` | 不是正则；对跨段/跨表结构匹配有限。 |
 | `set_writer_table_style` | 批量设置表格样式/边框/表头（可按 `block_id` 限定）。 | `style_name?`, `borders?`, `header?`, `max_tables?`, `block_id?` | best-effort；不同 WPS 版本对象模型差异大。 |
+| `set_table_cell_text` | 修改某张表格的某个单元格文本（不新增表格）。 | `row`, `col`, `text`, `block_id?`, `table_index?`, `strict?` | v1 只做“替换整格”；不做合并/拆分/复杂表头；若 locator 不明确可能误改（建议优先用 `block_id` 限定）。 |
 | `answer_mode_apply` | 触发“答题模式”写回（由前端 BID runtime 执行）。 | `answers[]`, `block_id?`, `search_window_chars?`, `backup?`, `strict?` | **强依赖** 前端加载了 `BID.answerModeApply`；否则硬失败；这不是纯 Plan 能力。 |
 
 ### 2) `host_app="et"`（表格）OP 列表
@@ -90,6 +93,7 @@
 | `set_shape_style` | 改形状样式（best-effort）。 | `fill_color?`, `line_color?`, `text_color?`, `apply_to_all?` | 需要能定位到 shape（通常靠 selection 或遍历）；复杂样式不覆盖。 |
 | `set_table_style` | 改表格样式（best-effort）。 | `style_name?`, `banded_rows?`, `apply_to_all?` | 依赖对象模型；不保证所有版本可用。 |
 | `add_slide` | 新增幻灯片（可指定位置/版式）。 | `position?`, `layout?` | 布局/版式常量不统一。 |
+| `fill_placeholder` | 填充现有占位符（标题/正文/副标题），可选 strict/fallback 策略。 | `text`, `placeholder_kind?`/`placeholder_type?`, `placeholder_index?`, `slide_index?`, `strict?`, `fallback_to_add_textbox?` | 依赖模板存在占位符；strict=true 找不到会失败；fallback 插新文本框可能导致布局不稳。 |
 | `add_textbox` | 新增文本框（支持坐标/占位符优先）。 | `text`, `left/top/width/height?`, `placeholder_kind?` | 坐标单位/渲染有差异；占位符不存在会 fallback。 |
 | `add_image` | 新增图片（支持 `asset://`/URL/本地路径）。 | `path`, `left/top/width/height?` | 网络/权限失败会失败或降级。 |
 | `add_chart` | 新增图表（best-effort）。 | `chart_type?`, `data?` | 图表数据结构/常量差异大，复杂图表不覆盖。 |
@@ -109,6 +113,6 @@
 ## 重点缺口（v1 明确“做不到”，避免误会）
 
 1) ET 已补 `ensure_sheet`（显式建/复用/清空/选中 A1），但“引用 sheet 自动创建”的隐式行为仍然存在；若要避免拼写导致误建表，需要另起 change 做 strict 模式/能力协商。
-2) 没有“精确定位写回”（例如 Writer 按段落 ID/页码；ET 按命名区域；WPP 按占位符路径）。
+2) 精确定位仍不完善：Writer 目前主要是“按文本/块级”（`set_selection_by_text`/`set_selection_by_block`）；ET 仍缺“命名区域/结构化表”等定位；WPP 虽有 `fill_placeholder`，但缺“占位符路径/母版层级”等更强定位。
 3) 没有“复杂格式能力”全覆盖（合并单元格、复杂图表样式、全文样式模板、修订等）。
 4) `answer_mode_apply` 不是纯 Plan：它是“Plan 调用前端 BID runtime”，所以它的稳定性受前端加载/版本影响。

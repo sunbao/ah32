@@ -183,6 +183,26 @@ def default_cases() -> List[Case]:
             query="生成 9x9 乘法表（不要生成第二份；重复执行要覆盖原产物），并写入到文档末尾。",
         ),
         Case(
+            name="writer_precise_locate_occurrence",
+            host_app="wps",
+            query=(
+                "先写两段文本：\n"
+                "段落A：这里是A【插入点】\n"
+                "段落B：这里是B【插入点】\n"
+                "然后把光标定位到第2处“【插入点】”之后并插入文本 OK2。\n"
+                "要求：优先使用 op=set_selection_by_text（occurrence=2, position=after），不要把 OK2 插到第1处。"
+            ),
+        ),
+        Case(
+            name="writer_table_cell_edit",
+            host_app="wps",
+            query=(
+                "在当前光标处插入一个 3 行 3 列表格，表头：事项/负责人/状态；并在第2行第2列写入“待改_CELL_22”。\n"
+                "然后只把该单元格改成“已改_CELL_22”，不要新增表格。\n"
+                "要求：优先使用 op=set_table_cell_text（row=2,col=2）。"
+            ),
+        ),
+        Case(
             name="et_sheet_table_and_chart",
             host_app="et",
             query="创建一张名为“月度趋势”的产物工作表，写入两列数据：月份(1-6月) 和 活跃用户(万)：45/52/60/65/70/68，然后基于该数据生成折线图。",
@@ -191,6 +211,16 @@ def default_cases() -> List[Case]:
             name="wpp_title_slide",
             host_app="wpp",
             query="生成一页标题页：标题“项目周报”，副标题“第4周”，并在页面下方插入三条要点。",
+        ),
+        Case(
+            name="wpp_fill_placeholder",
+            host_app="wpp",
+            query=(
+                "请在第1页用占位符方式生成：\n"
+                "1) 标题占位符写入“占位符标题_TEST”。\n"
+                "2) 正文占位符写 3 条要点：要点1/要点2/要点3。\n"
+                "要求：优先使用 op=fill_placeholder（strict=true），不要用坐标去猜位置。"
+            ),
         ),
     ]
 
@@ -235,4 +265,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

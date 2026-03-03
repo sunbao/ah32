@@ -42,11 +42,15 @@ Writer 场景里，用户经常给的是“已有文档/已有表格”，需求
 - `row`（必填，1-based）
 - `col`（必填，1-based）
 - `text`（必填）
+- `table_index`（可选，默认 `1`）：目标表格索引（在当前 scope 内 1-based）
+- `block_id`（可选）：若提供，则只在该 block 内找表（安全优先）
+- `strict`（可选，默认 `true`）：找不到表/单元格时是否直接失败；`false` 为 best-effort（不抛错但会记录失败事件）
 
-定位范围（v1 两种策略，需你拍板）：
+定位范围（v1 支持全部，按字段决定）：
 
-- A. **安全优先**：`block_id` + `table_index?`（默认 1）——只允许修改某个写回块内的表格
-- B. **易用优先**：`table_index`（全局 doc.Tables 的索引）或“光标所在表”——更灵活但风险更高
+- **block scope（安全优先）**：提供 `block_id` 时，只在 block 内找表（`table_index` 是 block 内索引）
+- **document scope**：不提供 `block_id` 但提供 `table_index` 时，使用 `doc.Tables[table_index]`（全局索引）
+- **selection scope**：两者都不提供时，默认使用“光标/选区所在的表格”（或选区内第 `table_index` 张表）
 
 失败策略（v1）：找不到表/单元格就硬失败，并输出“找不到的原因”（表不存在/索引越界/行列越界）。
 
@@ -62,9 +66,7 @@ Writer 场景里，用户经常给的是“已有文档/已有表格”，需求
 
 （可选）`scripts/macro_bench.py` 增加生成-only case：明确要求输出 `set_table_cell_text`。
 
-## 需要你确认的问题（开工前必须定）
+## 已确认（v1）
 
-1) v1 的定位范围选 A 还是 B？（我倾向：A 安全优先，避免误改用户原表）
-2) `table_index` 是否需要进入 v1？如果需要，是“block 内索引”还是“全局索引”？
-3) 单元格内容是“替换整格”还是“追加/前插”？（我倾向：只做替换，追加可用文本 OP 自己实现）
-
+- 定位范围三种都支持（block/document/selection），由 `block_id`/`table_index` 是否提供决定
+- 单元格内容 v1 只做“替换整格”（追加/前插留到后续）

@@ -1096,6 +1096,98 @@ const buildAssertScript = (host: MacroBenchHost, a: ChatBenchAssert, blockId?: s
 
   }
 
+  if (a.type === 'wpp_placeholder_text_contains') {
+
+    if (h !== 'wpp') return null
+
+    const kind = JSON.stringify(String((a as any).kind || 'body').trim().toLowerCase())
+    const text = JSON.stringify(String((a as any).text || '').trim())
+    const index = Math.max(1, Number((a as any).index || 1) || 1)
+
+    return (
+
+      "var app = window.Application;\\n" +
+
+      `var kind = ${kind};\\n` +
+
+      `var needle = ${text};\\n` +
+
+      `var idx = ${index};\\n` +
+
+      "if (!needle) throw new Error('ASSERT_FAIL:wpp_placeholder_text_contains:empty');\\n" +
+
+      "var p = null; try { p = app.ActivePresentation || (app.Presentations ? app.Presentations.Item(1) : null); } catch (e) { p = null }\\n" +
+
+      "if (!p || !p.Slides) throw new Error('ASSERT_FAIL:wpp_placeholder_text_contains:no_presentation');\\n" +
+
+      "var sc = 0;\\n" +
+
+      "try { sc = Number(p.Slides.Count || 0); } catch (e2) { sc = 0 }\\n" +
+
+      "if (sc <= 0) throw new Error('ASSERT_FAIL:wpp_placeholder_text_contains:no_slides');\\n" +
+
+      "var s = null; try { s = p.Slides.Item(sc); } catch (e3) { s = null }\\n" +
+
+      "if (!s) throw new Error('ASSERT_FAIL:wpp_placeholder_text_contains:no_last_slide');\\n" +
+
+      "var typeMap = { title: 1, body: 2, subtitle: 4 };\\n" +
+
+      "var pt = (kind && (kind in typeMap)) ? typeMap[kind] : null;\\n" +
+
+      "if (pt == null) throw new Error('ASSERT_FAIL:wpp_placeholder_text_contains:bad_kind:' + String(kind));\\n" +
+
+      "var shapes = null; try { shapes = s.Shapes; } catch (e4) { shapes = null }\\n" +
+
+      "if (!shapes) throw new Error('ASSERT_FAIL:wpp_placeholder_text_contains:no_shapes');\\n" +
+
+      "var target = null;\\n" +
+
+      "try { if (kind === 'title') target = shapes.Title; } catch (e5) { target = null }\\n" +
+
+      "if (!target) {\\n" +
+
+      "  var candidates = [];\\n" +
+
+      "  var c = 0; try { c = Number(shapes.Count || 0); } catch (e6) { c = 0 }\\n" +
+
+      "  for (var i = 1; i <= c; i++) {\\n" +
+
+      "    var sh = null; try { sh = shapes.Item(i); } catch (e7) { sh = null }\\n" +
+
+      "    if (!sh) continue;\\n" +
+
+      "    var pf = null; try { pf = sh.PlaceholderFormat; } catch (e8) { pf = null }\\n" +
+
+      "    if (!pf) continue;\\n" +
+
+      "    var t = -1; try { t = Number(pf.PlaceholderType); } catch (e9) { t = -1 }\\n" +
+
+      "    if (t === pt) candidates.push(sh);\\n" +
+
+      "  }\\n" +
+
+      "  if (candidates.length >= 1) {\\n" +
+
+      "    target = candidates[Math.min(candidates.length - 1, idx - 1)] || candidates[0];\\n" +
+
+      "  }\\n" +
+
+      "}\\n" +
+
+      "if (!target) throw new Error('ASSERT_FAIL:wpp_placeholder_text_contains:no_placeholder:kind=' + String(kind) + ':idx=' + String(idx));\\n" +
+
+      "var txt = '';\\n" +
+
+      "try { if (target.TextFrame && target.TextFrame.TextRange) txt = String(target.TextFrame.TextRange.Text || ''); } catch (e10) { txt = '' }\\n" +
+
+      "if (txt.indexOf(String(needle)) === -1) throw new Error('ASSERT_FAIL:wpp_placeholder_text_contains:missing:' + String(needle));\\n" +
+
+      "true;"
+
+    )
+
+  }
+
   if (a.type === 'wpp_last_slide_within_bounds') {
 
     if (h !== 'wpp') return null
@@ -3306,4 +3398,3 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
   return run
 
 }
-

@@ -17,6 +17,9 @@ def get_plan_generation_prompt(host_app: str = "wps") -> str:
             "upsert_block",
             "delete_block",
             "set_selection",
+            "set_selection_by_text",
+            "set_selection_by_block",
+            "set_table_cell_text",
             "insert_text",
             "insert_after_text",
             "insert_before_text",
@@ -53,6 +56,7 @@ def get_plan_generation_prompt(host_app: str = "wps") -> str:
         "wpp": [
             "upsert_block",
             "delete_block",
+            "fill_placeholder",
             "insert_text",
             "insert_word_art",
             "set_slide_background",
@@ -131,12 +135,19 @@ def get_plan_generation_prompt(host_app: str = "wps") -> str:
         "- For op=set_selection:\n"
         "  - wps(Writer): anchor is one of cursor/start_of_document/end_of_document; offset_lines/offset_chars are integers.\n"
         "  - et(Excel): prefer sheet_name + range/cell (A1 or A1:D10). range/cell may also be 'Sheet1!$A$1:$D$10'.\n"
+        "- For wpp:fill_placeholder:\n"
+        "  - Prefer filling placeholders (title/body/subtitle) over adding free-positioned textboxes.\n"
+        "  - strict=true means placeholder must exist; strict=false may fallback if requested.\n"
         "- For wpp:add_textbox:\n"
-        "  - You may set placeholder_kind (title|body|subtitle) + placeholder_index to fill layout placeholders (preferred).\n"
-        "  - If placeholder is not found, executor will fall back to placing by left/top/width/height.\n"
+        "  - You may set placeholder_kind (title|body|subtitle) + placeholder_index to fill layout placeholders (best-effort).\n"
+        "  - If placeholder is not found, executor may fall back to placing by left/top/width/height.\n"
         "- For document write-back, prefer op=upsert_block to ensure idempotency.\n\n"
         "Host-specific field constraints:\n"
         "- et:ensure_sheet -> sheet_name required; activate/clear_existing/select_a1 optional.\n"
+        "- wps:set_selection_by_text -> anchor_text required; occurrence>=1; position before|after|start|end; block_id optional; strict optional.\n"
+        "- wps:set_selection_by_block -> block_id required; position start|end; strict optional.\n"
+        "- wps:set_table_cell_text -> row,col,text required; block_id/table_index optional; strict optional.\n"
+        "- wpp:fill_placeholder -> text required; placeholder_kind/type + placeholder_index; slide_index optional; strict/fallback_to_add_textbox optional.\n"
         "- et:create_pivot_table -> source_range,destination,rows(>=1),values(>=1).\n"
         "- et:create_pivot_table.values[].summary MUST be one of: sum|count|average|max|min.\n"
         "- et:set_cell_formula -> cell,formula required (e.g. cell='D2', formula='=C2-B2').\n"
@@ -171,6 +182,9 @@ def get_plan_repair_prompt(host_app: str = "wps") -> str:
             "upsert_block",
             "delete_block",
             "set_selection",
+            "set_selection_by_text",
+            "set_selection_by_block",
+            "set_table_cell_text",
             "insert_text",
             "insert_after_text",
             "insert_before_text",
@@ -207,6 +221,7 @@ def get_plan_repair_prompt(host_app: str = "wps") -> str:
         "wpp": [
             "upsert_block",
             "delete_block",
+            "fill_placeholder",
             "insert_text",
             "insert_word_art",
             "set_slide_background",
@@ -252,11 +267,18 @@ def get_plan_repair_prompt(host_app: str = "wps") -> str:
         "- For op=set_selection:\n"
         "  - wps(Writer): anchor is one of cursor/start_of_document/end_of_document; offset_lines/offset_chars are integers.\n"
         "  - et(Excel): prefer sheet_name + range/cell (A1 or A1:D10). range/cell may also be 'Sheet1!$A$1:$D$10'.\n\n"
+        "- For wpp:fill_placeholder:\n"
+        "  - Prefer filling placeholders (title/body/subtitle) over adding free-positioned textboxes.\n"
+        "  - strict=true means placeholder must exist; strict=false may fallback if requested.\n\n"
         "- For wpp:add_textbox:\n"
-        "  - You may set placeholder_kind (title|body|subtitle) + placeholder_index to fill layout placeholders (preferred).\n"
-        "  - If placeholder is not found, executor will fall back to placing by left/top/width/height.\n\n"
+        "  - You may set placeholder_kind (title|body|subtitle) + placeholder_index to fill layout placeholders (best-effort).\n"
+        "  - If placeholder is not found, executor may fall back to placing by left/top/width/height.\n\n"
         "Host-specific field constraints:\n"
         "- et:ensure_sheet -> sheet_name required; activate/clear_existing/select_a1 optional.\n"
+        "- wps:set_selection_by_text -> anchor_text required; occurrence>=1; position before|after|start|end; block_id optional; strict optional.\n"
+        "- wps:set_selection_by_block -> block_id required; position start|end; strict optional.\n"
+        "- wps:set_table_cell_text -> row,col,text required; block_id/table_index optional; strict optional.\n"
+        "- wpp:fill_placeholder -> text required; placeholder_kind/type + placeholder_index; slide_index optional; strict/fallback_to_add_textbox optional.\n"
         "- et:create_pivot_table -> source_range,destination,rows(>=1),values(>=1).\n"
         "- et:create_pivot_table.values[].summary MUST be one of: sum|count|average|max|min.\n"
         "- et:set_cell_formula -> cell,formula required (e.g. cell='D2', formula='=C2-B2').\n"

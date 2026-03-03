@@ -61,6 +61,69 @@ class SetSelectionAction(_ActionBase):
     range: str | None = Field(default=None, max_length=128, description="ET range address like A1:D10")
 
 
+class SetSelectionByTextAction(_ActionBase):
+    """Move the active selection by finding an anchor text (Writer only).
+
+    This is safer than insert_after_text/insert_before_text when the anchor text repeats, because it can
+    select the N-th occurrence deterministically.
+    """
+
+    op: Literal["set_selection_by_text"] = "set_selection_by_text"
+    anchor_text: str = Field(min_length=1, max_length=10_000)
+    occurrence: int = Field(default=1, ge=1, le=10_000, description="1-based occurrence index")
+    position: Literal["before", "after", "start", "end"] = "after"
+    offset_chars: int = Field(default=0, ge=-1_000_000, le=1_000_000)
+    block_id: str | None = Field(default=None, max_length=64, description="Optional: scope search inside a block")
+    strict: bool = True
+
+    @field_validator("block_id")
+    @classmethod
+    def _validate_block_id(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        return _validate_id(v)
+
+
+class SetSelectionByBlockAction(_ActionBase):
+    """Move the selection to the start/end of an upsert_block (Writer only)."""
+
+    op: Literal["set_selection_by_block"] = "set_selection_by_block"
+    block_id: str = Field(min_length=1, max_length=64)
+    position: Literal["start", "end"] = "start"
+    offset_chars: int = Field(default=0, ge=-1_000_000, le=1_000_000)
+    strict: bool = True
+
+    @field_validator("block_id")
+    @classmethod
+    def _validate_block_id(cls, v: str) -> str:
+        return _validate_id(v)
+
+
+class SetTableCellTextAction(_ActionBase):
+    """Set a Writer table cell's text (Writer only).
+
+    Locator priority:
+    - If block_id is set: resolve tables inside that block (table_index is within that scope).
+    - Else if table_index is set: resolve from doc.Tables (global index).
+    - Else: resolve from the current selection (table_index within selection scope).
+    """
+
+    op: Literal["set_table_cell_text"] = "set_table_cell_text"
+    row: int = Field(ge=1, le=5000)
+    col: int = Field(ge=1, le=5000)
+    text: str = Field(default="", max_length=200_000)
+    block_id: str | None = Field(default=None, max_length=64)
+    table_index: int | None = Field(default=None, ge=1, le=5000, description="1-based table index in scope")
+    strict: bool = True
+
+    @field_validator("block_id")
+    @classmethod
+    def _validate_block_id(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        return _validate_id(v)
+
+
 class EnsureSheetAction(_ActionBase):
     """Ensure a worksheet exists (ET only).
 
@@ -630,6 +693,36 @@ class AddTextboxAction(_ActionBase):
     )
     slide_index: int | None = Field(default=None, ge=1, description="目标幻灯片索引")
 
+class FillPlaceholderAction(_ActionBase):
+    """Fill an existing placeholder (WPP only).
+
+    Prefer this over add_textbox when you want deterministic template-based filling.
+    """
+
+    op: Literal["fill_placeholder"] = "fill_placeholder"
+    text: str = Field(min_length=1, max_length=200_000)
+    placeholder_kind: str | None = Field(
+        default=None,
+        pattern=r"^(title|body|subtitle)$",
+        description="title|body|subtitle",
+    )
+    placeholder_type: int | None = Field(
+        default=None,
+        ge=0,
+        le=50,
+        description="Advanced: WPP placeholder type constant",
+    )
+    placeholder_index: int = Field(default=1, ge=1, le=50)
+    slide_index: int | None = Field(default=None, ge=1)
+    strict: bool = True
+    fallback_to_add_textbox: bool = False
+
+    @model_validator(mode="after")
+    def _validate_locator(self) -> FillPlaceholderAction:
+        if self.placeholder_kind or self.placeholder_type is not None:
+            return self
+        raise ValueError("fill_placeholder requires placeholder_kind or placeholder_type")
+
 
 class AddImageAction(_ActionBase):
     """插入图片"""
@@ -835,6 +928,9 @@ class UpsertBlockAction(_ActionBase):
 PlanAction = Annotated[
     Union[
         SetSelectionAction,
+        SetSelectionByTextAction,
+        SetSelectionByBlockAction,
+        SetTableCellTextAction,
         EnsureSheetAction,
         InsertTextAction,
         InsertAfterTextAction,
@@ -865,6 +961,7 @@ PlanAction = Annotated[
         # WPP新增操作
         AddSlideAction,
         AddTextboxAction,
+        FillPlaceholderAction,
         AddImageAction,
         AddChartAction,
         AddTableActionWpp,
@@ -916,6 +1013,7 @@ def _allowed_ops(host_app: HostApp) -> set[str]:
         return {
             "upsert_block",
             "delete_block",
+            "fill_placeholder",
             "insert_text",
             "insert_word_art",
             "set_slide_background",
@@ -945,6 +1043,9 @@ def _allowed_ops(host_app: HostApp) -> set[str]:
         "delete_block",
         "rollback_block",
         "set_selection",
+        "set_selection_by_text",
+        "set_selection_by_block",
+        "set_table_cell_text",
         "insert_text",
         "insert_after_text",
         "insert_before_text",
