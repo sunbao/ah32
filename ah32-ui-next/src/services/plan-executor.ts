@@ -3819,8 +3819,13 @@ export class PlanExecutor {
     let sheet = baseSheet
     if (parsed.sheetName) {
       if (!wb) throw new Error('workbook not available')
-      const s = this.getSheetByNameEt(wb, parsed.sheetName)
-      if (!s) throw new Error(`sheet not found: ${parsed.sheetName}`)
+      const requested = String(parsed.sheetName || '').trim()
+      const safeName = this.sanitizeSheetName(requested)
+      let s = this.getSheetByNameEt(wb, safeName)
+      if (!s) {
+        s = this.getOrCreateSheet(wb, safeName)
+        _planDiag('info', `et: created missing sheet name=${safeName}${safeName !== requested ? ` requested=${requested}` : ''}`)
+      }
       sheet = s
       this.activateSheet(sheet)
     }
@@ -3841,8 +3846,13 @@ export class PlanExecutor {
     if (!sheetName && parsed.sheetName) sheetName = parsed.sheetName
 
     if (sheetName) {
-      sheet = this.getSheetByNameEt(wb, sheetName)
-      if (!sheet) throw new Error(`sheet not found: ${sheetName}`)
+      const requested = String(sheetName || '').trim()
+      const safeName = this.sanitizeSheetName(requested)
+      sheet = this.getSheetByNameEt(wb, safeName)
+      if (!sheet) {
+        sheet = this.getOrCreateSheet(wb, safeName)
+        _planDiag('info', `et: created missing sheet name=${safeName}${safeName !== requested ? ` requested=${requested}` : ''}`)
+      }
       this.activateSheet(sheet)
     }
     if (!sheet) throw new Error('active sheet not available')
