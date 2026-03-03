@@ -61,6 +61,19 @@ class SetSelectionAction(_ActionBase):
     range: str | None = Field(default=None, max_length=128, description="ET range address like A1:D10")
 
 
+class EnsureSheetAction(_ActionBase):
+    """Ensure a worksheet exists (ET only).
+
+    Best-effort: executor should sanitize sheet names to platform limits (e.g. 31 chars).
+    """
+
+    op: Literal["ensure_sheet"] = "ensure_sheet"
+    sheet_name: str = Field(min_length=1, max_length=64, description="Worksheet name to ensure")
+    activate: bool = True
+    clear_existing: bool = False
+    select_a1: bool = True
+
+
 class InsertAfterTextAction(_ActionBase):
     op: Literal["insert_after_text"] = "insert_after_text"
     anchor_text: str = Field(min_length=1, max_length=10_000)
@@ -822,6 +835,7 @@ class UpsertBlockAction(_ActionBase):
 PlanAction = Annotated[
     Union[
         SetSelectionAction,
+        EnsureSheetAction,
         InsertTextAction,
         InsertAfterTextAction,
         InsertBeforeTextAction,
@@ -884,6 +898,7 @@ def _allowed_ops(host_app: HostApp) -> set[str]:
             "upsert_block",
             "delete_block",
             "set_selection",
+            "ensure_sheet",
             "insert_text",
             "insert_image",
             "insert_table",

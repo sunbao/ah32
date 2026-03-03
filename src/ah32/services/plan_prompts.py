@@ -36,6 +36,7 @@ def get_plan_generation_prompt(host_app: str = "wps") -> str:
             "upsert_block",
             "delete_block",
             "set_selection",
+            "ensure_sheet",
             "insert_text",
             "insert_image",
             "insert_table",
@@ -135,6 +136,7 @@ def get_plan_generation_prompt(host_app: str = "wps") -> str:
         "  - If placeholder is not found, executor will fall back to placing by left/top/width/height.\n"
         "- For document write-back, prefer op=upsert_block to ensure idempotency.\n\n"
         "Host-specific field constraints:\n"
+        "- et:ensure_sheet -> sheet_name required; activate/clear_existing/select_a1 optional.\n"
         "- et:create_pivot_table -> source_range,destination,rows(>=1),values(>=1).\n"
         "- et:create_pivot_table.values[].summary MUST be one of: sum|count|average|max|min.\n"
         "- et:set_cell_formula -> cell,formula required (e.g. cell='D2', formula='=C2-B2').\n"
@@ -188,6 +190,7 @@ def get_plan_repair_prompt(host_app: str = "wps") -> str:
             "upsert_block",
             "delete_block",
             "set_selection",
+            "ensure_sheet",
             "insert_text",
             "insert_image",
             "insert_table",
@@ -253,6 +256,7 @@ def get_plan_repair_prompt(host_app: str = "wps") -> str:
         "  - You may set placeholder_kind (title|body|subtitle) + placeholder_index to fill layout placeholders (preferred).\n"
         "  - If placeholder is not found, executor will fall back to placing by left/top/width/height.\n\n"
         "Host-specific field constraints:\n"
+        "- et:ensure_sheet -> sheet_name required; activate/clear_existing/select_a1 optional.\n"
         "- et:create_pivot_table -> source_range,destination,rows(>=1),values(>=1).\n"
         "- et:create_pivot_table.values[].summary MUST be one of: sum|count|average|max|min.\n"
         "- et:set_cell_formula -> cell,formula required (e.g. cell='D2', formula='=C2-B2').\n"

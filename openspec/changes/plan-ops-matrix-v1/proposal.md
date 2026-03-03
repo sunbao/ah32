@@ -61,6 +61,7 @@
 | OP | 能做什么 | 关键字段（常用） | 做不到/限制（v1） |
 |---|---|---|---|
 | `set_selection` | 选中某个 sheet + 单元格/区域；找不到 sheet 会自动创建（平台兜底）。 | `sheet_name?`, `cell?`/`range?`, `anchor?` | 不支持“命名区域”等高级定位（除非本身是 A1 地址）；对受保护工作簿可能失败。 |
+| `ensure_sheet` | 显式确保某个工作表存在（不存在就创建），并可选：激活/清空/选中 A1。 | `sheet_name`, `activate?`, `clear_existing?`, `select_a1?` | v1 不提供 rename/delete；且目前“引用 sheet 自动创建”的隐式行为仍然存在（如需严格模式需另起 change）。 |
 | `insert_text` | 写一个单元格/区域的值（字符串）。 | `text` | 不是富文本；不自动拆分成多行多列；不负责格式（需再用格式类 OP）。 |
 | `insert_table` | 在当前选区起点写一个矩形区域的值（`Value2` 优先，失败则逐格写），并做少量格式（表头加粗/边框/自适应列宽/Style）。 | `rows`, `cols`, `data?`, `header?`, `borders?`, `auto_fit?`, `style?` | 不是 Excel “结构化表（ListObject）”；不会自动创建筛选按钮/总计行等；格式能力有限。 |
 | `insert_chart_from_selection` | 根据选区或 `source_range` 建图（折线/柱状等取决于 `chart_type`），可设置标题/图例。 | `chart_type?`, `source_range?`, `sheet_name?`, `width?`, `height?`, `title?` | 图表类型/常量在不同版本可能不一致；复杂样式（配色/轴格式）不在 v1 覆盖范围。 |
@@ -107,8 +108,7 @@
 
 ## 重点缺口（v1 明确“做不到”，避免误会）
 
-1) 没有“显式 create/ensure_sheet”的 OP（目前由平台兜底：引用 sheet 名时缺失则创建）。
+1) ET 已补 `ensure_sheet`（显式建/复用/清空/选中 A1），但“引用 sheet 自动创建”的隐式行为仍然存在；若要避免拼写导致误建表，需要另起 change 做 strict 模式/能力协商。
 2) 没有“精确定位写回”（例如 Writer 按段落 ID/页码；ET 按命名区域；WPP 按占位符路径）。
 3) 没有“复杂格式能力”全覆盖（合并单元格、复杂图表样式、全文样式模板、修订等）。
 4) `answer_mode_apply` 不是纯 Plan：它是“Plan 调用前端 BID runtime”，所以它的稳定性受前端加载/版本影响。
-

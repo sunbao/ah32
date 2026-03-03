@@ -98,6 +98,7 @@ def _norm_op(op: Any) -> str:
         "deleteBlock": "delete_block",
         "rollbackBlock": "rollback_block",
         "setSelection": "set_selection",
+        "ensureSheet": "ensure_sheet",
         "insertText": "insert_text",
         "insertAfterText": "insert_after_text",
         "insertBeforeText": "insert_before_text",
@@ -224,6 +225,7 @@ def _map_key(k: str) -> str:
         "placeholderType": "placeholder_type",
         "placeholderIndex": "placeholder_index",
         "sheetName": "sheet_name",
+        "selectA1": "select_a1",
         "shapeType": "shape_type",
         "hasLegend": "has_legend",
         "legendPosition": "legend_position",
@@ -375,6 +377,27 @@ def _normalize_action(action: Any, *, fallback_id: str, host: HostApp) -> dict[s
         range_addr = _to_str_opt(a1.get("range"))
         if range_addr is not None:
             out["range"] = range_addr[:128]
+        return out
+
+    if op == "ensure_sheet":
+        sheet_name = _to_str_opt(a1.get("sheet_name") or a1.get("name"))
+        if sheet_name is None:
+            return {"id": action_id, "title": title, "op": "ensure_sheet"}
+        out: dict[str, Any] = {
+            "id": action_id,
+            "title": title,
+            "op": "ensure_sheet",
+            "sheet_name": sheet_name[:64],
+        }
+        activate = _to_bool_opt(a1.get("activate"))
+        if activate is not None:
+            out["activate"] = activate
+        clear_existing = _to_bool_opt(a1.get("clear_existing") or a1.get("clear"))
+        if clear_existing is not None:
+            out["clear_existing"] = clear_existing
+        select_a1 = _to_bool_opt(a1.get("select_a1") or a1.get("select"))
+        if select_a1 is not None:
+            out["select_a1"] = select_a1
         return out
 
     if op in ("insert_after_text", "insert_before_text"):

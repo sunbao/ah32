@@ -108,6 +108,14 @@ export interface SetSelectionAction extends PlanBaseAction {
 
 }
 
+export interface EnsureSheetAction extends PlanBaseAction {
+  op: 'ensure_sheet'
+  sheet_name: string
+  activate?: boolean | null
+  clear_existing?: boolean | null
+  select_a1?: boolean | null
+}
+
 export interface InsertTextAction extends PlanBaseAction {
   op: 'insert_text'
   text: string
@@ -597,6 +605,7 @@ export interface UpsertBlockAction extends PlanBaseAction {
 
 export type PlanAction =
   | SetSelectionAction
+  | EnsureSheetAction
 
   | InsertTextAction
   | InsertAfterTextAction
@@ -860,6 +869,7 @@ export class PlanExecutor {
         'upsert_block',
         'delete_block',
         'set_selection',
+        'ensure_sheet',
         'insert_text',
         'insert_image',
         'insert_table',
@@ -1010,6 +1020,7 @@ export class PlanExecutor {
         setTableStyle: 'set_table_style',
 
         setSelection: 'set_selection',
+        ensureSheet: 'ensure_sheet',
         answerModeApply: 'answer_mode_apply',
       }
       return map[s] || s
@@ -1055,6 +1066,7 @@ export class PlanExecutor {
           visibleDropdown: 'visible_dropdown',
           sourceRange: 'source_range',
           sheetName: 'sheet_name',
+          selectA1: 'select_a1',
           tableName: 'table_name',
           replaceExisting: 'replace_existing',
           valueFields: 'values',
@@ -4920,6 +4932,37 @@ export class PlanExecutor {
           case 'set_selection':
             selection = this.setSelectionEt({ app: ctx.app, wb: ctx.wb, selection }, action as any)
             break
+          case 'ensure_sheet': {
+            const requested = String((action as any)?.sheet_name || '').trim()
+            if (!requested) throw new Error('ensure_sheet requires sheet_name')
+
+            const safeName = this.sanitizeSheetName(requested)
+            const existing = this.getSheetByNameEt(ctx.wb, safeName)
+            const sheet = existing || this.getOrCreateSheet(ctx.wb, safeName)
+            if (!existing) {
+              _planDiag(
+                'info',
+                `et: ensure_sheet created sheet name=${safeName}${safeName !== requested ? ` requested=${requested}` : ''}`
+              )
+            }
+
+            if ((action as any)?.activate !== false) this.activateSheet(sheet)
+            if ((action as any)?.clear_existing === true) this.clearSheet(sheet)
+            if ((action as any)?.select_a1 !== false) {
+              const a1 = this.selectA1(sheet)
+              if (a1) selection = a1
+            }
+
+            this.emitCapabilityEvent('plan.capability_matrix', {
+              host_app: 'et',
+              op: 'ensure_sheet',
+              branch: existing ? 'reuse' : 'create',
+              fallback: false,
+              success: true,
+              sheet_name: safeName,
+            })
+            break
+          }
           case 'insert_text':
             this.insertTextEt(ctx.app, selection, action.text)
             break
