@@ -3,15 +3,15 @@
     <div class="macro-bench-row">
       <div class="macro-bench-title">宏基准测试(开发)</div>
       <div class="macro-bench-actions">
-        <el-select v-model="runMode" size="small" style="width: 120px" :disabled="running">
+        <el-select v-model="runMode" size="small" style="width: 120px" :disabled="running" :teleported="true" popper-class="ah32-macro-bench-select-popper">
           <el-option label="宏直出" value="macro" />
           <el-option label="对话驱动" value="chat" />
         </el-select>
-        <el-select v-model="suiteId" size="small" style="width: 140px" :disabled="running">
+        <el-select v-model="suiteId" size="small" style="width: 140px" :disabled="running" :teleported="true" popper-class="ah32-macro-bench-select-popper">
           <el-option label="全部场景" value="all" />
           <el-option v-for="s in suites" :key="s.id" :label="s.name" :value="s.id" />
         </el-select>
-        <el-select v-model="preset" size="small" style="width: 120px" :disabled="running">
+        <el-select v-model="preset" size="small" style="width: 120px" :disabled="running" :teleported="true" popper-class="ah32-macro-bench-select-popper">
           <el-option v-for="p in presets" :key="p.id" :label="p.name" :value="p.id" />
         </el-select>
         <el-button size="small" type="primary" :loading="running" @click="start" :disabled="running">
@@ -492,5 +492,9 @@ const clear = () => {
 .macro-bench-turn-sub .fail {
   margin-left: 6px;
   white-space: nowrap;
+}
+
+:global(.ah32-macro-bench-select-popper) {
+  z-index: 10001 !important;
 }
 </style>
