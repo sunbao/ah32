@@ -2722,7 +2722,21 @@ export const useChatStore = defineStore('chat', () => {
 
             const meta: any = (assistantMsg as any).metadata || {}
             const docContext = meta?.docContext || null
-            let blocks = _extractMacroBlocksFromContent(content, assistantMsg.id, { updateTargetBlockId })
+            let blocks: MacroJobBlock[] = []
+            try {
+                const payloads = meta?.macroBlockPayloads
+                if (payloads && typeof payloads === 'object' && !Array.isArray(payloads)) {
+                    for (const [k, v] of Object.entries(payloads as any)) {
+                        const blockId = String(k || '').trim()
+                        const code = typeof v === 'string' ? v.trim() : ''
+                        if (!blockId || !code) continue
+                        blocks.push({ type: 'plan', blockId, code })
+                    }
+                }
+            } catch (e) {
+                ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/stores/chat.ts', e)
+                blocks = []
+            }
             if (!blocks.length) {
                 try {
                     const hasJsFence = /```(?:javascript|js)\s*[\s\S]*?```/i.test(content)
@@ -4044,6 +4058,99 @@ export const useChatStore = defineStore('chat', () => {
                             }
                             break
 
+                        case 'plan':
+                            rt.streamPhase = 'responding'
+                            try {
+                                const planRaw = (data as any)?.plan
+                                if (!planRaw || typeof planRaw !== 'object' || Array.isArray(planRaw)) break
+
+                                const schemaVersion = String(
+                                    (planRaw as any).schema_version
+                                    || (planRaw as any).schemaVersion
+                                    || (planRaw as any).schema
+                                    || ''
+                                ).trim()
+                                if (schemaVersion !== 'ah32.plan.v1') break
+                                if (!(planRaw as any).schema_version) (planRaw as any).schema_version = 'ah32.plan.v1'
+
+                                // Ensure we have a stable assistant message to attach plan metadata to.
+                                let targetMsg: any = sendBucketMessages[sendBucketMessages.length - 1] || null
+                                if (!targetMsg || targetMsg.type !== 'assistant') {
+                                    targetMsg = createMessage('assistant', '', undefined, docContext ? { docContext } : undefined)
+                                    addMessageToSendBucket(targetMsg)
+                                }
+                                markAssistantMessage(targetMsg)
+
+                                const walkFind = (actions: any[]): string => {
+                                    for (const a of actions || []) {
+                                        if (!a || typeof a !== 'object') continue
+                                        if (a.op === 'upsert_block' && typeof a.block_id === 'string') return String(a.block_id || '').trim()
+                                        if (a.op === 'delete_block' && typeof a.block_id === 'string') return String(a.block_id || '').trim()
+                                        if (Array.isArray(a.actions)) {
+                                            const nested = walkFind(a.actions)
+                                            if (nested) return nested
+                                        }
+                                    }
+                                    return ''
+                                }
+                                const walkOverride = (actions: any[], blockId: string): boolean => {
+                                    for (const a of actions || []) {
+                                        if (!a || typeof a !== 'object') continue
+                                        if (a.op === 'upsert_block') {
+                                            a.block_id = blockId
+                                            return true
+                                        }
+                                        if (Array.isArray(a.actions) && walkOverride(a.actions, blockId)) return true
+                                    }
+                                    return false
+                                }
+
+                                const updateTarget = String(updateTargetBlockId || '').trim() || null
+                                if (updateTarget) {
+                                    try {
+                                        if (Array.isArray((planRaw as any).actions)) walkOverride((planRaw as any).actions, updateTarget)
+                                    } catch (e) {
+                                        ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/stores/chat.ts', e)
+                                    }
+                                }
+
+                                const blockId = updateTarget || walkFind((planRaw as any).actions) || `plan_${String(targetMsg.id || '')}_1`
+                                const code = JSON.stringify(planRaw)
+
+                                try {
+                                    const meta: any = (targetMsg as any).metadata || {}
+                                    const prev = meta.macroBlockPayloads
+                                    const payloads: Record<string, string> =
+                                        prev && typeof prev === 'object' && !Array.isArray(prev) ? { ...(prev as any) } : {}
+                                    payloads[String(blockId || '').trim()] = code
+                                    meta.macroBlockPayloads = payloads
+                                    ;(targetMsg as any).metadata = meta
+                                } catch (e) {
+                                    ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/stores/chat.ts', e)
+                                }
+
+                                try {
+                                    const desc =
+                                        String((planRaw as any)?.meta?.title || (planRaw as any)?.actions?.[0]?.title || '').trim()
+                                    _upsertMessageMacroBlockMeta(targetMsg as any, { type: 'plan', blockId, description: desc || undefined })
+                                } catch (e) {
+                                    ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/stores/chat.ts', e)
+                                }
+
+                                try {
+                                    const title = String((planRaw as any)?.actions?.[0]?.title || '').trim() || `计划 ${blockId}`
+                                    registerMacroArtifact(blockId, title)
+                                    setLastMacroBlockId(blockId)
+                                } catch (e) {
+                                    ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/stores/chat.ts', e)
+                                }
+
+                                schedulePersistSessionBucketById(sendSid, sendBucketMessages)
+                            } catch (e) {
+                                ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/stores/chat.ts', e)
+                            }
+                            break
+
                         case 'content':
                             rt.streamPhase = 'responding'
                             {
@@ -4284,12 +4391,12 @@ export const useChatStore = defineStore('chat', () => {
                                     if (wantWriteback !== false) {
                                         let hasPlanBlocks = false
                                         try {
-                                            const previewBlocks = _extractMacroBlocksFromContent(
-                                                String((lastMsg as any)?.content || ''),
-                                                String((lastMsg as any)?.id || ''),
-                                                { updateTargetBlockId }
-                                            )
-                                            hasPlanBlocks = (previewBlocks || []).length > 0
+                                            const metaPayloads = (lastMsg as any)?.metadata?.macroBlockPayloads
+                                            if (metaPayloads && typeof metaPayloads === 'object' && !Array.isArray(metaPayloads)) {
+                                                hasPlanBlocks = Object.keys(metaPayloads).length > 0
+                                            } else {
+                                                hasPlanBlocks = false
+                                            }
                                         } catch (e) {
                                             ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/stores/chat.ts', e)
                                             hasPlanBlocks = false

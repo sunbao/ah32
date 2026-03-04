@@ -1510,6 +1510,16 @@ const codeBlocks = computed<CodeBlock[]>(() => {
             ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/components/chat/MessageItem.vue', e)
           }
 
+          if (kind === 'plan' && !code) {
+            try {
+              const payloads = (props.message as any)?.metadata?.macroBlockPayloads
+              const raw = (payloads && typeof payloads === 'object') ? String((payloads as any)[blockId] || '') : ''
+              if (raw.trim()) code = raw.trim()
+            } catch (e) {
+              ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/components/chat/MessageItem.vue', e)
+            }
+          }
+
           if (kind === 'plan' && code) {
             try {
               const parsed = JSON.parse(code)

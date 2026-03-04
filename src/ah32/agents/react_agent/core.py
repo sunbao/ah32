@@ -4293,20 +4293,27 @@ class ReActAgent:
                     delivery=writeback_delivery,
                 )
                 if plan:
-                    plan_text = json.dumps(plan, ensure_ascii=False, default=str)
-                    resp_text = f"```json\n{plan_text}\n```"
+                    # IMPORTANT: do NOT embed executable plan JSON in user-visible chat content.
+                    # Deliver the plan via a dedicated SSE event (frontend will render a plan card and
+                    # gate writeback execution on this event only).
+                    try:
+                        self._turn_last_plan = plan
+                    except Exception:
+                        pass
+                    yield {"type": "plan", "plan": plan, "session_id": session_id}
 
-                    processed = await self._send_response_with_code_check(resp_text, session_id)
-                    final_to_store = (processed or resp_text).strip()
-                    self._last_response = final_to_store
-                    yield {"type": "content", "content": final_to_store, "session_id": session_id}
+                    msg = "已生成可执行计划。请在计划卡片中点击“应用写回”。"
+                    self._last_response = msg
+                    yield {"type": "content", "content": msg, "session_id": session_id}
                 else:
-                    async for event in self._stream_react_loop(normalized_message, context, session_id):
-                        yield event
+                    msg = "未能生成可执行计划（Plan JSON）。请重试。"
+                    self._last_response = msg
+                    yield {"type": "content", "content": msg, "session_id": session_id}
             except Exception as e:
-                logger.error(f"[writeback] plan fast path failed, fallback to ReAct loop: {e}", exc_info=True)
-                async for event in self._stream_react_loop(normalized_message, context, session_id):
-                    yield event
+                logger.error(f"[writeback] plan fast path failed: {e}", exc_info=True)
+                msg = "生成可执行计划失败。请重试（或缩小改动范围）。"
+                self._last_response = msg
+                yield {"type": "content", "content": msg, "session_id": session_id}
         else:
 
             # 6. 执行ReAct循环（流式版本）
@@ -4344,7 +4351,7 @@ class ReActAgent:
             already_repaired = bool(getattr(self, "_turn_writeback_repair_attempted", False))
         except Exception:
             already_repaired = False
-        if want_writeback and (not already_repaired):
+        if want_writeback and (not already_repaired) and (not getattr(self, "_turn_last_plan", None)):
             try:
                 host = host_app if host_app in ("wps", "et", "wpp") else "wps"
                 plan_obj, plan_err = self._extract_plan_from_text(final_response or "", host)
@@ -4360,10 +4367,11 @@ class ReActAgent:
                         error_message=plan_err or "",
                     )
                     if repaired:
-                        extra = f"\n\n```json\n{json.dumps(repaired, ensure_ascii=False, default=str)}\n```"
-                        final_response = (final_response or "") + extra
-                        self._last_response = final_response
-                        yield {"type": "content", "content": extra, "session_id": session_id}
+                        try:
+                            self._turn_last_plan = repaired
+                        except Exception:
+                            pass
+                        yield {"type": "plan", "plan": repaired, "session_id": session_id}
                     else:
                         # Do not pretend success; tell the user clearly what went wrong.
                         msg = (
