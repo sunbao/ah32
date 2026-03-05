@@ -43,6 +43,7 @@ export type ChatBenchAssert =
   | { type: 'writer_heading_at_least'; level: 1 | 2 | 3; min?: number; points?: number }
   | { type: 'writer_shapes_at_least'; min: number; points?: number }
   | { type: 'writer_block_backup_exists'; blockId?: string; points?: number }
+  | { type: 'skills_applied_includes'; skillId: string; points?: number }
   | { type: 'et_sheet_exists'; name: string; points?: number }
   | { type: 'et_chart_exists'; min?: number; points?: number }
   | { type: 'et_chart_has_title'; points?: number }
@@ -64,6 +65,9 @@ export type ChatBenchTurn = {
   // Optional structured style constraints for this turn.
   // The runner will pass this into backend `frontend_context.style_spec`.
   styleSpec?: Record<string, any>
+  // Deterministic skill coverage: force backend primary skill for this turn.
+  // Runner will pass it as `frontend_context.client_skill_selection`.
+  forceSkillId?: string
   // Stable artifact id for macro execution (runner injects it as // @ah32:blockId=...).
   artifactId?: string
   actionsBeforeSend?: ChatBenchAction[]
@@ -129,6 +133,179 @@ const STYLE_SPECS: Record<string, any> = {
 // Preset handling is applied by buildChatBenchStories() by truncating turns.
 const STORIES: ChatBenchStory[] = [
   // ----------------------- Writer (wps) -----------------------
+  {
+    id: storyId('doc-analyzer', 'wps', 'doc_analyzer_v1'),
+    suiteId: 'doc-analyzer',
+    host: 'wps',
+    name: '文档结构分析：结构报告块（Writer）',
+    description: '覆盖 doc-analyzer（Plan-only）的 end-to-end 写回与执行。',
+    setupActions: [
+      { type: 'ensure_bench_document', title: 'Bench-文档结构分析' },
+      { type: 'clear_document' },
+      { type: 'set_cursor', pos: 'start' },
+      {
+        type: 'insert_text',
+        text:
+          '项目管理制度（草案）\n' +
+          '1 目的\n' +
+          '1.1 适用范围\n' +
+          '二、职责\n' +
+          '(1) 项目经理：……\n' +
+          '3. 流程\n' +
+          '3.1 立项\n' +
+          '3.1.1 评审\n' +
+          '附录A：术语\n',
+      },
+    ],
+    turns: [
+      {
+        id: 't1_analyze',
+        name: '生成结构报告块',
+        artifactId: 'bench_doc_analyzer_report',
+        forceSkillId: 'doc-analyzer',
+        asserts: [
+          { type: 'skills_applied_includes', skillId: 'doc-analyzer', points: 2 },
+          { type: 'writer_text_contains', text: '结构报告' },
+          { type: 'writer_text_contains', text: '缺口清单' },
+          { type: 'writer_text_contains', text: '自检清单' },
+        ],
+        query:
+          '分析当前文档结构完整性与一致性问题，输出“结构报告块”（写到文末，幂等，可重复执行不重复插入）：\n' +
+          '- 给出结构大纲；\n' +
+          '- 缺口清单（P0/P1/P2）；\n' +
+          '- 一致性问题（术语/编号/引用）；\n' +
+          '- 建议整改顺序；\n' +
+          '- 自检清单。\n' +
+          '只输出可执行 Plan JSON。',
+      },
+    ],
+  },
+
+  {
+    id: storyId('doc-editor', 'wps', 'doc_editor_v1'),
+    suiteId: 'doc-editor',
+    host: 'wps',
+    name: '文档改写：对照表+修订稿块（Writer）',
+    description: '覆盖 doc-editor（Plan-only）的对照表交付方式（不改原文）。',
+    setupActions: [
+      { type: 'ensure_bench_document', title: 'Bench-文档改写' },
+      { type: 'clear_document' },
+      { type: 'set_cursor', pos: 'start' },
+      {
+        type: 'insert_text',
+        text:
+          '【原文】\n' +
+          '我们这个方案很牛，肯定能搞定。可能会有点风险，但问题不大。\n' +
+          '交付时间看情况，资源也要再协调一下。\n',
+      },
+    ],
+    turns: [
+      {
+        id: 't1_rewrite',
+        name: '输出对照表+修订稿块',
+        artifactId: 'bench_doc_editor_delivery',
+        forceSkillId: 'doc-editor',
+        asserts: [
+          { type: 'skills_applied_includes', skillId: 'doc-editor', points: 2 },
+          { type: 'writer_text_contains', text: '对照表' },
+          { type: 'writer_text_contains', text: '修订稿' },
+          { type: 'writer_table_exists', minRows: 2, minCols: 3 },
+        ],
+        query:
+          '请把上面的原文改写成“正式商务沟通”风格，但不要改动原文正文。\n' +
+          '交付方式：在文末用可执行 Plan 写回一个交付块，包含：\n' +
+          '1) 改写范围与假设（待确认项）；\n' +
+          '2) 对照表（原文要点/建议改写/理由/风险/是否应用）；\n' +
+          '3) 修订稿（可直接复制替换）。\n' +
+          '只输出可执行 Plan JSON。',
+      },
+    ],
+  },
+
+  {
+    id: storyId('doc-formatter', 'wps', 'doc_formatter_v1'),
+    suiteId: 'doc-formatter',
+    host: 'wps',
+    name: '文档排版：规范+问题清单+模板块（Writer）',
+    description: '覆盖 doc-formatter（Plan-only）的块级交付与幂等写回。',
+    setupActions: [
+      { type: 'ensure_bench_document', title: 'Bench-文档排版' },
+      { type: 'clear_document' },
+      { type: 'set_cursor', pos: 'start' },
+      {
+        type: 'insert_text',
+        text:
+          '制度文本（草案）\n' +
+          '第一章 总则\n' +
+          '1.1适用范围\n' +
+          '第二章 术语\n' +
+          '3.1 名词解释\n' +
+          '（一）职责分工\n',
+      },
+    ],
+    turns: [
+      {
+        id: 't1_format',
+        name: '输出排版交付块',
+        artifactId: 'bench_doc_formatter_delivery',
+        forceSkillId: 'doc-formatter',
+        asserts: [
+          { type: 'skills_applied_includes', skillId: 'doc-formatter', points: 2 },
+          { type: 'writer_text_contains', text: '排版规范' },
+          { type: 'writer_text_contains', text: '自检清单' },
+        ],
+        query:
+          '对当前文档给出“制度排版”交付块（写到文末，幂等，不要改动原文正文）：\n' +
+          '- 排版规范（标题层级/字号/行距/编号规则）；\n' +
+          '- 常见问题清单（按严重度）；\n' +
+          '- 可直接替换的模板段落（范围/术语定义/职责/修订记录）；\n' +
+          '- 自检清单。\n' +
+          '只输出可执行 Plan JSON。',
+      },
+    ],
+  },
+
+  {
+    id: storyId('exam-answering', 'wps', 'exam_answering_v1'),
+    suiteId: 'exam-answering',
+    host: 'wps',
+    name: '试题答题：答案与解析写回（Writer）',
+    description: '覆盖 exam-answering（Plan-only）：不改题干，文末追加答案与解析。',
+    setupActions: [
+      { type: 'ensure_bench_document', title: 'Bench-试题答题' },
+      { type: 'clear_document' },
+      { type: 'set_cursor', pos: 'start' },
+      {
+        type: 'insert_text',
+        text:
+          '《综合测试》\n' +
+          '1. 选择题：下列选项中属于哺乳动物的是（ ）\n' +
+          'A. 海豚  B. 鲨鱼  C. 海龟  D. 章鱼\n' +
+          '2. 填空题：我国首都是______。\n' +
+          '3. 阅读题：请概括“可持续发展”的两点核心内涵。\n',
+      },
+    ],
+    turns: [
+      {
+        id: 't1_answer',
+        name: '生成《答案与解析》',
+        artifactId: 'bench_exam_answering_delivery',
+        forceSkillId: 'exam-answering',
+        asserts: [
+          { type: 'skills_applied_includes', skillId: 'exam-answering', points: 2 },
+          { type: 'writer_text_contains', text: '答案与解析' },
+          { type: 'writer_text_contains', text: '1.' },
+          { type: 'writer_text_contains', text: '2.' },
+          { type: 'writer_text_contains', text: '3.' },
+        ],
+        query:
+          '请替我完成本套试题：不要改动题干；在文档末尾生成《答案与解析》，按题号输出。\n' +
+          '选择题只写选项字母；填空题只写填空内容；阅读题给要点式答案。\n' +
+          '只输出可执行 Plan JSON。',
+      },
+    ],
+  },
+
   {
     id: storyId('finance-audit', 'wps', 'audit_story_v1'),
     suiteId: 'finance-audit',
@@ -416,6 +593,7 @@ const STORIES: ChatBenchStory[] = [
         id: 't1_answer',
         name: '按题号填答案（不改题干）',
         artifactId: 'bench_answer_mode_v1',
+        forceSkillId: 'answer-mode',
         actionsBeforeSend: [
           { type: 'clear_document' },
           { type: 'insert_text', text: '试题（示例）' },
@@ -424,6 +602,7 @@ const STORIES: ChatBenchStory[] = [
           { type: 'insert_text', text: '3. 合同争议解决方式：（____）仲裁。' },
         ],
         asserts: [
+          { type: 'skills_applied_includes', skillId: 'answer-mode', points: 2 },
           { type: 'writer_text_contains', text: '公司现金流量表属于财务报表' },
           { type: 'writer_text_contains', text: '深圳' },
           { type: 'writer_text_not_contains', text: '____' },
@@ -448,12 +627,14 @@ const STORIES: ChatBenchStory[] = [
         id: 't1_locate',
         name: '第N处锚点定位写入',
         artifactId: 'bench_precise_locate_v1',
+        forceSkillId: 'answer-mode',
         actionsBeforeSend: [
           { type: 'clear_document' },
           { type: 'insert_text', text: '段落A：这里是A【插入点】' },
           { type: 'insert_text', text: '段落B：这里是B【插入点】' },
         ],
         asserts: [
+          { type: 'skills_applied_includes', skillId: 'answer-mode', points: 2 },
           { type: 'writer_text_contains', text: '段落A：这里是A【插入点】OK1' },
           { type: 'writer_text_contains', text: '段落B：这里是B【插入点】OK2' },
         ],
@@ -502,6 +683,56 @@ const STORIES: ChatBenchStory[] = [
   },
 
   // ----------------------- ET (spreadsheets) -----------------------
+  {
+    id: storyId('et-analyzer', 'et', 'et_analyzer_v1'),
+    suiteId: 'et-analyzer',
+    host: 'et',
+    name: 'ET 数据分析：透视+排序+格式化（ET）',
+    description: '覆盖 et-analyzer（Plan-only）的分析落地与执行成功。',
+    setupActions: [{ type: 'ensure_bench_document', title: 'Bench-ET分析' }, { type: 'clear_document' }],
+    turns: [
+      {
+        id: 't1_analyze',
+        name: '生成分析结果（透视）',
+        artifactId: 'bench_et_analyzer_delivery',
+        forceSkillId: 'et-analyzer',
+        asserts: [{ type: 'skills_applied_includes', skillId: 'et-analyzer', points: 2 }],
+        query:
+          '在当前工作表创建一份示例“销售明细”（至少20行，字段：日期/部门/产品/金额），并做一次分析：\n' +
+          '1) 生成一个“分析结果总览”sheet（用 upsert_block），包含数据概览、异常摘要、待确认项；\n' +
+          '2) 生成透视表：按部门汇总金额；\n' +
+          '3) 金额列设置为非 General 的数字格式。\n' +
+          '只输出可执行 Plan JSON。',
+      },
+    ],
+  },
+
+  {
+    id: storyId('et-visualizer', 'et', 'et_visualizer_v1'),
+    suiteId: 'et-visualizer',
+    host: 'et',
+    name: 'ET 可视化：做图+标题（ET）',
+    description: '覆盖 et-visualizer（Plan-only）的做图落地与执行。',
+    setupActions: [{ type: 'ensure_bench_document', title: 'Bench-ET可视化' }, { type: 'clear_document' }],
+    turns: [
+      {
+        id: 't1_chart',
+        name: '生成折线图（带标题）',
+        artifactId: 'bench_et_visualizer_delivery',
+        forceSkillId: 'et-visualizer',
+        asserts: [
+          { type: 'skills_applied_includes', skillId: 'et-visualizer', points: 2 },
+          { type: 'et_chart_exists', min: 1 },
+          { type: 'et_chart_has_title' },
+        ],
+        query:
+          '在当前工作表生成示例数据：月份(1-6) 与 净现金流(-12/5/18/10/22/15)，并生成折线图。\n' +
+          '要求：图表标题写“净现金流趋势”。\n' +
+          '只输出可执行 Plan JSON。',
+      },
+    ],
+  },
+
   {
     id: storyId('finance-audit', 'et', 'finance_sheet_v1'),
     suiteId: 'finance-audit',
@@ -687,6 +918,86 @@ const STORIES: ChatBenchStory[] = [
   },
 
   // ----------------------- WPP (presentations) -----------------------
+  {
+    id: storyId('ppt-creator', 'wpp', 'ppt_creator_v1'),
+    suiteId: 'ppt-creator',
+    host: 'wpp',
+    name: 'PPT 一键创建：直接生成幻灯片（WPP）',
+    description: '覆盖 ppt-creator（Plan-only）直接创建 PPT 的链路。',
+    setupActions: [{ type: 'ensure_bench_document', title: 'Bench-PPT创建' }, { type: 'clear_document' }],
+    turns: [
+      {
+        id: 't1_create',
+        name: '创建 3 页 PPT',
+        artifactId: 'bench_ppt_creator_delivery',
+        forceSkillId: 'ppt-creator',
+        asserts: [
+          { type: 'skills_applied_includes', skillId: 'ppt-creator', points: 2 },
+          { type: 'wpp_slide_count_at_least', min: 3 },
+          { type: 'wpp_placeholder_text_contains', kind: 'title', text: '项目汇报' },
+        ],
+        query:
+          '一键创建 3 页 PPT（直接创建到 WPS PPT 里，输出可执行 Plan）：\n' +
+          '1) 封面：标题“项目汇报”，副标题“内部使用”；\n' +
+          '2) 目录：列 4 个要点；\n' +
+          '3) 结论：列 3 条结论与下一步。\n' +
+          '只输出可执行 Plan JSON。',
+      },
+    ],
+  },
+
+  {
+    id: storyId('ppt-outline', 'wpp', 'ppt_outline_v1'),
+    suiteId: 'ppt-outline',
+    host: 'wpp',
+    name: 'PPT 大纲讲稿：显式要求创建（WPP）',
+    description: '覆盖 ppt-outline：当用户明确要求创建 PPT 时输出 Plan 并落地。',
+    setupActions: [{ type: 'ensure_bench_document', title: 'Bench-PPT大纲' }, { type: 'clear_document' }],
+    turns: [
+      {
+        id: 't1_outline_create',
+        name: '逐页大纲 + 创建 PPT（Plan）',
+        artifactId: 'bench_ppt_outline_delivery',
+        forceSkillId: 'ppt-outline',
+        asserts: [
+          { type: 'skills_applied_includes', skillId: 'ppt-outline', points: 2 },
+          { type: 'wpp_slide_count_at_least', min: 4 },
+        ],
+        query:
+          '给我做一份 4 页汇报 PPT（逐页大纲与讲稿的风格），并且直接创建到 WPS PPT：请输出可执行 Plan。\n' +
+          '结构建议：背景/问题/方案/下一步。每页 ≤ 5 条要点。\n' +
+          '只输出可执行 Plan JSON。',
+      },
+    ],
+  },
+
+  {
+    id: storyId('wpp-outline', 'wpp', 'wpp_outline_v1'),
+    suiteId: 'wpp-outline',
+    host: 'wpp',
+    name: 'WPP 版式：版式+占位符填充（WPP）',
+    description: '覆盖 wpp-outline（Plan-only）：版式相关 Plan 生成与执行。',
+    setupActions: [{ type: 'ensure_bench_document', title: 'Bench-WPP版式' }, { type: 'clear_document' }],
+    turns: [
+      {
+        id: 't1_layout',
+        name: '创建 2 页并填充占位符',
+        artifactId: 'bench_wpp_outline_delivery',
+        forceSkillId: 'wpp-outline',
+        asserts: [
+          { type: 'skills_applied_includes', skillId: 'wpp-outline', points: 2 },
+          { type: 'wpp_slide_count_at_least', min: 2 },
+          { type: 'wpp_placeholder_text_contains', kind: 'title', text: '版式测试' },
+        ],
+        query:
+          '创建 2 页 PPT，并尽量使用占位符填充（标题/正文），同时设置合适版式：\n' +
+          '1) 标题页：标题“版式测试”，副标题“占位符填充”；\n' +
+          '2) 内容页：标题“要点”，列 4 条要点。\n' +
+          '只输出可执行 Plan JSON。',
+      },
+    ],
+  },
+
   {
     id: storyId('finance-audit', 'wpp', 'finance_deck_v1'),
     suiteId: 'finance-audit',
@@ -1029,13 +1340,24 @@ export const buildChatBenchStories = (args: {
   const suiteIds: MacroBenchSuiteId[] =
     suiteId === 'all'
       ? ([
+          // Skill coverage (built-in 10)
+          'doc-analyzer',
+          'doc-editor',
+          'doc-formatter',
+          'exam-answering',
+          'et-analyzer',
+          'et-visualizer',
+          'ppt-creator',
+          'ppt-outline',
+          'wpp-outline',
+          'answer-mode',
+          // Business scenarios
           'finance-audit',
           'contract-review',
           'bidding-helper',
           'meeting-minutes',
           'policy-format',
           'risk-register',
-          'answer-mode',
         ] as MacroBenchSuiteId[])
       : ([suiteId] as MacroBenchSuiteId[])
 

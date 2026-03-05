@@ -1400,6 +1400,8 @@ const evalTurnAsserts = async (args: {
 
   blockId?: string | null
 
+  appliedSkills?: Array<{ id?: string; name?: string }>
+
 }): Promise<BenchAssertEval> => {
 
   const failures: BenchAssertFailure[] = []
@@ -1433,6 +1435,21 @@ const evalTurnAsserts = async (args: {
   for (const a of extra) {
 
     const pts = assertPoints(a, 1)
+
+    if (a.type === 'skills_applied_includes') {
+      const want = String((a as any).skillId || '').trim()
+      const ids = (() => {
+        try {
+          const xs = Array.isArray(args.appliedSkills) ? args.appliedSkills : []
+          return xs.map(x => String((x as any)?.id || '').trim()).filter(x => !!x)
+        } catch (e) {
+          return []
+        }
+      })()
+      const ok = !!want && ids.includes(want)
+      add(ok, a.type, pts, ok ? 'ok' : `missing:${want || '(empty)'} got=${ids.join(',') || '(none)'}`)
+      continue
+    }
 
     if (!args.execOk) {
 
@@ -2546,7 +2563,14 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
 
         const msg = `setup_actions_failed: ${String(e?.message || e)}`
 
-        const ae = await evalTurnAsserts({ host, hasCode: false, execOk: false, asserts: turn.asserts })
+        let appliedSkills: any[] = []
+        try {
+          const v = (chatStore as any).appliedSkills
+          appliedSkills = Array.isArray(v) ? v : []
+        } catch (e2) {
+          appliedSkills = []
+        }
+        const ae = await evalTurnAsserts({ host, hasCode: false, execOk: false, asserts: turn.asserts, appliedSkills })
 
         const r: ChatBenchTurnResult = {
 
@@ -2662,7 +2686,14 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
 
       const msg = `actions_before_send_failed: ${String(e?.message || e)}`
 
-      const ae = await evalTurnAsserts({ host, hasCode: false, execOk: false, asserts: turn.asserts })
+      let appliedSkills: any[] = []
+      try {
+        const v = (chatStore as any).appliedSkills
+        appliedSkills = Array.isArray(v) ? v : []
+      } catch (e2) {
+        appliedSkills = []
+      }
+      const ae = await evalTurnAsserts({ host, hasCode: false, execOk: false, asserts: turn.asserts, appliedSkills })
 
       const r: ChatBenchTurnResult = {
 
@@ -2810,6 +2841,24 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
 
             style_spec: (turn as any)?.styleSpec || null,
 
+            // Deterministic skill coverage (optional): force backend primary skill selection.
+            ...(String((turn as any)?.forceSkillId || '').trim()
+              ? {
+                  client_skill_selection: {
+                    explicit: true,
+                    primary_skill_id: String((turn as any).forceSkillId || '').trim(),
+                    primary_score: 1.0,
+                    accept_threshold: 0.0,
+                    candidates: [
+                      {
+                        id: String((turn as any).forceSkillId || '').trim(),
+                        score: 1.0,
+                      },
+                    ],
+                  },
+                }
+              : {}),
+
           },
 
           ruleFiles: ruleFilesForTurn.length ? ruleFilesForTurn : undefined,
@@ -2874,7 +2923,14 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
 
       const msg = `chat_failed: ${String(e?.message || e)}`
 
-      const ae = await evalTurnAsserts({ host, hasCode: false, execOk: false, asserts: turn.asserts })
+      let appliedSkills: any[] = []
+      try {
+        const v = (chatStore as any).appliedSkills
+        appliedSkills = Array.isArray(v) ? v : []
+      } catch (e2) {
+        appliedSkills = []
+      }
+      const ae = await evalTurnAsserts({ host, hasCode: false, execOk: false, asserts: turn.asserts, appliedSkills })
 
       const r: ChatBenchTurnResult = {
 
@@ -2977,12 +3033,19 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
     // 2) extract plan blocks
 
     const blocks = extractPlanBlocks(assistantMsg)
+    let appliedSkills: any[] = []
+    try {
+      const v = (chatStore as any).appliedSkills
+      appliedSkills = Array.isArray(v) ? v : []
+    } catch (e) {
+      appliedSkills = []
+    }
 
     if (!blocks.length) {
 
       const msg = 'chat_ok_but_no_plan_block'
 
-      const ae = await evalTurnAsserts({ host, hasCode: false, execOk: false, asserts: turn.asserts })
+      const ae = await evalTurnAsserts({ host, hasCode: false, execOk: false, asserts: turn.asserts, appliedSkills })
 
       const r: ChatBenchTurnResult = {
 
@@ -3144,7 +3207,7 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
       message = "invalid_plan_json"
     }
 
-    const ae = await evalTurnAsserts({ host, hasCode: true, execOk: ok, asserts: turn.asserts, blockId: stableId })
+    const ae = await evalTurnAsserts({ host, hasCode: true, execOk: ok, asserts: turn.asserts, blockId: stableId, appliedSkills })
     await applyActions(turn.actionsAfterExec)
 
     // Persist per-block execution status so the chat UI renders it consistently.

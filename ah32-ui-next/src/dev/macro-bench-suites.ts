@@ -1,14 +1,30 @@
 export type MacroBenchHost = 'wps' | 'et' | 'wpp'
 
-// 6 built-in business scenarios (match installer/assets/user-docs/skills/* ids).
+// Built-in bench suites.
+//
+// Notes:
+// - The repo ships more than just "business scenario" skills; some are "capability skills"
+//   that define strict Plan-only delivery contracts (doc-*, et-*, ppt-*).
+// - MacroBench aims to cover both: (1) customer-like scenarios and (2) deterministic skill coverage.
 export type MacroBenchSuiteId =
+  // Skill coverage (the "built-in 10" that are expected to reliably output Plan JSON).
+  | 'doc-analyzer'
+  | 'doc-editor'
+  | 'doc-formatter'
+  | 'exam-answering'
+  | 'et-analyzer'
+  | 'et-visualizer'
+  | 'ppt-creator'
+  | 'ppt-outline'
+  | 'wpp-outline'
+  | 'answer-mode'
+  // Business scenarios (legacy / scenario-first suites).
   | 'finance-audit'
   | 'contract-review'
   | 'bidding-helper'
   | 'meeting-minutes'
   | 'policy-format'
   | 'risk-register'
-  | 'answer-mode'
 
 export type MacroBenchCase = {
   // Stable identity for diffing across runs.
@@ -30,13 +46,22 @@ export type MacroBenchSuite = {
 }
 
 export const MACRO_BENCH_SUITES: MacroBenchSuite[] = [
+  { id: 'doc-analyzer', name: '文档结构分析', description: '结构报告/缺口清单/一致性问题（Plan-only）' },
+  { id: 'doc-editor', name: '文档改写', description: '对照表+修订稿块交付（Plan-only）' },
+  { id: 'doc-formatter', name: '文档排版', description: '排版规范+问题清单+模板块交付（Plan-only）' },
+  { id: 'exam-answering', name: '试题答题', description: '不改题干，文末追加《答案与解析》（Plan-only）' },
+  { id: 'et-analyzer', name: 'ET 数据分析', description: '透视/排序/筛选/格式化（Plan-only）' },
+  { id: 'et-visualizer', name: 'ET 可视化', description: '汇总+做图/趋势线/数据标签（Plan-only）' },
+  { id: 'ppt-creator', name: 'PPT 一键创建', description: '直接创建幻灯片（Plan-only）' },
+  { id: 'ppt-outline', name: 'PPT 大纲讲稿', description: '逐页大纲+讲稿；显式要求时 Plan 创建' },
+  { id: 'wpp-outline', name: 'WPP 版式', description: '版式推荐/占位符填充/创建（Plan-only）' },
+  { id: 'answer-mode', name: '答题写回', description: '题号定位/括号下划线写回/不改题干（Plan-only）' },
   { id: 'finance-audit', name: '财务审计', description: '报表/预算/费用/台账/核对' },
   { id: 'contract-review', name: '法务合同', description: '风险点/条款审阅/修改建议/对照表' },
   { id: 'bidding-helper', name: '招投标', description: '需求响应/证据材料/清单/里程碑' },
   { id: 'meeting-minutes', name: '会议纪要', description: '模板/待办/行动项/纪要结构' },
   { id: 'policy-format', name: '制度排版', description: '标题层级/目录/段落样式/格式统一' },
   { id: 'risk-register', name: '风险台账', description: '风险清单/评分/对策/责任人' },
-  { id: 'answer-mode', name: '答题写回', description: '题号定位/括号下划线写回/不改题干' },
 ]
 
 type Template = {
@@ -50,6 +75,18 @@ type Template = {
 
 // Keep templates conservative and WPS-compatible. Avoid emojis; prefer simple punctuation.
 const T: Record<MacroBenchSuiteId, Template[]> = {
+  // Skill coverage suites currently focus on chat-driven bench (真实对话链路 + skills 路由 + SSE plan)。
+  // Keep macro-direct templates empty by default to avoid inflating macro-mode run time.
+  'doc-analyzer': [],
+  'doc-editor': [],
+  'doc-formatter': [],
+  'exam-answering': [],
+  'et-analyzer': [],
+  'et-visualizer': [],
+  'ppt-creator': [],
+  'ppt-outline': [],
+  'wpp-outline': [],
+  'answer-mode': [],
   'finance-audit': [
     // Writer
     {
@@ -323,7 +360,7 @@ const T: Record<MacroBenchSuiteId, Template[]> = {
   ],
 
   // Chat-mode bench covers Answer Mode; macro-mode can add templates later.
-  'answer-mode': [],
+  // NOTE: answer-mode templates are chat-bench only for now.
 }
 
 export type MacroBenchPreset = 'quick' | 'standard' | 'full'
