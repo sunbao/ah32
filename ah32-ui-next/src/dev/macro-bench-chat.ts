@@ -429,9 +429,33 @@ const getActiveDocName = (): string => {
 
 
 
-const extractPlanBlocks = (content: string): string[] => {
-  const src = String(content || "")
+const extractPlanBlocks = (assistantMsg: any): string[] => {
   const out: string[] = []
+
+  // Preferred: plan is delivered out-of-band via SSE `event: plan` and attached to message metadata.
+  try {
+    const payloads = assistantMsg?.metadata?.macroBlockPayloads
+    if (payloads && typeof payloads === 'object' && !Array.isArray(payloads)) {
+      for (const v of Object.values(payloads as any)) {
+        const body = (typeof v === 'string' ? v : '').trim()
+        if (!body) continue
+        try {
+          const parsed = JSON.parse(body)
+          if (parsed && typeof parsed === 'object' && (parsed as any).schema_version === 'ah32.plan.v1') {
+            out.push(body)
+          }
+        } catch (e) {
+          ;(globalThis as any).__ah32_reportError?.("ah32-ui-next/src/dev/macro-bench-chat.ts", e)
+        }
+      }
+    }
+  } catch (e) {
+    ;(globalThis as any).__ah32_reportError?.("ah32-ui-next/src/dev/macro-bench-chat.ts", e)
+  }
+  if (out.length > 0) return out
+
+  // Fallback: legacy mode where plan JSON is embedded in assistant message content.
+  const src = String(assistantMsg?.content || "")
   const re = /```(?:json)?\s*([\s\S]*?)```/gi
   let m: RegExpExecArray | null
   while ((m = re.exec(src)) !== null) {
@@ -2952,7 +2976,7 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
 
     // 2) extract plan blocks
 
-    const blocks = extractPlanBlocks(String(assistantMsg?.content || ''))
+    const blocks = extractPlanBlocks(assistantMsg)
 
     if (!blocks.length) {
 
