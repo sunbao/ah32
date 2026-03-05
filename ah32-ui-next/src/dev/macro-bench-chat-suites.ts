@@ -467,6 +467,7 @@ const STORIES: ChatBenchStory[] = [
           { type: 'ui_click_send' },
         ],
         asserts: [
+          { type: 'skills_applied_includes', skillId: 'finance-audit', points: 2 },
           { type: 'writer_table_exists', minRows: 4, minCols: 4 },
           { type: 'writer_table_header_bold' },
           { type: 'writer_text_contains', text: '变更记录' },
@@ -534,6 +535,7 @@ const STORIES: ChatBenchStory[] = [
         name: '合同风险清单表格',
         artifactId: 'bench_contract_risk_table',
         asserts: [
+          { type: 'skills_applied_includes', skillId: 'contract-review', points: 2 },
           { type: 'writer_table_exists', minRows: 4, minCols: 4 },
           { type: 'writer_table_header_bold' },
           { type: 'writer_text_contains', text: '变更记录' },
@@ -576,6 +578,7 @@ const STORIES: ChatBenchStory[] = [
         name: '需求-响应对照表',
         artifactId: 'bench_bid_response_table',
         asserts: [
+          { type: 'skills_applied_includes', skillId: 'bidding-helper', points: 2 },
           { type: 'writer_table_exists', minRows: 4, minCols: 4 },
           { type: 'writer_table_header_bold' },
           { type: 'writer_text_contains', text: '变更记录' },
@@ -617,6 +620,7 @@ const STORIES: ChatBenchStory[] = [
         name: '会议纪要模板（含待办表格）',
         artifactId: 'bench_meeting_minutes',
         asserts: [
+          { type: 'skills_applied_includes', skillId: 'meeting-minutes', points: 2 },
           { type: 'writer_table_exists', minRows: 2, minCols: 2 },
           { type: 'writer_text_contains', text: '变更记录' },
           { type: 'writer_block_backup_exists' },
@@ -657,6 +661,7 @@ const STORIES: ChatBenchStory[] = [
         name: '制度大纲与标题层级',
         artifactId: 'bench_policy_outline',
         asserts: [
+          { type: 'skills_applied_includes', skillId: 'policy-format', points: 2 },
           { type: 'writer_text_contains', text: '概述' },
           { type: 'writer_text_contains', text: '变更记录' },
           { type: 'writer_block_backup_exists' },
@@ -698,6 +703,7 @@ const STORIES: ChatBenchStory[] = [
         name: '风险台账表格',
         artifactId: 'bench_risk_register_table',
         asserts: [
+          { type: 'skills_applied_includes', skillId: 'risk-register', points: 2 },
           { type: 'writer_table_exists', minRows: 4, minCols: 4 },
           { type: 'writer_table_header_bold' },
           { type: 'writer_text_contains', text: '变更记录' },
@@ -848,6 +854,7 @@ const STORIES: ChatBenchStory[] = [
           { type: 'insert_text', text: '4月\\t160\\t110\\t18' },
         ],
         asserts: [
+          { type: 'skills_applied_includes', skillId: 'finance-audit', points: 2 },
           { type: 'assistant_text_contains', text: '范围与口径' },
           { type: 'assistant_text_contains', text: '关键发现摘要' },
           { type: 'assistant_text_contains', text: '异常/差异清单表' },
@@ -859,6 +866,43 @@ const STORIES: ChatBenchStory[] = [
           '基于当前文档的财务明细，做异常/差异分析。\n' +
           '要求：只在对话中输出，不要写回文档，也不要输出 Plan JSON。\n' +
           '输出必须包含：1) 范围与口径；2) 关键发现摘要；3) 异常/差异清单表（现象-可能原因-佐证-核验步骤）；4) 待办清单；5) 自检清单。',
+      },
+    ],
+  },
+
+  {
+    id: storyId('contract-review', 'wps', 'contract_text_only_v1'),
+    suiteId: 'contract-review',
+    host: 'wps',
+    name: '法务合同：只在对话交付（Writer）',
+    description: '不写回，验证风险清单表/需确认问题/待办结构齐全。',
+    setupActions: [{ type: 'ensure_bench_document', title: 'Bench-合同审阅-文本' }, { type: 'set_cursor', pos: 'start' }],
+    turns: [
+      {
+        id: 't1_contract_text',
+        name: '合同风险清单（不写回）',
+        expectedOutput: 'text',
+        actionsBeforeSend: [
+          { type: 'clear_document' },
+          { type: 'insert_text', text: '合同条款（节选）' },
+          { type: 'insert_text', text: '1. 付款：甲方应在验收后 90 日内付款；逾期不承担任何违约责任。' },
+          { type: 'insert_text', text: '2. 责任：乙方对任何间接损失承担无限责任。' },
+          { type: 'insert_text', text: '3. 变更：甲方可单方变更范围与交付物，乙方须无条件配合。' },
+          { type: 'insert_text', text: '4. 争议：争议提交甲方所在地仲裁委员会仲裁。' },
+        ],
+        asserts: [
+          { type: 'skills_applied_includes', skillId: 'contract-review', points: 2 },
+          { type: 'assistant_text_contains', text: '执行摘要' },
+          { type: 'assistant_text_contains', text: '风险清单表' },
+          { type: 'assistant_text_contains', text: '需确认问题' },
+          { type: 'assistant_text_contains', text: '待办' },
+          { type: 'assistant_text_contains', text: '自检清单' },
+          { type: 'assistant_text_not_contains', text: 'ah32.plan.v1' },
+        ],
+        query:
+          '基于当前文档的合同条款节选，做一次合同风险审阅。\n' +
+          '要求：只在对话中输出，不要写回文档，也不要输出 Plan JSON。\n' +
+          '输出必须包含：1) 执行摘要；2) 风险清单表（条款定位+原文摘录+风险等级+建议修改文本）；3) 需确认问题；4) 待办（Owner/优先级/DDL）；5) 自检清单。',
       },
     ],
   },
@@ -885,6 +929,7 @@ const STORIES: ChatBenchStory[] = [
           { type: 'insert_text', text: '5. 评分：技术 60 分，商务 40 分；技术里含“演示效果”10分。' },
         ],
         asserts: [
+          { type: 'skills_applied_includes', skillId: 'bidding-helper', points: 2 },
           { type: 'assistant_text_contains', text: '执行摘要' },
           { type: 'assistant_text_contains', text: '符合性/偏离矩阵' },
           { type: 'assistant_text_contains', text: '澄清问题清单' },
@@ -925,6 +970,7 @@ const STORIES: ChatBenchStory[] = [
           { type: 'insert_text', text: '未决：前端断线重载的根因仍需定位。' },
         ],
         asserts: [
+          { type: 'skills_applied_includes', skillId: 'meeting-minutes', points: 2 },
           { type: 'assistant_text_contains', text: '结论摘要' },
           { type: 'assistant_text_contains', text: '决议清单' },
           { type: 'assistant_text_contains', text: '待办表' },
@@ -936,6 +982,45 @@ const STORIES: ChatBenchStory[] = [
           '把当前文档的会议记录整理成一份会议纪要。\n' +
           '要求：只在对话中输出，不要写回文档，也不要输出 Plan JSON。\n' +
           '输出必须包含：基本信息/结论摘要/决议清单/待办表(Owner/DDL/状态)/风险与未决/自检清单。',
+      },
+    ],
+  },
+
+  {
+    id: storyId('policy-format', 'wps', 'policy_text_only_v1'),
+    suiteId: 'policy-format',
+    host: 'wps',
+    name: '制度排版：只在对话交付规范（Writer）',
+    description: '不写回，验证编号层级/术语一致性/模板段落与检查清单齐全。',
+    setupActions: [{ type: 'ensure_bench_document', title: 'Bench-制度排版-文本' }, { type: 'set_cursor', pos: 'start' }],
+    turns: [
+      {
+        id: 't1_policy_text',
+        name: '结构与编号规范（不写回）',
+        expectedOutput: 'text',
+        actionsBeforeSend: [
+          { type: 'clear_document' },
+          { type: 'insert_text', text: '《采购管理办法（草案）》' },
+          { type: 'insert_text', text: '一、目标：规范采购。' },
+          { type: 'insert_text', text: '1 范围：适用于公司全部采购。' },
+          { type: 'insert_text', text: '1.1 采购定义：以下简称“采购”。' },
+          { type: 'insert_text', text: '2职责：' },
+          { type: 'insert_text', text: '(1) 采购部：负责寻源；(二) 使用部门：提出需求（编号混乱）。' },
+          { type: 'insert_text', text: '流程：需求->审批->下单->验收->付款（缺少留痕与追责说明）。' },
+        ],
+        asserts: [
+          { type: 'skills_applied_includes', skillId: 'policy-format', points: 2 },
+          { type: 'assistant_text_contains', text: '结构与编号规范' },
+          { type: 'assistant_text_contains', text: '建议章节结构' },
+          { type: 'assistant_text_contains', text: '术语/一致性/合规问题清单' },
+          { type: 'assistant_text_contains', text: '关键段落模板' },
+          { type: 'assistant_text_contains', text: '自检清单' },
+          { type: 'assistant_text_not_contains', text: 'ah32.plan.v1' },
+        ],
+        query:
+          '请根据当前制度草案，输出“排版与结构交付”。\n' +
+          '要求：只在对话中输出，不要写回文档，也不要输出 Plan JSON。\n' +
+          '输出必须包含：1) 结构与编号规范；2) 建议章节结构；3) 术语/一致性/合规问题清单（证据定位+可替换文本）；4) 关键段落模板；5) 自检清单。',
       },
     ],
   },
@@ -961,6 +1046,7 @@ const STORIES: ChatBenchStory[] = [
           { type: 'insert_text', text: '- 文档快照过大，上传耗时长，可能超时' },
         ],
         asserts: [
+          { type: 'skills_applied_includes', skillId: 'risk-register', points: 2 },
           { type: 'assistant_text_contains', text: '风险登记表' },
           { type: 'assistant_text_contains', text: '风险等级口径' },
           { type: 'assistant_text_contains', text: '自检清单' },
@@ -1818,6 +1904,7 @@ const STORIES: ChatBenchStory[] = [
         name: '逐页大纲+讲稿（不创建）',
         expectedOutput: 'text',
         asserts: [
+          { type: 'skills_applied_includes', skillId: 'ppt-outline', points: 2 },
           { type: 'assistant_text_contains', text: '目标与受众' },
           { type: 'assistant_text_contains', text: '叙事主线' },
           { type: 'assistant_text_contains', text: '逐页大纲表' },
@@ -1864,6 +1951,7 @@ const STORIES: ChatBenchStory[] = [
         name: '审稿输出（不写回）',
         expectedOutput: 'text',
         asserts: [
+          { type: 'skills_applied_includes', skillId: 'ppt-review', points: 2 },
           { type: 'assistant_text_contains', text: '问题概览' },
           { type: 'assistant_text_contains', text: '逐页问题清单' },
           { type: 'assistant_text_contains', text: '版式与一致性规范' },

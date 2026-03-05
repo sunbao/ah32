@@ -83,21 +83,196 @@ type Template = {
 
 // Keep templates conservative and WPS-compatible. Avoid emojis; prefer simple punctuation.
 const T: Record<MacroBenchSuiteId, Template[]> = {
-  // Skill coverage suites currently focus on chat-driven bench (真实对话链路 + skills 路由 + SSE plan)。
-  // Keep macro-direct templates empty by default to avoid inflating macro-mode run time.
-  'doc-analyzer': [],
-  'doc-editor': [],
-  'doc-formatter': [],
-  'exam-answering': [],
-  'et-analyzer': [],
-  'et-visualizer': [],
-  'ppt-creator': [],
-  'ppt-outline': [],
+  // Skill coverage suites: chat-bench is the primary signal (skills routing + SSE plan).
+  // Macro-direct keeps a small smoke set so we can quickly catch generator/executor regressions.
+  'doc-analyzer': [
+    {
+      id: 'wps_doc_analyzer_report',
+      host: 'wps',
+      title: '结构报告块（幂等写回）',
+      tags: ['writer', 'doc', 'structure', 'writeback'],
+      variants: [
+        {
+          suffix: 'v1',
+          query:
+            '分析当前文档结构是否完整与一致，写回到文末一个“结构报告块”（upsert_block，幂等）。' +
+            '必须包含：结构大纲/缺口清单(P0/P1/P2)/一致性问题/整改顺序/自检清单。',
+        },
+      ],
+    },
+  ],
+  'doc-editor': [
+    {
+      id: 'wps_doc_editor_compare',
+      host: 'wps',
+      title: '对照表+修订稿（幂等写回）',
+      tags: ['writer', 'doc', 'rewrite', 'writeback', 'table'],
+      variants: [
+        {
+          suffix: 'v1',
+          query:
+            '把下面原文改写成正式商务沟通风格，但不要改动原文正文；在文末写回一个交付块（upsert_block，幂等）：' +
+            '1) 改写范围与假设；2) 对照表(原文要点/建议改写/理由/风险)；3) 修订稿。\n' +
+            '原文：我们这个方案很牛，肯定能搞定。可能会有点风险，但问题不大。交付时间看情况，资源也要再协调一下。',
+        },
+      ],
+    },
+  ],
+  'doc-formatter': [
+    {
+      id: 'wps_doc_formatter_rules',
+      host: 'wps',
+      title: '排版规范+检查清单（幂等写回）',
+      tags: ['writer', 'doc', 'format', 'writeback'],
+      variants: [
+        {
+          suffix: 'v1',
+          query:
+            '给当前文档输出“排版规范+检查清单+模板段落”交付块（upsert_block，幂等；不要尝试全篇改样式）。' +
+            '必须包含：标题层级/编号规则/段落间距/常见问题清单/可替换模板段落/自检清单。',
+        },
+      ],
+    },
+  ],
+  'exam-answering': [
+    {
+      id: 'wps_exam_answering_appendix',
+      host: 'wps',
+      title: '答案与解析（文末块）',
+      tags: ['writer', 'exam', 'writeback'],
+      variants: [
+        {
+          suffix: 'v1',
+          query:
+            '请完成下面试题：不要改题干；在文档末尾追加《答案与解析》（upsert_block，幂等），按题号输出。\n' +
+            '1. 选择题：下列属于哺乳动物的是（ ）A 海豚 B 鲨鱼 C 海龟 D 章鱼\n' +
+            '2. 填空题：我国首都是______。\n' +
+            '3. 简答题：用不超过40字解释“合规”的含义。',
+        },
+      ],
+    },
+  ],
+  'et-analyzer': [
+    {
+      id: 'et_analyzer_pivot',
+      host: 'et',
+      title: '明细->透视->图表',
+      tags: ['et', 'analysis', 'pivot', 'chart'],
+      variants: [
+        {
+          suffix: 'v1',
+          query:
+            '在Sheet1从A1生成“销售明细”表（至少20行，字段：日期/部门/产品/金额），冻结首行，金额为数字。' +
+            '然后新建工作表“汇总”：做透视表按部门汇总金额，并插入柱状图（标题“部门金额汇总”）。',
+        },
+      ],
+    },
+  ],
+  'et-visualizer': [
+    {
+      id: 'et_visualizer_dual_charts',
+      host: 'et',
+      title: '占比饼图 + 趋势折线',
+      tags: ['et', 'chart', 'visualize'],
+      variants: [
+        {
+          suffix: 'v1',
+          query:
+            '在A1生成费用结构表：类别/金额，填5行示例，并插入饼图显示占比（显示百分比，标题“费用结构”）。' +
+            '在旁边再生成月份(1-6)/销售额数据，并插入折线图（标题“销售趋势”）。',
+        },
+      ],
+    },
+  ],
+  'ppt-creator': [
+    {
+      id: 'wpp_ppt_creator_3slides',
+      host: 'wpp',
+      title: '一键创建 3 页',
+      tags: ['wpp', 'ppt', 'create', 'writeback'],
+      variants: [
+        {
+          suffix: 'v1',
+          query:
+            '一键创建3页PPT并直接创建到当前演示文稿：' +
+            '1) 封面：标题“项目汇报”，副标题“内部使用”；' +
+            '2) 目录：列4个要点；' +
+            '3) 结论：列3条结论与下一步。',
+        },
+      ],
+    },
+  ],
+  'ppt-outline': [
+    {
+      id: 'wpp_ppt_outline_4slides',
+      host: 'wpp',
+      title: '大纲讲稿 -> 创建 4 页',
+      tags: ['wpp', 'ppt', 'outline', 'writeback'],
+      variants: [
+        {
+          suffix: 'v1',
+          query:
+            '给我做一份4页汇报PPT（背景/问题/方案/下一步），并直接创建到当前演示文稿。' +
+            '每页≤5条要点，标题清晰，风格商务。',
+        },
+      ],
+    },
+  ],
   'ppt-review': [],
-  'wpp-outline': [],
+  'wpp-outline': [
+    {
+      id: 'wpp_layout_helper_2slides',
+      host: 'wpp',
+      title: '版式+占位符填充',
+      tags: ['wpp', 'layout', 'placeholder', 'writeback'],
+      variants: [
+        {
+          suffix: 'v1',
+          query:
+            '创建2页PPT并优先使用占位符填充：' +
+            '1) 标题页：标题“版式测试”，副标题“占位符填充”；' +
+            '2) 内容页：标题“要点”，列4条要点。',
+        },
+      ],
+    },
+  ],
   'answer-mode': [],
-  'system-plan-repair': [],
-  'system-block-lifecycle': [],
+  'system-plan-repair': [
+    {
+      id: 'wps_system_plan_repair_legacy_upsert',
+      host: 'wps',
+      title: 'Legacy upsert -> repair fast-path',
+      tags: ['system', 'repair', 'writer'],
+      variants: [
+        {
+          suffix: 'v1',
+          query:
+            '请输出一个可执行 Plan：在文末 upsert_block 写入文本 REPAIR_FASTPATH_TOKEN_V1。' +
+            '要求：故意使用旧字段 upsert_block.content（不要用 actions 数组），以触发 repair fast-path 修复后再执行。',
+        },
+      ],
+    },
+  ],
+  'system-block-lifecycle': [
+    {
+      id: 'wps_system_block_lifecycle_ops',
+      host: 'wps',
+      title: 'upsert/update/rollback/delete（系统回归）',
+      tags: ['system', 'block', 'lifecycle', 'writer'],
+      variants: [
+        {
+          suffix: 'v1',
+          query:
+            '生成可执行 Plan，按顺序执行块生命周期回归：' +
+            '1) upsert_block 写入 LIFECYCLE_TOKEN_V1；' +
+            '2) 再 upsert_block 更新为 LIFECYCLE_TOKEN_V2；' +
+            '3) rollback_block 回滚到 V1；' +
+            '4) delete_block 删除该块。\n' +
+            '要求：四步都操作同一个 block_id（保持一致）。',
+        },
+      ],
+    },
+  ],
   'finance-audit': [
     // Writer
     {

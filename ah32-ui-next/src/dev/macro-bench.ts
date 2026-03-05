@@ -455,16 +455,15 @@ export const runMacroBenchCurrentHost = async (opts?: RunBenchOptions): Promise<
       if (!input || typeof input !== "object") return input
       let cloned: any
       try { cloned = JSON.parse(JSON.stringify(input)) } catch (e) { cloned = input }
-      const walk = (actions: any[]): boolean => {
+      const ops = new Set(["upsert_block", "delete_block", "rollback_block", "set_selection_by_block"])
+      const walk = (actions: any[]) => {
         for (const a of actions || []) {
           if (!a || typeof a !== "object") continue
-          if (a.op === "upsert_block") {
-            a.block_id = blockId
-            return true
+          if (typeof a.op === "string" && ops.has(String(a.op))) {
+            try { a.block_id = blockId } catch (e) { /* ignore */ }
           }
-          if (Array.isArray(a.actions) && walk(a.actions)) return true
+          if (Array.isArray(a.actions)) walk(a.actions)
         }
-        return false
       }
       try { if (Array.isArray(cloned.actions)) walk(cloned.actions) } catch (e) { ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench.ts', e) }
       return cloned
@@ -568,4 +567,3 @@ export const runMacroBenchCurrentHost = async (opts?: RunBenchOptions): Promise<
   saveBenchResults(run)
   return run
 }
-
