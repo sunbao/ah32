@@ -498,6 +498,29 @@ const normalizeBlockId = (raw: string): string => {
 
 }
 
+const ensurePlanBlockIdForSystemOps = (input: any, blockId: string): any => {
+  if (!input || typeof input !== "object") return input
+  let cloned: any
+  try { cloned = JSON.parse(JSON.stringify(input)) } catch (e) { cloned = input }
+  const ops = new Set([
+    "upsert_block",
+    "delete_block",
+    "rollback_block",
+    "set_selection_by_block",
+  ])
+  const walk = (actions: any[]) => {
+    for (const a of actions || []) {
+      if (!a || typeof a !== "object") continue
+      if (typeof (a as any).op === "string" && ops.has(String((a as any).op))) {
+        try { (a as any).block_id = blockId } catch (e) { /* ignore */ }
+      }
+      if (Array.isArray((a as any).actions)) walk((a as any).actions)
+    }
+  }
+  try { if (Array.isArray((cloned as any).actions)) walk((cloned as any).actions) } catch (e) { ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e) }
+  return cloned
+}
+
 
 
 type BenchAssertFailure = { type: string; points: number; message: string }
@@ -1402,6 +1425,8 @@ const evalTurnAsserts = async (args: {
 
   appliedSkills?: Array<{ id?: string; name?: string }>
 
+  repairsUsed?: number
+
 }): Promise<BenchAssertEval> => {
 
   const failures: BenchAssertFailure[] = []
@@ -1448,6 +1473,14 @@ const evalTurnAsserts = async (args: {
       })()
       const ok = !!want && ids.includes(want)
       add(ok, a.type, pts, ok ? 'ok' : `missing:${want || '(empty)'} got=${ids.join(',') || '(none)'}`)
+      continue
+    }
+
+    if (a.type === 'repairs_used_at_least') {
+      const min = Math.max(0, Number((a as any).min ?? 0) || 0)
+      const used = Math.max(0, Number(args.repairsUsed ?? 0) || 0)
+      const ok = used >= min
+      add(ok, a.type, pts, ok ? 'ok' : `repairs_used=${used} < ${min}`)
       continue
     }
 
@@ -2570,7 +2603,7 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
         } catch (e2) {
           appliedSkills = []
         }
-        const ae = await evalTurnAsserts({ host, hasCode: false, execOk: false, asserts: turn.asserts, appliedSkills })
+        const ae = await evalTurnAsserts({ host, hasCode: false, execOk: false, asserts: turn.asserts, appliedSkills, repairsUsed: 0 })
 
         const r: ChatBenchTurnResult = {
 
@@ -2656,11 +2689,11 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
 
       }
 
-      // Keep the bench doc active across the whole story.
+    // Keep the bench doc active across the whole story.
 
-      await applyActions([{ type: 'activate_bench_document' }])
+    await applyActions([{ type: 'activate_bench_document' }])
 
-    }
+  }
 
 
 
@@ -2693,7 +2726,7 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
       } catch (e2) {
         appliedSkills = []
       }
-      const ae = await evalTurnAsserts({ host, hasCode: false, execOk: false, asserts: turn.asserts, appliedSkills })
+      const ae = await evalTurnAsserts({ host, hasCode: false, execOk: false, asserts: turn.asserts, appliedSkills, repairsUsed: 0 })
 
       const r: ChatBenchTurnResult = {
 
@@ -2807,112 +2840,122 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
 
     try {
 
-      if (uiClickSendForTurn) {
+      const overridePlan = (turn as any)?.planOverride
+      const hasOverridePlan =
+        overridePlan && typeof overridePlan === 'object' && !Array.isArray(overridePlan)
+
+      if (hasOverridePlan) {
+        // System coverage: bypass chat and execute a deterministic plan.
+        assistantMsg = null
+        tokenUsage = null
+        chatMs = 0
+      } else if (uiClickSendForTurn) {
 
         try { (chatStore as any).addSystemMessage?.('[Bench] ui_click_send simulated: calling store.sendMessage(sessionId=...)') } catch (e) { (globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e) }
 
       }
 
-      await withTimeout(
+      if (!hasOverridePlan) {
+        await withTimeout(
 
-        sendWithRetry(queryToSend, chatSessionId, {
+          sendWithRetry(queryToSend, chatSessionId, {
 
-          disableShortcuts: true,
+            disableShortcuts: true,
 
-          ensureDocSync: true,
+            ensureDocSync: true,
 
-          frontendContextPatch: {
+            frontendContextPatch: {
 
-            bench: true,
+              bench: true,
 
-            bench_run: {
+              bench_run: {
 
-              runId,
+                runId,
 
-              host,
+                host,
 
-              suite: story.suiteId,
+                suite: story.suiteId,
 
-              story: story.id,
+                story: story.id,
 
-              turn: turn.id,
+                turn: turn.id,
+
+              },
+
+              style_spec: (turn as any)?.styleSpec || null,
+
+              // Deterministic skill coverage (optional): force backend primary skill selection.
+              ...(String((turn as any)?.forceSkillId || '').trim()
+                ? {
+                    client_skill_selection: {
+                      explicit: true,
+                      primary_skill_id: String((turn as any).forceSkillId || '').trim(),
+                      primary_score: 1.0,
+                      accept_threshold: 0.0,
+                      candidates: [
+                        {
+                          id: String((turn as any).forceSkillId || '').trim(),
+                          score: 1.0,
+                        },
+                      ],
+                    },
+                  }
+                : {}),
 
             },
 
-            style_spec: (turn as any)?.styleSpec || null,
+            ruleFiles: ruleFilesForTurn.length ? ruleFilesForTurn : undefined,
 
-            // Deterministic skill coverage (optional): force backend primary skill selection.
-            ...(String((turn as any)?.forceSkillId || '').trim()
-              ? {
-                  client_skill_selection: {
-                    explicit: true,
-                    primary_skill_id: String((turn as any).forceSkillId || '').trim(),
-                    primary_score: 1.0,
-                    accept_threshold: 0.0,
-                    candidates: [
-                      {
-                        id: String((turn as any).forceSkillId || '').trim(),
-                        score: 1.0,
-                      },
-                    ],
-                  },
-                }
-              : {}),
+          }),
 
-          },
+          chatTimeoutMs,
 
-          ruleFiles: ruleFilesForTurn.length ? ruleFilesForTurn : undefined,
+          'chat'
 
-        }),
+        )
 
-        chatTimeoutMs,
+        chatMs = Math.round(performance.now() - t0)
 
-        'chat'
+        try { tokenUsage = (chatStore as any).consumeLastTokenUsage?.() || null } catch (e) { (globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e); tokenUsage = null }
 
-      )
+        try {
 
-      chatMs = Math.round(performance.now() - t0)
+          const t = Number(tokenUsage?.total_tokens || 0) || 0
 
-      try { tokenUsage = (chatStore as any).consumeLastTokenUsage?.() || null } catch (e) { (globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e); tokenUsage = null }
+          if (t > 0) totalTokens += t
 
-      try {
+        } catch (e) {
 
-        const t = Number(tokenUsage?.total_tokens || 0) || 0
+          ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e)
 
-        if (t > 0) totalTokens += t
-
-      } catch (e) {
-
-        ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e)
-
-      }
+        }
 
 
 
-      // Re-select the bench session bucket after the send, in case the UI switched documents mid-stream.
+        // Re-select the bench session bucket after the send, in case the UI switched documents mid-stream.
 
-      try { await (chatStore as any).switchToSession?.(chatSessionId, { bindToActiveDocument: true }) } catch (e) { (globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e) }
+        try { await (chatStore as any).switchToSession?.(chatSessionId, { bindToActiveDocument: true }) } catch (e) { (globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e) }
 
 
 
-      const bucketMsgs = (((chatStore as any).messages || []) as any[])
+        const bucketMsgs = (((chatStore as any).messages || []) as any[])
 
-      const newMsgs = bucketMsgs.slice(beforeLen)
+        const newMsgs = bucketMsgs.slice(beforeLen)
 
-      assistantMsg = newMsgs.slice().reverse().find((m: any) => m && m.type === 'assistant') || null
+        assistantMsg = newMsgs.slice().reverse().find((m: any) => m && m.type === 'assistant') || null
 
-      if (!assistantMsg) {
+        if (!assistantMsg) {
 
-        // Fallback: avoid false negatives if trimming/switching happened unexpectedly.
+          // Fallback: avoid false negatives if trimming/switching happened unexpectedly.
 
-        assistantMsg = bucketMsgs.slice().reverse().find((m: any) => m && m.type === 'assistant') || null
+          assistantMsg = bucketMsgs.slice().reverse().find((m: any) => m && m.type === 'assistant') || null
 
-      }
+        }
+        if (!assistantMsg) {
 
-      if (!assistantMsg) {
+          throw new Error('chat_no_assistant_message')
 
-        throw new Error('chat_no_assistant_message')
-
+        }
       }
 
     } catch (e: any) {
@@ -2930,7 +2973,7 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
       } catch (e2) {
         appliedSkills = []
       }
-      const ae = await evalTurnAsserts({ host, hasCode: false, execOk: false, asserts: turn.asserts, appliedSkills })
+      const ae = await evalTurnAsserts({ host, hasCode: false, execOk: false, asserts: turn.asserts, appliedSkills, repairsUsed: 0 })
 
       const r: ChatBenchTurnResult = {
 
@@ -3030,22 +3073,27 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
 
 
 
-    // 2) extract plan blocks
+    // 2) extract plan blocks (or use deterministic override)
+    const overridePlan = (turn as any)?.planOverride
+    const hasOverridePlan = overridePlan && typeof overridePlan === 'object' && !Array.isArray(overridePlan)
 
-    const blocks = extractPlanBlocks(assistantMsg)
+    const blocks = hasOverridePlan ? [JSON.stringify(overridePlan)] : extractPlanBlocks(assistantMsg)
+
     let appliedSkills: any[] = []
-    try {
-      const v = (chatStore as any).appliedSkills
-      appliedSkills = Array.isArray(v) ? v : []
-    } catch (e) {
-      appliedSkills = []
+    if (!hasOverridePlan) {
+      try {
+        const v = (chatStore as any).appliedSkills
+        appliedSkills = Array.isArray(v) ? v : []
+      } catch (e) {
+        appliedSkills = []
+      }
     }
 
     if (!blocks.length) {
 
       const msg = 'chat_ok_but_no_plan_block'
 
-      const ae = await evalTurnAsserts({ host, hasCode: false, execOk: false, asserts: turn.asserts, appliedSkills })
+      const ae = await evalTurnAsserts({ host, hasCode: false, execOk: false, asserts: turn.asserts, appliedSkills, repairsUsed: 0 })
 
       const r: ChatBenchTurnResult = {
 
@@ -3177,7 +3225,8 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
     let repairsUsed = 0
 
     if (planObj) {
-      let currentPlan = ensurePlanBlockId(planObj, stableId)
+      const useSystemOps = hasOverridePlan
+      let currentPlan = useSystemOps ? ensurePlanBlockIdForSystemOps(planObj, stableId) : ensurePlanBlockId(planObj, stableId)
       const maxAttempts = 3
       const t1 = performance.now()
       while (attempts < maxAttempts) {
@@ -3195,7 +3244,7 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
             if (repaired.error) message = String(repaired.error)
             break
           }
-          currentPlan = ensurePlanBlockId(repaired.plan, stableId)
+          currentPlan = useSystemOps ? ensurePlanBlockIdForSystemOps(repaired.plan, stableId) : ensurePlanBlockId(repaired.plan, stableId)
         } catch (e: any) {
           message = `plan_repair_failed: ${String(e?.message || e)}`
           break
@@ -3207,7 +3256,7 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
       message = "invalid_plan_json"
     }
 
-    const ae = await evalTurnAsserts({ host, hasCode: true, execOk: ok, asserts: turn.asserts, blockId: stableId, appliedSkills })
+    const ae = await evalTurnAsserts({ host, hasCode: true, execOk: ok, asserts: turn.asserts, blockId: stableId, appliedSkills, repairsUsed })
     await applyActions(turn.actionsAfterExec)
 
     // Persist per-block execution status so the chat UI renders it consistently.

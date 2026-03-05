@@ -18,6 +18,9 @@ export type MacroBenchSuiteId =
   | 'ppt-outline'
   | 'wpp-outline'
   | 'answer-mode'
+  // System coverage (executor/repair/UX-critical flows).
+  | 'system-plan-repair'
+  | 'system-block-lifecycle'
   // Business scenarios (legacy / scenario-first suites).
   | 'finance-audit'
   | 'contract-review'
@@ -56,6 +59,8 @@ export const MACRO_BENCH_SUITES: MacroBenchSuite[] = [
   { id: 'ppt-outline', name: 'PPT 大纲讲稿', description: '逐页大纲+讲稿；显式要求时 Plan 创建' },
   { id: 'wpp-outline', name: 'WPP 版式', description: '版式推荐/占位符填充/创建（Plan-only）' },
   { id: 'answer-mode', name: '答题写回', description: '题号定位/括号下划线写回/不改题干（Plan-only）' },
+  { id: 'system-plan-repair', name: '系统：Plan 修复', description: '验证 /agentic/plan/repair 的 deterministic fast-path' },
+  { id: 'system-block-lifecycle', name: '系统：块生命周期', description: 'upsert/update/rollback/delete 的可执行回归' },
   { id: 'finance-audit', name: '财务审计', description: '报表/预算/费用/台账/核对' },
   { id: 'contract-review', name: '法务合同', description: '风险点/条款审阅/修改建议/对照表' },
   { id: 'bidding-helper', name: '招投标', description: '需求响应/证据材料/清单/里程碑' },
@@ -87,6 +92,8 @@ const T: Record<MacroBenchSuiteId, Template[]> = {
   'ppt-outline': [],
   'wpp-outline': [],
   'answer-mode': [],
+  'system-plan-repair': [],
+  'system-block-lifecycle': [],
   'finance-audit': [
     // Writer
     {

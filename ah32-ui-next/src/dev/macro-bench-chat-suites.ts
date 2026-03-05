@@ -44,6 +44,7 @@ export type ChatBenchAssert =
   | { type: 'writer_shapes_at_least'; min: number; points?: number }
   | { type: 'writer_block_backup_exists'; blockId?: string; points?: number }
   | { type: 'skills_applied_includes'; skillId: string; points?: number }
+  | { type: 'repairs_used_at_least'; min: number; points?: number }
   | { type: 'et_sheet_exists'; name: string; points?: number }
   | { type: 'et_chart_exists'; min?: number; points?: number }
   | { type: 'et_chart_has_title'; points?: number }
@@ -68,6 +69,9 @@ export type ChatBenchTurn = {
   // Deterministic skill coverage: force backend primary skill for this turn.
   // Runner will pass it as `frontend_context.client_skill_selection`.
   forceSkillId?: string
+  // Deterministic system coverage: bypass chat and execute this plan directly.
+  // Useful for executor-only ops (rollback/delete) and deterministic repair fast-path.
+  planOverride?: Record<string, any>
   // Stable artifact id for macro execution (runner injects it as // @ah32:blockId=...).
   artifactId?: string
   actionsBeforeSend?: ChatBenchAction[]
@@ -133,6 +137,136 @@ const STYLE_SPECS: Record<string, any> = {
 // Preset handling is applied by buildChatBenchStories() by truncating turns.
 const STORIES: ChatBenchStory[] = [
   // ----------------------- Writer (wps) -----------------------
+  {
+    id: storyId('system-plan-repair', 'wps', 'plan_repair_fast_path_v1'),
+    suiteId: 'system-plan-repair',
+    host: 'wps',
+    name: 'Plan 修复：legacy upsert_block(content) -> actions（fast-path）',
+    description: '用确定性的 schema 噪音触发 exec_failed，再由 /agentic/plan/repair 的 fast-path 归一化并修复。',
+    setupActions: [{ type: 'ensure_bench_document', title: 'Bench-Plan修复' }, { type: 'clear_document' }, { type: 'set_cursor', pos: 'start' }],
+    turns: [
+      {
+        id: 't1_repair',
+        name: '执行 legacy plan（应触发 repair 并成功）',
+        artifactId: 'bench_system_plan_repair_v1',
+        planOverride: {
+          schema_version: 'ah32.plan.v1',
+          host_app: 'wps',
+          meta: { kind: 'bench_system_plan_repair' },
+          actions: [
+            {
+              id: 'u1',
+              title: 'Legacy upsert (content)',
+              op: 'upsert_block',
+              anchor: 'end',
+              // Intentionally legacy field: executor rejects it, repair fast-path converts to actions[].
+              content: 'REPAIR_FASTPATH_TOKEN_V1',
+            },
+          ],
+        },
+        asserts: [
+          { type: 'repairs_used_at_least', min: 1, points: 2 },
+          { type: 'writer_text_contains', text: 'REPAIR_FASTPATH_TOKEN_V1' },
+        ],
+        query: '[override]',
+      },
+    ],
+  },
+
+  {
+    id: storyId('system-block-lifecycle', 'wps', 'block_lifecycle_v1'),
+    suiteId: 'system-block-lifecycle',
+    host: 'wps',
+    name: '块生命周期：upsert -> update -> rollback -> delete（Writer）',
+    description: '覆盖 delete_block/rollback_block 的可执行回归（不依赖模型输出）。',
+    setupActions: [{ type: 'ensure_bench_document', title: 'Bench-块生命周期' }, { type: 'clear_document' }, { type: 'set_cursor', pos: 'start' }],
+    turns: [
+      {
+        id: 't1_upsert_v1',
+        name: '写入 V1',
+        artifactId: 'bench_system_block_lifecycle_v1',
+        planOverride: {
+          schema_version: 'ah32.plan.v1',
+          host_app: 'wps',
+          meta: { kind: 'bench_system_block_lifecycle' },
+          actions: [
+            {
+              id: 'u1',
+              title: 'Upsert block V1',
+              op: 'upsert_block',
+              block_id: 'WILL_BE_OVERRIDDEN',
+              anchor: 'end',
+              actions: [{ id: 't1', title: 'Insert text', op: 'insert_text', text: 'LIFECYCLE_TOKEN_V1' }],
+            },
+          ],
+        },
+        asserts: [
+          { type: 'writer_text_contains', text: 'LIFECYCLE_TOKEN_V1' },
+          { type: 'writer_text_not_contains', text: 'LIFECYCLE_TOKEN_V2' },
+        ],
+        query: '[override]',
+      },
+      {
+        id: 't2_upsert_v2',
+        name: '更新为 V2（应产生备份）',
+        artifactId: 'bench_system_block_lifecycle_v1',
+        planOverride: {
+          schema_version: 'ah32.plan.v1',
+          host_app: 'wps',
+          meta: { kind: 'bench_system_block_lifecycle' },
+          actions: [
+            {
+              id: 'u2',
+              title: 'Upsert block V2',
+              op: 'upsert_block',
+              block_id: 'WILL_BE_OVERRIDDEN',
+              anchor: 'end',
+              actions: [{ id: 't2', title: 'Insert text', op: 'insert_text', text: 'LIFECYCLE_TOKEN_V2' }],
+            },
+          ],
+        },
+        asserts: [
+          { type: 'writer_text_contains', text: 'LIFECYCLE_TOKEN_V2' },
+          { type: 'writer_text_not_contains', text: 'LIFECYCLE_TOKEN_V1' },
+          { type: 'writer_block_backup_exists' },
+        ],
+        query: '[override]',
+      },
+      {
+        id: 't3_rollback',
+        name: '回滚到 V1',
+        artifactId: 'bench_system_block_lifecycle_v1',
+        planOverride: {
+          schema_version: 'ah32.plan.v1',
+          host_app: 'wps',
+          meta: { kind: 'bench_system_block_lifecycle' },
+          actions: [{ id: 'rb1', title: 'Rollback block', op: 'rollback_block', block_id: 'WILL_BE_OVERRIDDEN' }],
+        },
+        asserts: [
+          { type: 'writer_text_contains', text: 'LIFECYCLE_TOKEN_V1' },
+          { type: 'writer_text_not_contains', text: 'LIFECYCLE_TOKEN_V2' },
+        ],
+        query: '[override]',
+      },
+      {
+        id: 't4_delete',
+        name: '删除块',
+        artifactId: 'bench_system_block_lifecycle_v1',
+        planOverride: {
+          schema_version: 'ah32.plan.v1',
+          host_app: 'wps',
+          meta: { kind: 'bench_system_block_lifecycle' },
+          actions: [{ id: 'del1', title: 'Delete block', op: 'delete_block', block_id: 'WILL_BE_OVERRIDDEN' }],
+        },
+        asserts: [
+          { type: 'writer_text_not_contains', text: 'LIFECYCLE_TOKEN_V1' },
+          { type: 'writer_text_not_contains', text: 'LIFECYCLE_TOKEN_V2' },
+        ],
+        query: '[override]',
+      },
+    ],
+  },
+
   {
     id: storyId('doc-analyzer', 'wps', 'doc_analyzer_v1'),
     suiteId: 'doc-analyzer',
@@ -1351,6 +1485,9 @@ export const buildChatBenchStories = (args: {
           'ppt-outline',
           'wpp-outline',
           'answer-mode',
+          // System coverage
+          'system-plan-repair',
+          'system-block-lifecycle',
           // Business scenarios
           'finance-audit',
           'contract-review',
