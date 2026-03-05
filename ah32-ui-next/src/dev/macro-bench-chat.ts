@@ -177,11 +177,19 @@ export type ChatBenchRun = {
 
 
 
-const STORAGE_PREFIX = 'ah32_chat_bench_results_v1'
+const STORAGE_PREFIX = 'ah32_chat_bench_results_v2'
 
 const nowIso = () => new Date().toISOString()
 
-
+const stripCodeFences = (raw: any): string => {
+  try {
+    const s = String(raw || '')
+    return s.replace(/```[\s\S]*?```/g, '').trim()
+  } catch (e) {
+    ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e)
+    return String(raw || '').trim()
+  }
+}
 
 const previewText = (raw: any): string => {
 
@@ -361,7 +369,71 @@ const saveRun = (run: ChatBenchRun) => {
 
     const key = `${STORAGE_PREFIX}:${run.host}:${run.suiteId}:${run.preset}`
 
-    localStorage.setItem(key, JSON.stringify({ run, savedAt: nowIso() }))
+    const completedStoryIds = (() => {
+      try {
+        const ids = new Set<string>()
+        for (const r of run.results || []) {
+          const sid = String((r as any)?.story?.id || '')
+          if (sid) ids.add(sid)
+        }
+        return Array.from(ids).sort()
+      } catch (e) {
+        ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e)
+        return []
+      }
+    })()
+
+    const slimTurn = (t: any) => {
+      try {
+        if (!t || typeof t !== 'object') return null
+        return {
+          id: String((t as any).id || ''),
+          name: String((t as any).name || ''),
+          expectedOutput: (t as any).expectedOutput,
+          queryPreview: previewText((t as any).query || ''),
+          tags: Array.isArray((t as any).tags) ? (t as any).tags : undefined,
+        }
+      } catch (e) {
+        ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e)
+        return null
+      }
+    }
+
+    const slimResults = Array.isArray(run.results)
+      ? run.results.map((r: any) => ({
+          ...r,
+          // Strip heavy fields from turn (styleSpec/actions etc) to reduce localStorage churn.
+          turn: slimTurn(r.turn),
+        }))
+      : []
+
+    const slimMeta = (() => {
+      try {
+        return { ...(run.meta || {}), completedStoryIds }
+      } catch (e) {
+        ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e)
+        return { completedStoryIds }
+      }
+    })()
+
+    const slimRun: ChatBenchRun = { ...(run as any), meta: slimMeta, results: slimResults as any }
+
+    // Guard: if payload is too large, keep only the newest results but preserve story ids for resume.
+    const payload = { run: slimRun, savedAt: nowIso() }
+    let raw = JSON.stringify(payload)
+    if (raw.length > 3_800_000 && Array.isArray(slimRun.results) && slimRun.results.length > 200) {
+      const kept = slimRun.results.slice(-200)
+      raw = JSON.stringify({
+        ...payload,
+        run: {
+          ...(slimRun as any),
+          results: kept,
+          meta: { ...(slimMeta as any), pruned: { kept: kept.length, dropped: slimRun.results.length - kept.length } },
+        },
+      })
+    }
+
+    localStorage.setItem(key, raw)
 
   } catch (e) {
 
@@ -387,7 +459,9 @@ export const loadChatBenchResults = (args: {
 
     const key = `${STORAGE_PREFIX}:${args.host}:${args.suiteId}:${args.preset}`
 
-    const raw = localStorage.getItem(key)
+    const raw =
+      localStorage.getItem(key) ||
+      localStorage.getItem(`ah32_chat_bench_results_v1:${args.host}:${args.suiteId}:${args.preset}`)
 
     if (!raw) return { run: null, savedAt: null }
 
@@ -1415,6 +1489,10 @@ const evalTurnAsserts = async (args: {
 
   host: MacroBenchHost
 
+  expectedOutput?: 'plan' | 'text' | 'either'
+
+  assistantText?: string
+
   hasCode: boolean
 
   execOk: boolean
@@ -1449,9 +1527,18 @@ const evalTurnAsserts = async (args: {
 
 
 
-  add(!!args.hasCode, 'has_plan_block', 1, args.hasCode ? 'ok' : 'no_plan_block')
+  const expected = (args.expectedOutput || 'plan') as 'plan' | 'text' | 'either'
+  const assistantText = stripCodeFences(args.assistantText || '')
 
-  add(!!args.execOk, 'plan_exec_success', 1, args.execOk ? 'ok' : 'exec_failed')
+  if (expected === 'plan') {
+    add(!!args.hasCode, 'has_plan_block', 1, args.hasCode ? 'ok' : 'no_plan_block')
+    add(!!args.execOk, 'plan_exec_success', 1, args.execOk ? 'ok' : 'exec_failed')
+  } else if (expected === 'text') {
+    add(!args.hasCode, 'no_plan_block', 1, !args.hasCode ? 'ok' : 'unexpected_plan_block')
+  } else {
+    // either: only require execution success when a plan exists.
+    if (args.hasCode) add(!!args.execOk, 'plan_exec_success', 1, args.execOk ? 'ok' : 'exec_failed')
+  }
 
 
 
@@ -1461,6 +1548,31 @@ const evalTurnAsserts = async (args: {
 
     const pts = assertPoints(a, 1)
 
+    if (a.type === 'assistant_text_contains') {
+      const needle = String((a as any).text || '')
+      add(assistantText.includes(needle), a.type, pts, assistantText.includes(needle) ? 'ok' : `missing:${needle}`)
+      continue
+    }
+    if (a.type === 'assistant_text_not_contains') {
+      const needle = String((a as any).text || '')
+      add(!assistantText.includes(needle), a.type, pts, !assistantText.includes(needle) ? 'ok' : `unexpected:${needle}`)
+      continue
+    }
+    if (a.type === 'assistant_text_matches') {
+      const pattern = String((a as any).pattern || '')
+      const flags = String((a as any).flags || '')
+      let ok = false
+      let msg = ''
+      try {
+        ok = new RegExp(pattern, flags).test(assistantText)
+        msg = ok ? 'ok' : `no_match:/${pattern}/${flags}`
+      } catch (e: any) {
+        ok = false
+        msg = `invalid_regex:${String(e?.message || e)}`
+      }
+      add(ok, a.type, pts, msg)
+      continue
+    }
     if (a.type === 'skills_applied_includes') {
       const want = String((a as any).skillId || '').trim()
       const ids = (() => {
@@ -2603,7 +2715,16 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
         } catch (e2) {
           appliedSkills = []
         }
-        const ae = await evalTurnAsserts({ host, hasCode: false, execOk: false, asserts: turn.asserts, appliedSkills, repairsUsed: 0 })
+        const ae = await evalTurnAsserts({
+          host,
+          expectedOutput: (turn as any)?.expectedOutput,
+          assistantText: '',
+          hasCode: false,
+          execOk: false,
+          asserts: turn.asserts,
+          appliedSkills,
+          repairsUsed: 0,
+        })
 
         const r: ChatBenchTurnResult = {
 
@@ -2726,7 +2847,16 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
       } catch (e2) {
         appliedSkills = []
       }
-      const ae = await evalTurnAsserts({ host, hasCode: false, execOk: false, asserts: turn.asserts, appliedSkills, repairsUsed: 0 })
+      const ae = await evalTurnAsserts({
+        host,
+        expectedOutput: (turn as any)?.expectedOutput,
+        assistantText: '',
+        hasCode: false,
+        execOk: false,
+        asserts: turn.asserts,
+        appliedSkills,
+        repairsUsed: 0,
+      })
 
       const r: ChatBenchTurnResult = {
 
@@ -2973,7 +3103,16 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
       } catch (e2) {
         appliedSkills = []
       }
-      const ae = await evalTurnAsserts({ host, hasCode: false, execOk: false, asserts: turn.asserts, appliedSkills, repairsUsed: 0 })
+      const ae = await evalTurnAsserts({
+        host,
+        expectedOutput: (turn as any)?.expectedOutput,
+        assistantText: '',
+        hasCode: false,
+        execOk: false,
+        asserts: turn.asserts,
+        appliedSkills,
+        repairsUsed: 0,
+      })
 
       const r: ChatBenchTurnResult = {
 
@@ -3077,6 +3216,9 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
     const overridePlan = (turn as any)?.planOverride
     const hasOverridePlan = overridePlan && typeof overridePlan === 'object' && !Array.isArray(overridePlan)
 
+    const expectedOutput = ((turn as any)?.expectedOutput || 'plan') as 'plan' | 'text' | 'either'
+    const assistantContent = String(assistantMsg?.content || '')
+
     const blocks = hasOverridePlan ? [JSON.stringify(overridePlan)] : extractPlanBlocks(assistantMsg)
 
     let appliedSkills: any[] = []
@@ -3089,11 +3231,96 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
       }
     }
 
-    if (!blocks.length) {
+    if (!blocks.length && expectedOutput !== 'plan') {
+
+      const msg = expectedOutput === 'text' ? 'text_ok' : 'chat_ok_text_fallback'
+
+      const ae = await evalTurnAsserts({
+        host,
+        expectedOutput,
+        assistantText: assistantContent,
+        hasCode: false,
+        execOk: false,
+        asserts: turn.asserts,
+        appliedSkills,
+        repairsUsed: 0,
+      })
+
+      await applyActions(turn.actionsAfterExec)
+
+      const r: ChatBenchTurnResult = {
+        story: { id: story.id, suiteId: story.suiteId, host: story.host, name: story.name },
+        turn,
+        chatSessionId,
+        macroSessionId: `bench_chat_${host}_${Date.now()}_${i + 1}`,
+        documentName: getActiveDocName(),
+        ok: ae.ok,
+        assertOk: ae.ok,
+        score: ae.score,
+        assertTotalPoints: ae.totalPoints,
+        assertPassedPoints: ae.passedPoints,
+        assertFailures: ae.failures,
+        chatMs,
+        execTotalMs: 0,
+        attempts: 0,
+        repairsUsed: 0,
+        tokenUsage: tokenUsage || undefined,
+        message: msg,
+        assistantMessageId: assistantMsg?.id,
+        assistantPreview: assistantMsg ? previewText(assistantMsg.content) : '',
+        codeBlocks: 0,
+      }
+
+      results.push(r)
+      opts.onResult?.(r)
+
+      void reportAuditEvent({
+        session_id: r.macroSessionId,
+        host_app: host,
+        mode: 'chat',
+        success: r.ok,
+        error_type: r.ok ? undefined : 'bench_text_assert_failed',
+        error_message: r.ok ? undefined : msg,
+        extra: { bench: true, suite: story.suiteId, story: story.id, turn: turn.id, phase: 'text' },
+      })
+
+      const partial: ChatBenchRun = {
+        runId,
+        host,
+        suiteId,
+        preset,
+        chatSessionId,
+        startedAt,
+        finishedAt: nowIso(),
+        meta,
+        stories: storyInfos,
+        results,
+        summary: computeSummary(host, suiteId, results),
+        summaryBySuite: {},
+        nextIdx: i + 1,
+        totalPlanned,
+      }
+
+      persistPartial(partial)
+      await trimMessages()
+      continue
+
+    }
+
+    if (!blocks.length && expectedOutput === 'plan') {
 
       const msg = 'chat_ok_but_no_plan_block'
 
-      const ae = await evalTurnAsserts({ host, hasCode: false, execOk: false, asserts: turn.asserts, appliedSkills, repairsUsed: 0 })
+      const ae = await evalTurnAsserts({
+        host,
+        expectedOutput,
+        assistantText: assistantContent,
+        hasCode: false,
+        execOk: false,
+        asserts: turn.asserts,
+        appliedSkills,
+        repairsUsed: 0,
+      })
 
       const r: ChatBenchTurnResult = {
 
@@ -3207,6 +3434,82 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
 
 
 
+    if (blocks.length && expectedOutput === 'text') {
+
+      const msg = 'unexpected_plan_block'
+
+      const ae = await evalTurnAsserts({
+        host,
+        expectedOutput,
+        assistantText: assistantContent,
+        hasCode: true,
+        execOk: false,
+        asserts: turn.asserts,
+        appliedSkills,
+        repairsUsed: 0,
+      })
+
+      await applyActions(turn.actionsAfterExec)
+
+      const r: ChatBenchTurnResult = {
+        story: { id: story.id, suiteId: story.suiteId, host: story.host, name: story.name },
+        turn,
+        chatSessionId,
+        macroSessionId: `bench_chat_${host}_${Date.now()}_${i + 1}`,
+        documentName: getActiveDocName(),
+        ok: false,
+        assertOk: ae.ok,
+        score: ae.score,
+        assertTotalPoints: ae.totalPoints,
+        assertPassedPoints: ae.passedPoints,
+        assertFailures: ae.failures,
+        chatMs,
+        execTotalMs: 0,
+        attempts: 0,
+        repairsUsed: 0,
+        tokenUsage: tokenUsage || undefined,
+        message: msg,
+        assistantMessageId: assistantMsg?.id,
+        assistantPreview: assistantMsg ? previewText(assistantMsg.content) : '',
+        codeBlocks: blocks.length,
+      }
+
+      results.push(r)
+      opts.onResult?.(r)
+
+      void reportAuditEvent({
+        session_id: r.macroSessionId,
+        host_app: host,
+        mode: 'chat',
+        success: false,
+        error_type: 'bench_unexpected_plan',
+        error_message: msg,
+        extra: { bench: true, suite: story.suiteId, story: story.id, turn: turn.id, phase: 'extract' },
+      })
+
+      const partial: ChatBenchRun = {
+        runId,
+        host,
+        suiteId,
+        preset,
+        chatSessionId,
+        startedAt,
+        finishedAt: nowIso(),
+        meta,
+        stories: storyInfos,
+        results,
+        summary: computeSummary(host, suiteId, results),
+        summaryBySuite: {},
+        nextIdx: i + 1,
+        totalPlanned,
+      }
+
+      persistPartial(partial)
+      await trimMessages()
+      continue
+
+    }
+
     // 3) execute plan (real host runtime + repair loop)
     const rawPlan = blocks[0] || ""
     const docName = getActiveDocName()
@@ -3256,7 +3559,17 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
       message = "invalid_plan_json"
     }
 
-    const ae = await evalTurnAsserts({ host, hasCode: true, execOk: ok, asserts: turn.asserts, blockId: stableId, appliedSkills, repairsUsed })
+    const ae = await evalTurnAsserts({
+      host,
+      expectedOutput,
+      assistantText: assistantContent,
+      hasCode: true,
+      execOk: ok,
+      asserts: turn.asserts,
+      blockId: stableId,
+      appliedSkills,
+      repairsUsed,
+    })
     await applyActions(turn.actionsAfterExec)
 
     // Persist per-block execution status so the chat UI renders it consistently.
@@ -3275,6 +3588,12 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
       ;(globalThis as any).__ah32_reportError?.("ah32-ui-next/src/dev/macro-bench-chat.ts", e)
     }
 
+    const okFinal = !!ok && !!ae.ok
+    if (ok && !ae.ok) {
+      const head = String(ae.failures?.[0]?.type || "assert_failed")
+      message = `exec_ok_but_assert_failed:${head}`
+    }
+
     const r: ChatBenchTurnResult = {
 
       story: { id: story.id, suiteId: story.suiteId, host: story.host, name: story.name },
@@ -3287,7 +3606,7 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
 
       documentName: docName,
 
-      ok,
+      ok: okFinal,
 
       assertOk: ae.ok,
 
@@ -3333,11 +3652,11 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
 
       mode: 'chat',
 
-      success: ok,
+      success: r.ok,
 
-      error_type: ok ? undefined : 'bench_exec_failed',
+      error_type: r.ok ? undefined : 'bench_exec_failed',
 
-      error_message: ok ? undefined : message.slice(0, 800),
+      error_message: r.ok ? undefined : message.slice(0, 800),
 
       extra: {
 

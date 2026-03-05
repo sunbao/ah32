@@ -7,7 +7,7 @@ export type MacroBenchHost = 'wps' | 'et' | 'wpp'
 //   that define strict Plan-only delivery contracts (doc-*, et-*, ppt-*).
 // - MacroBench aims to cover both: (1) customer-like scenarios and (2) deterministic skill coverage.
 export type MacroBenchSuiteId =
-  // Skill coverage (the "built-in 10" that are expected to reliably output Plan JSON).
+  // Skill coverage (the "built-in" skills that are expected to reliably output Plan JSON).
   | 'doc-analyzer'
   | 'doc-editor'
   | 'doc-formatter'
@@ -18,6 +18,8 @@ export type MacroBenchSuiteId =
   | 'ppt-outline'
   | 'wpp-outline'
   | 'answer-mode'
+  // Skill coverage (text-first).
+  | 'ppt-review'
   // System coverage (executor/repair/UX-critical flows).
   | 'system-plan-repair'
   | 'system-block-lifecycle'
@@ -57,6 +59,7 @@ export const MACRO_BENCH_SUITES: MacroBenchSuite[] = [
   { id: 'et-visualizer', name: 'ET 可视化', description: '汇总+做图/趋势线/数据标签（Plan-only）' },
   { id: 'ppt-creator', name: 'PPT 一键创建', description: '直接创建幻灯片（Plan-only）' },
   { id: 'ppt-outline', name: 'PPT 大纲讲稿', description: '逐页大纲+讲稿；显式要求时 Plan 创建' },
+  { id: 'ppt-review', name: 'PPT 审稿优化', description: '逐页问题/结构叙事/一致性/缺口清单（文本为主）' },
   { id: 'wpp-outline', name: 'WPP 版式', description: '版式推荐/占位符填充/创建（Plan-only）' },
   { id: 'answer-mode', name: '答题写回', description: '题号定位/括号下划线写回/不改题干（Plan-only）' },
   { id: 'system-plan-repair', name: '系统：Plan 修复', description: '验证 /agentic/plan/repair 的 deterministic fast-path' },
@@ -90,6 +93,7 @@ const T: Record<MacroBenchSuiteId, Template[]> = {
   'et-visualizer': [],
   'ppt-creator': [],
   'ppt-outline': [],
+  'ppt-review': [],
   'wpp-outline': [],
   'answer-mode': [],
   'system-plan-repair': [],

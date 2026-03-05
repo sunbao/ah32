@@ -1,4 +1,4 @@
-import type { MacroBenchHost, MacroBenchPreset, MacroBenchSuiteId } from './macro-bench-suites'
+import { MACRO_BENCH_SUITES, type MacroBenchHost, type MacroBenchPreset, type MacroBenchSuiteId } from './macro-bench-suites'
 
 // Chat-driven bench definitions:
 // - Keep this file "data-first": real user-like prompts, deterministic sample data, style requirements.
@@ -36,6 +36,11 @@ export type ChatBenchAction =
   | { type: 'sleep'; ms: number }
 
 export type ChatBenchAssert =
+  // Assert on assistant chat output (text-mode turns).
+  | { type: 'assistant_text_contains'; text: string; points?: number }
+  | { type: 'assistant_text_not_contains'; text: string; points?: number }
+  | { type: 'assistant_text_matches'; pattern: string; flags?: string; points?: number }
+  // Assert on document/runtime state (plan-mode turns).
   | { type: 'writer_table_exists'; minRows?: number; minCols?: number; points?: number }
   | { type: 'writer_table_header_bold'; points?: number }
   | { type: 'writer_text_contains'; text: string; points?: number }
@@ -63,6 +68,11 @@ export type ChatBenchTurn = {
   name: string
   // What the user "types" into the chat box.
   query: string
+  // What we expect from the assistant:
+  // - plan: must output Plan JSON (then we execute + assert on document state)
+  // - text: must output normal text (assert on assistant content; do NOT execute)
+  // - either: accept either text or plan
+  expectedOutput?: 'plan' | 'text' | 'either'
   // Optional structured style constraints for this turn.
   // The runner will pass this into backend `frontend_context.style_spec`.
   styleSpec?: Record<string, any>
@@ -454,7 +464,6 @@ const STORIES: ChatBenchStory[] = [
         artifactId: 'bench_finance_audit_checklist',
         styleSpec: STYLE_SPECS.writer_finance_report_v1,
         actionsBeforeSend: [
-          { type: 'attach_rule_files', paths: ['docs/AH32_RULES.md'] },
           { type: 'ui_click_send' },
         ],
         asserts: [
@@ -816,6 +825,282 @@ const STORIES: ChatBenchStory[] = [
     ],
   },
 
+  // ----------------------- Writer (text-only) -----------------------
+  {
+    id: storyId('finance-audit', 'wps', 'audit_text_only_v1'),
+    suiteId: 'finance-audit',
+    host: 'wps',
+    name: '财务审计：只在对话交付（Writer）',
+    description: '不写回文档，验证文本交付结构与标题齐全。',
+    setupActions: [{ type: 'ensure_bench_document', title: 'Bench-财务审计-文本' }, { type: 'set_cursor', pos: 'start' }],
+    turns: [
+      {
+        id: 't1_text_delivery',
+        name: '异常/差异清单（不写回）',
+        expectedOutput: 'text',
+        actionsBeforeSend: [
+          { type: 'clear_document' },
+          { type: 'insert_text', text: '财务明细（示例，TSV）' },
+          { type: 'insert_text', text: '月份\\t收入\\t费用\\t现金流' },
+          { type: 'insert_text', text: '1月\\t120\\t80\\t15' },
+          { type: 'insert_text', text: '2月\\t130\\t95\\t-12' },
+          { type: 'insert_text', text: '3月\\t90\\t88\\t5' },
+          { type: 'insert_text', text: '4月\\t160\\t110\\t18' },
+        ],
+        asserts: [
+          { type: 'assistant_text_contains', text: '范围与口径' },
+          { type: 'assistant_text_contains', text: '关键发现摘要' },
+          { type: 'assistant_text_contains', text: '异常/差异清单表' },
+          { type: 'assistant_text_contains', text: '待办' },
+          { type: 'assistant_text_contains', text: '自检' },
+          { type: 'assistant_text_not_contains', text: 'ah32.plan.v1' },
+        ],
+        query:
+          '基于当前文档的财务明细，做异常/差异分析。\n' +
+          '要求：只在对话中输出，不要写回文档，也不要输出 Plan JSON。\n' +
+          '输出必须包含：1) 范围与口径；2) 关键发现摘要；3) 异常/差异清单表（现象-可能原因-佐证-核验步骤）；4) 待办清单；5) 自检清单。',
+      },
+    ],
+  },
+
+  {
+    id: storyId('bidding-helper', 'wps', 'bidding_text_only_v1'),
+    suiteId: 'bidding-helper',
+    host: 'wps',
+    name: '招投标：只在对话输出矩阵（Writer）',
+    description: '不写回，验证符合性/偏离矩阵与澄清问题清单结构。',
+    setupActions: [{ type: 'ensure_bench_document', title: 'Bench-招投标-文本' }, { type: 'set_cursor', pos: 'start' }],
+    turns: [
+      {
+        id: 't1_matrix_text',
+        name: '符合性/偏离矩阵（不写回）',
+        expectedOutput: 'text',
+        actionsBeforeSend: [
+          { type: 'clear_document' },
+          { type: 'insert_text', text: '招标文件（节选）' },
+          { type: 'insert_text', text: '1. 资质要求：提供 ISO9001 证书（必须）。' },
+          { type: 'insert_text', text: '2. 业绩要求：近三年类似项目不少于 2 个（必须）。' },
+          { type: 'insert_text', text: '3. 交付周期：合同签订后 30 天内完成上线。' },
+          { type: 'insert_text', text: '4. 售后：7*24 支持，故障 2 小时响应。' },
+          { type: 'insert_text', text: '5. 评分：技术 60 分，商务 40 分；技术里含“演示效果”10分。' },
+        ],
+        asserts: [
+          { type: 'assistant_text_contains', text: '执行摘要' },
+          { type: 'assistant_text_contains', text: '符合性/偏离矩阵' },
+          { type: 'assistant_text_contains', text: '澄清问题清单' },
+          { type: 'assistant_text_contains', text: '风险与建议' },
+          { type: 'assistant_text_contains', text: '自检清单' },
+          { type: 'assistant_text_not_contains', text: 'ah32.plan.v1' },
+        ],
+        query:
+          '根据当前文档的招标要求，输出符合性/偏离矩阵，并列出需要澄清的问题。\n' +
+          '要求：只在对话中输出，不要写回文档，也不要输出 Plan JSON。\n' +
+          '输出必须包含并使用以下标题：1) 执行摘要；2) 符合性/偏离矩阵（含证据定位）；3) 澄清问题清单（含章节定位）；4) 风险与建议（含Owner/DDL）；5) 自检清单。',
+      },
+    ],
+  },
+
+  {
+    id: storyId('meeting-minutes', 'wps', 'meeting_text_only_v1'),
+    suiteId: 'meeting-minutes',
+    host: 'wps',
+    name: '会议纪要：只在对话整理（Writer）',
+    description: '不写回，验证“结论/决议/待办/未决”拆解是否齐全。',
+    setupActions: [{ type: 'ensure_bench_document', title: 'Bench-会议纪要-文本' }, { type: 'set_cursor', pos: 'start' }],
+    turns: [
+      {
+        id: 't1_minutes_text',
+        name: '输出会议纪要（不写回）',
+        expectedOutput: 'text',
+        actionsBeforeSend: [
+          { type: 'clear_document' },
+          { type: 'insert_text', text: '会议记录（节选）' },
+          { type: 'insert_text', text: '时间：2026-03-01 10:00-10:30' },
+          { type: 'insert_text', text: '参会：张三(产品)、李四(研发)、王五(测试)' },
+          { type: 'insert_text', text: '张三：本周必须完成登录改造，否则影响验收。' },
+          { type: 'insert_text', text: '李四：接口改动较大，预计需要2天联调。' },
+          { type: 'insert_text', text: '王五：需要补充回归用例，尤其是写回规则。' },
+          { type: 'insert_text', text: '决议：先做“租户鉴权+skills后端托管”，下周三前出版本。' },
+          { type: 'insert_text', text: '待办：李四-周五前完成后端改造；王五-周五前补齐宏基准用例。' },
+          { type: 'insert_text', text: '未决：前端断线重载的根因仍需定位。' },
+        ],
+        asserts: [
+          { type: 'assistant_text_contains', text: '结论摘要' },
+          { type: 'assistant_text_contains', text: '决议清单' },
+          { type: 'assistant_text_contains', text: '待办表' },
+          { type: 'assistant_text_contains', text: '风险与未决' },
+          { type: 'assistant_text_contains', text: '自检清单' },
+          { type: 'assistant_text_not_contains', text: 'ah32.plan.v1' },
+        ],
+        query:
+          '把当前文档的会议记录整理成一份会议纪要。\n' +
+          '要求：只在对话中输出，不要写回文档，也不要输出 Plan JSON。\n' +
+          '输出必须包含：基本信息/结论摘要/决议清单/待办表(Owner/DDL/状态)/风险与未决/自检清单。',
+      },
+    ],
+  },
+
+  {
+    id: storyId('risk-register', 'wps', 'risk_text_only_v1'),
+    suiteId: 'risk-register',
+    host: 'wps',
+    name: '风险台账：只在对话交付（Writer）',
+    description: '不写回，验证风险登记表字段与口径是否齐全。',
+    setupActions: [{ type: 'ensure_bench_document', title: 'Bench-风险台账-文本' }, { type: 'set_cursor', pos: 'start' }],
+    turns: [
+      {
+        id: 't1_risk_text',
+        name: '风险登记表（不写回）',
+        expectedOutput: 'text',
+        actionsBeforeSend: [
+          { type: 'clear_document' },
+          { type: 'insert_text', text: '风险点（原始素材）' },
+          { type: 'insert_text', text: '- 接口鉴权改造可能导致旧客户端不可用' },
+          { type: 'insert_text', text: '- 宏基准跑测导致 Taskpane 重载，影响体验' },
+          { type: 'insert_text', text: '- 政策抓取依赖浏览器，可能被验证码拦截' },
+          { type: 'insert_text', text: '- 文档快照过大，上传耗时长，可能超时' },
+        ],
+        asserts: [
+          { type: 'assistant_text_contains', text: '风险登记表' },
+          { type: 'assistant_text_contains', text: '风险等级口径' },
+          { type: 'assistant_text_contains', text: '自检清单' },
+          { type: 'assistant_text_not_contains', text: 'ah32.plan.v1' },
+        ],
+        query:
+          '把当前文档的风险点整理成“风险台账交付”：必须包含风险登记表、风险等级口径、Top 风险摘要与建议、自检清单。\n' +
+          '要求：只在对话中输出，不要写回文档，也不要输出 Plan JSON。',
+      },
+    ],
+  },
+
+  // ----------------------- Writer (plan/writeback) -----------------------
+  {
+    id: storyId('doc-analyzer', 'wps', 'doc_analyzer_v2'),
+    suiteId: 'doc-analyzer',
+    host: 'wps',
+    name: '文档结构分析：结构报告块写回（Writer）',
+    description: '构造编号/术语问题，验证 doc-analyzer 只输出可执行 Plan JSON 并写回块。',
+    setupActions: [{ type: 'ensure_bench_document', title: 'Bench-文档结构分析' }, { type: 'set_cursor', pos: 'start' }],
+    turns: [
+      {
+        id: 't1_analyze',
+        name: '结构报告+问题清单（写回块）',
+        artifactId: 'bench_doc_analyzer_v1',
+        asserts: [
+          { type: 'writer_text_contains', text: '结构报告' },
+          { type: 'writer_text_contains', text: '问题清单' },
+          { type: 'writer_block_backup_exists' },
+        ],
+        actionsBeforeSend: [
+          { type: 'clear_document' },
+          { type: 'insert_text', text: '《项目方案（草案）》' },
+          { type: 'insert_text', text: '1 背景' },
+          { type: 'insert_text', text: '1.1 现状：目前存在性能瓶颈。' },
+          { type: 'insert_text', text: '2 目标：降低响应时间、提升稳定性。' },
+          { type: 'insert_text', text: '4 方案：采用分层架构。（注意：缺少第3章）' },
+          { type: 'insert_text', text: '4.1 技术路线：服务拆分。' },
+          { type: 'insert_text', text: '术语：SLA/服务等级协议/Service Level Agreement 混用。' },
+        ],
+        query:
+          '分析这份文档结构是否完整，输出问题清单并写回一个报告块（文末 upsert_block）。\n' +
+          '要求：只输出可执行 Plan JSON（schema_version="ah32.plan.v1", host_app="wps"），不要输出任何额外文字。',
+      },
+    ],
+  },
+
+  {
+    id: storyId('doc-editor', 'wps', 'doc_editor_v2'),
+    suiteId: 'doc-editor',
+    host: 'wps',
+    name: '文档改写：对照表+修订稿块（Writer）',
+    description: '验证 doc-editor 的对照表交付与幂等写回。',
+    setupActions: [{ type: 'ensure_bench_document', title: 'Bench-文档改写' }, { type: 'set_cursor', pos: 'start' }],
+    turns: [
+      {
+        id: 't1_rewrite',
+        name: '改写并写回对照表+修订稿',
+        artifactId: 'bench_doc_editor_v1',
+        asserts: [
+          { type: 'writer_text_contains', text: '对照表' },
+          { type: 'writer_text_contains', text: '修订稿' },
+          { type: 'writer_block_backup_exists' },
+        ],
+        actionsBeforeSend: [
+          { type: 'clear_document' },
+          { type: 'insert_text', text: '原文：我们公司很厉害，这个项目肯定能做好，尽快上线。' },
+          { type: 'insert_text', text: '要求：语气正式，面向客户汇报。' },
+        ],
+        query:
+          '把上面“原文”改得更专业，并写回到文末：对照表（原文要点/建议改写/理由/风险等级/是否应用）+ 修订稿块。\n' +
+          '要求：只输出可执行 Plan JSON（schema_version="ah32.plan.v1", host_app="wps"），不要输出任何额外文字。',
+      },
+    ],
+  },
+
+  {
+    id: storyId('doc-formatter', 'wps', 'doc_formatter_v2'),
+    suiteId: 'doc-formatter',
+    host: 'wps',
+    name: '文档排版：排版规范块（Writer）',
+    description: '验证 doc-formatter 输出排版规范/检查清单块（不做全篇改样式）。',
+    setupActions: [{ type: 'ensure_bench_document', title: 'Bench-文档排版' }, { type: 'set_cursor', pos: 'start' }],
+    turns: [
+      {
+        id: 't1_rules',
+        name: '生成排版规范+检查清单块',
+        artifactId: 'bench_doc_formatter_v1',
+        asserts: [
+          { type: 'writer_text_contains', text: '排版规范' },
+          { type: 'writer_text_contains', text: '检查清单' },
+          { type: 'writer_block_backup_exists' },
+        ],
+        actionsBeforeSend: [
+          { type: 'clear_document' },
+          { type: 'insert_text', text: '标题：项目周报' },
+          { type: 'insert_text', text: '一、进展' },
+          { type: 'insert_text', text: '1) 已完成：接口联调' },
+          { type: 'insert_text', text: '2) 风险：测试不足' },
+          { type: 'insert_text', text: '二. 下周计划（编号风格不一致）' },
+          { type: 'insert_text', text: '备注：本文档没有目录，标题层级也不统一。' },
+        ],
+        query:
+          '基于本文档内容，生成“排版规范/检查清单/模板段落”块并写回文末（upsert_block）。\n' +
+          '要求：不要尝试全篇改样式，只做块级交付；只输出可执行 Plan JSON（schema_version="ah32.plan.v1", host_app="wps"）。',
+      },
+    ],
+  },
+
+  {
+    id: storyId('exam-answering', 'wps', 'exam_answering_v2'),
+    suiteId: 'exam-answering',
+    host: 'wps',
+    name: '试题答题：答案与解析写回（Writer）',
+    description: '不改题干，在文末追加《答案与解析》块（幂等写回）。',
+    setupActions: [{ type: 'ensure_bench_document', title: 'Bench-试题答题' }, { type: 'set_cursor', pos: 'start' }],
+    turns: [
+      {
+        id: 't1_answer',
+        name: '生成答案与解析（写回文末）',
+        artifactId: 'bench_exam_answering_v1',
+        asserts: [
+          { type: 'writer_text_contains', text: '答案与解析' },
+          { type: 'writer_text_contains', text: '1.' },
+          { type: 'writer_block_backup_exists' },
+        ],
+        actionsBeforeSend: [
+          { type: 'clear_document' },
+          { type: 'insert_text', text: '试题（示例）' },
+          { type: 'insert_text', text: '1. 选择题：地球是圆的。（ ）A.对 B.错' },
+          { type: 'insert_text', text: '2. 填空题：我国首都是______。' },
+          { type: 'insert_text', text: '3. 简答题：用不超过50字概括“坚持”的含义。' },
+        ],
+        query:
+          '请替我完成本套试题：不要改动题干；在文档末尾生成《答案与解析》，按题号输出。\n' +
+          '要求：只输出可执行 Plan JSON（schema_version="ah32.plan.v1", host_app="wps"），不要输出任何额外文字。',
+      },
+    ],
+  },
+
   // ----------------------- ET (spreadsheets) -----------------------
   {
     id: storyId('et-analyzer', 'et', 'et_analyzer_v1'),
@@ -1047,6 +1332,72 @@ const STORIES: ChatBenchStory[] = [
         query:
           '基于上面的风险台账，生成一个柱状图：横轴为风险点，纵轴为得分。\n' +
           '要求：图表标题“风险得分”，配色与表格风格一致。',
+      },
+    ],
+  },
+
+  {
+    id: storyId('et-analyzer', 'et', 'et_analyzer_v2'),
+    suiteId: 'et-analyzer',
+    host: 'et',
+    name: 'ET数据分析：明细->透视->图表（ET）',
+    description: '覆盖 et-analyzer：生成明细数据，做透视汇总并出图。',
+    setupActions: [{ type: 'ensure_bench_document', title: 'Bench-ET分析' }],
+    turns: [
+      {
+        id: 't1_seed',
+        name: '写入销售明细表（含冻结首行）',
+        artifactId: 'bench_et_analyzer_seed',
+        styleSpec: STYLE_SPECS.et_kpi_v1,
+        asserts: [{ type: 'et_freeze_panes_enabled' }],
+        query:
+          '在Sheet1的A1生成销售明细表：月份/部门/金额。填8行示例（1-4月*两个部门），金额为数字。\n' +
+          '要求：冻结首行；金额列设置为¥金额格式（如可行）。\n' +
+          '输出可执行 Plan JSON（schema_version="ah32.plan.v1", host_app="et"）。',
+      },
+      {
+        id: 't2_pivot',
+        name: '透视汇总到“汇总”并插入柱状图',
+        artifactId: 'bench_et_analyzer_pivot',
+        styleSpec: STYLE_SPECS.et_kpi_v1,
+        asserts: [{ type: 'et_sheet_exists', name: '汇总' }, { type: 'et_chart_exists', min: 1 }],
+        query:
+          '基于上面的销售明细表，生成透视汇总到新工作表“汇总”：按部门汇总金额，并插入柱状图。\n' +
+          '要求：汇总表表头加粗；图表标题“部门金额汇总”。\n' +
+          '输出可执行 Plan JSON（schema_version="ah32.plan.v1", host_app="et"）。',
+      },
+    ],
+  },
+
+  {
+    id: storyId('et-visualizer', 'et', 'et_visualizer_v2'),
+    suiteId: 'et-visualizer',
+    host: 'et',
+    name: 'ET可视化：占比饼图->趋势折线（ET）',
+    description: '覆盖 et-visualizer：结构占比与趋势图表。',
+    setupActions: [{ type: 'ensure_bench_document', title: 'Bench-ET可视化' }],
+    turns: [
+      {
+        id: 't1_pie',
+        name: '费用结构饼图（占比%）',
+        artifactId: 'bench_et_visualizer_pie',
+        styleSpec: STYLE_SPECS.et_kpi_v1,
+        asserts: [{ type: 'et_chart_exists', min: 1 }],
+        query:
+          '在A1生成费用结构表：类别/金额，填5行示例，并插入饼图显示占比（显示百分比）。\n' +
+          '要求：图表标题“费用结构”。\n' +
+          '输出可执行 Plan JSON（schema_version="ah32.plan.v1", host_app="et"）。',
+      },
+      {
+        id: 't2_trend',
+        name: '销售趋势折线图',
+        artifactId: 'bench_et_visualizer_trend',
+        styleSpec: STYLE_SPECS.et_kpi_v1,
+        asserts: [{ type: 'et_chart_exists', min: 1 }],
+        query:
+          '在旁边再生成月份趋势数据：月份(1-6)/销售额，填6行示例，并插入折线图。\n' +
+          '要求：图表标题“销售趋势”。\n' +
+          '输出可执行 Plan JSON（schema_version="ah32.plan.v1", host_app="et"）。',
       },
     ],
   },
@@ -1453,6 +1804,137 @@ const STORIES: ChatBenchStory[] = [
       },
     ],
   },
+
+  {
+    id: storyId('ppt-outline', 'wpp', 'ppt_outline_mixed_v1'),
+    suiteId: 'ppt-outline',
+    host: 'wpp',
+    name: 'PPT大纲：纯文字->自动创建（WPP）',
+    description: '先做纯文字交付，再触发自动模式创建PPT（Plan）。',
+    setupActions: [{ type: 'ensure_bench_document', title: 'Bench-PPT大纲' }],
+    turns: [
+      {
+        id: 't1_text_outline',
+        name: '逐页大纲+讲稿（不创建）',
+        expectedOutput: 'text',
+        asserts: [
+          { type: 'assistant_text_contains', text: '目标与受众' },
+          { type: 'assistant_text_contains', text: '叙事主线' },
+          { type: 'assistant_text_contains', text: '逐页大纲表' },
+          { type: 'assistant_text_contains', text: '讲稿' },
+          { type: 'assistant_text_contains', text: '主题与版式建议' },
+          { type: 'assistant_text_contains', text: '自检清单' },
+          { type: 'assistant_text_not_contains', text: 'ah32.plan.v1' },
+        ],
+        query:
+          '给我做一份10页的汇报PPT大纲，并写逐页讲稿（每页1分钟）。\n' +
+          '材料（节选）：我们要做“招投标助手”，目标用户是采购与投标团队；核心卖点是合规检查、政策更新、写回Plan稳定。\n' +
+          '要求：只在对话中输出，不要创建/生成PPT，不要输出 Plan JSON。',
+      },
+      {
+        id: 't2_auto_create',
+        name: '自动创建PPT（Plan写回）',
+        artifactId: 'bench_ppt_outline_auto_v1',
+        styleSpec: STYLE_SPECS.wpp_bid_deck_v1,
+        asserts: [
+          { type: 'wpp_slide_count_at_least', min: 6 },
+          { type: 'wpp_last_slide_shapes_at_least', min: 2 },
+          { type: 'wpp_slide_text_contains', text: '结论' },
+          { type: 'wpp_last_slide_within_bounds', margin: 4 },
+          { type: 'wpp_last_slide_no_overlap' },
+        ],
+        query:
+          '把下面材料直接生成一份6页PPT并自动创建（最后一页标题必须包含“结论”）。\n' +
+          '材料：产品发布汇报，主题“招投标助手”，结构：背景/痛点/方案/优势/落地/结论。\n' +
+          '要求：只输出可执行 Plan JSON（schema_version="ah32.plan.v1", host_app="wpp"）。',
+      },
+    ],
+  },
+
+  {
+    id: storyId('ppt-review', 'wpp', 'ppt_review_text_v1'),
+    suiteId: 'ppt-review',
+    host: 'wpp',
+    name: 'PPT审稿：只在对话输出问题清单（WPP）',
+    description: '验证 ppt-review 的结构化审稿交付，不输出 Plan JSON。',
+    setupActions: [{ type: 'ensure_bench_document', title: 'Bench-PPT审稿' }],
+    turns: [
+      {
+        id: 't1_review_text',
+        name: '审稿输出（不写回）',
+        expectedOutput: 'text',
+        asserts: [
+          { type: 'assistant_text_contains', text: '问题概览' },
+          { type: 'assistant_text_contains', text: '逐页问题清单' },
+          { type: 'assistant_text_contains', text: '版式与一致性规范' },
+          { type: 'assistant_text_contains', text: '材料缺口清单' },
+          { type: 'assistant_text_contains', text: '自检清单' },
+          { type: 'assistant_text_not_contains', text: 'ah32.plan.v1' },
+        ],
+        query:
+          '帮我审一下这份PPT（按下面逐页文本），指出逻辑漏洞、信息缺口和排版问题，并给可直接替换的修改建议。\n' +
+          '逐页：\n' +
+          '1) 标题：项目介绍；要点：我们很强。\n' +
+          '2) 标题：方案；要点：方案A、方案B（无数据支撑）。\n' +
+          '3) 标题：结论；要点：请批准预算。\n' +
+          '要求：只在对话中输出，不要写回，也不要输出 Plan JSON。',
+      },
+    ],
+  },
+
+  {
+    id: storyId('ppt-creator', 'wpp', 'ppt_creator_v2'),
+    suiteId: 'ppt-creator',
+    host: 'wpp',
+    name: 'PPT一键创建：6页自动生成（WPP）',
+    description: '覆盖 ppt-creator：只输出 Plan JSON 并创建幻灯片。',
+    setupActions: [{ type: 'ensure_bench_document', title: 'Bench-PPT一键创建' }],
+    turns: [
+      {
+        id: 't1_create',
+        name: '创建6页PPT（Plan）',
+        artifactId: 'bench_ppt_creator_v1',
+        styleSpec: STYLE_SPECS.wpp_bid_deck_v1,
+        asserts: [
+          { type: 'wpp_slide_count_at_least', min: 6 },
+          { type: 'wpp_last_slide_shapes_at_least', min: 2 },
+          { type: 'wpp_last_slide_within_bounds', margin: 4 },
+          { type: 'wpp_last_slide_no_overlap' },
+        ],
+        query:
+          '根据这段材料，一键生成一份6页PPT并自动创建（最后一页写“结论与下一步”）。\n' +
+          '材料：主题“产品发布”，要点：背景/问题/方案/优势/交付/结论。\n' +
+          '要求：只输出可执行 Plan JSON（schema_version="ah32.plan.v1", host_app="wpp"）。',
+      },
+    ],
+  },
+
+  {
+    id: storyId('wpp-outline', 'wpp', 'wpp_outline_v2'),
+    suiteId: 'wpp-outline',
+    host: 'wpp',
+    name: 'WPP版式助手：标题页/目录页/两栏页（WPP）',
+    description: '覆盖 wpp-outline：版式选择与占位写入。',
+    setupActions: [{ type: 'ensure_bench_document', title: 'Bench-WPP版式助手' }],
+    turns: [
+      {
+        id: 't1_layout',
+        name: '创建3页并填入示例文本（Plan）',
+        artifactId: 'bench_wpp_outline_v1',
+        styleSpec: STYLE_SPECS.wpp_bid_deck_v1,
+        asserts: [
+          { type: 'wpp_slide_count_at_least', min: 3 },
+          { type: 'wpp_last_slide_shapes_at_least', min: 3 },
+          { type: 'wpp_slide_text_contains', text: '两栏' },
+          { type: 'wpp_last_slide_within_bounds', margin: 4 },
+          { type: 'wpp_last_slide_no_overlap' },
+        ],
+        query:
+          '创建3页PPT：标题页/目录页/两栏内容页；选择合适版式并填入示例文本（两栏页标题包含“两栏”）。\n' +
+          '要求：只输出可执行 Plan JSON（schema_version="ah32.plan.v1", host_app="wpp"）。',
+      },
+    ],
+  },
 ]
 
 export const buildChatBenchStories = (args: {
@@ -1473,29 +1955,7 @@ export const buildChatBenchStories = (args: {
 
   const suiteIds: MacroBenchSuiteId[] =
     suiteId === 'all'
-      ? ([
-          // Skill coverage (built-in 10)
-          'doc-analyzer',
-          'doc-editor',
-          'doc-formatter',
-          'exam-answering',
-          'et-analyzer',
-          'et-visualizer',
-          'ppt-creator',
-          'ppt-outline',
-          'wpp-outline',
-          'answer-mode',
-          // System coverage
-          'system-plan-repair',
-          'system-block-lifecycle',
-          // Business scenarios
-          'finance-audit',
-          'contract-review',
-          'bidding-helper',
-          'meeting-minutes',
-          'policy-format',
-          'risk-register',
-        ] as MacroBenchSuiteId[])
+      ? (MACRO_BENCH_SUITES.map(s => s.id) as MacroBenchSuiteId[])
       : ([suiteId] as MacroBenchSuiteId[])
 
   // Turn caps per story; keep deterministic but scale with preset.
