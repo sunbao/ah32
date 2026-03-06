@@ -39,6 +39,15 @@ type ChatStoreLike = {
 
   ) => Promise<void>
 
+  // Macro queue coverage (store-driven writeback path).
+  enqueueWritebackForAssistantMessage?: (
+    assistantMsg: any,
+    updateTargetBlockId?: string | null,
+    opts?: { onlyBlockIds?: string[]; onlyTypes?: Array<'plan'>; excludeConfirm?: boolean }
+  ) => void
+
+  getMacroBlockRun?: (messageId: string, blockId: string) => any
+
   setMacroBlockRun?: (
 
     blockId: string,
@@ -188,6 +197,16 @@ const stripCodeFences = (raw: any): string => {
   } catch (e) {
     ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e)
     return String(raw || '').trim()
+  }
+}
+
+const unwrapArrayRef = (v: any): any[] => {
+  try {
+    if (!v) return []
+    const vv = (typeof v === 'object' && 'value' in v) ? (v as any).value : v
+    return Array.isArray(vv) ? vv : []
+  } catch (e) {
+    return []
   }
 }
 
@@ -1503,6 +1522,8 @@ const evalTurnAsserts = async (args: {
 
   appliedSkills?: Array<{ id?: string; name?: string }>
 
+  selectedSkills?: Array<{ id?: string; name?: string }>
+
   repairsUsed?: number
 
 }): Promise<BenchAssertEval> => {
@@ -1571,6 +1592,25 @@ const evalTurnAsserts = async (args: {
         msg = `invalid_regex:${String(e?.message || e)}`
       }
       add(ok, a.type, pts, msg)
+      continue
+    }
+    if (a.type === 'skills_selected_includes' || a.type === 'skills_selected_excludes') {
+      const want = String((a as any).skillId || '').trim()
+      const ids = (() => {
+        try {
+          const xs = Array.isArray(args.selectedSkills) ? args.selectedSkills : []
+          return xs.map(x => String((x as any)?.id || '').trim()).filter(x => !!x)
+        } catch (e) {
+          return []
+        }
+      })()
+      if (a.type === 'skills_selected_includes') {
+        const ok = !!want && ids.includes(want)
+        add(ok, a.type, pts, ok ? 'ok' : `missing:${want || '(empty)'} got=${ids.join(',') || '(none)'}`)
+      } else {
+        const ok = !!want && !ids.includes(want)
+        add(ok, a.type, pts, ok ? 'ok' : `unexpected:${want || '(empty)'} got=${ids.join(',') || '(none)'}`)
+      }
       continue
     }
     if (a.type === 'skills_applied_includes') {
@@ -1727,6 +1767,8 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
   // Best-effort: ensure a fresh bench document once per story (setupActions).
 
   let benchDocId: string | null = null
+  const docAliases: Record<string, { id: string; name: string; fullPath?: string; hostApp?: string }> = {}
+  const macroQueueJobs: Record<string, { messageId: string; blockId: string; docAlias: string }> = {}
 
   const ensureBenchDoc = async (title?: string) => {
 
@@ -1818,6 +1860,71 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
 
     }
 
+  }
+
+  const createNewDocument = async (title?: string) => {
+    const t = String(title || '').trim()
+    const script = (() => {
+      if (host === 'wps') {
+        return (
+          "var app = window.Application;\\n" +
+          "try { var d = (app.Documents && app.Documents.Add) ? app.Documents.Add() : null; } catch (e) {}\\n" +
+          "try { if (d && d.Activate) d.Activate(); } catch (e2) {}\\n" +
+          (t ? `try { if (d) d.Name = '${t.replace(/'/g, "\\'")}'; } catch (e3) {}` : '') +
+          "\\ntrue;"
+        )
+      }
+      if (host === 'et') {
+        return (
+          "var app = window.Application;\\n" +
+          "try { var wb = (app.Workbooks && app.Workbooks.Add) ? app.Workbooks.Add() : null; } catch (e) {}\\n" +
+          "try { if (wb && wb.Activate) wb.Activate(); } catch (e2) {}\\n" +
+          "\\ntrue;"
+        )
+      }
+      if (host === 'wpp') {
+        return (
+          "var app = window.Application;\\n" +
+          "try { var p = (app.Presentations && app.Presentations.Add) ? app.Presentations.Add() : null; } catch (e) {}\\n" +
+          "try { if (p && p.Windows && p.Windows.Item) { var w = p.Windows.Item(1); if (w && w.Activate) w.Activate(); } } catch (e2) {}\\n" +
+          "\\ntrue;"
+        )
+      }
+      return "true;"
+    })()
+
+    try {
+      const r = await jsMacroExecutor.executeJS(script, true)
+      if (!r?.success) return null
+      try {
+        const docs = wpsBridge.getAllOpenDocuments()
+        const active = docs.find(d => d.isActive)
+        if (!active?.id) return null
+        return { id: String(active.id), name: String(active.name || ''), fullPath: String((active as any).fullPath || ''), hostApp: String((active as any).hostApp || '') }
+      } catch (e) {
+        ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e)
+        return null
+      }
+    } catch (e) {
+      ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e)
+      return null
+    }
+  }
+
+  const ensureDocumentAlias = async (alias: string, title?: string) => {
+    const key = String(alias || '').trim()
+    if (!key) throw new Error('document_alias_required')
+    const info = await createNewDocument(title)
+    if (!info?.id) throw new Error(`document_alias_create_failed:${key}`)
+    docAliases[key] = info
+  }
+
+  const activateDocumentAlias = async (alias: string) => {
+    const key = String(alias || '').trim()
+    if (!key) throw new Error('document_alias_required')
+    const info = docAliases[key]
+    if (!info?.id) throw new Error(`document_alias_missing:${key}`)
+    try { wpsBridge.activateDocumentById(String(info.id)) } catch (e) { (globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e) }
   }
 
 
@@ -1941,6 +2048,197 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
       // If we don't have a bench doc (e.g. resume after reload), create one on-demand.
 
       await ensureBenchDoc()
+
+      return
+
+    }
+
+    if (a.type === 'create_document_alias') {
+
+      await ensureDocumentAlias((a as any).alias, (a as any).title)
+
+      return
+
+    }
+
+    if (a.type === 'activate_document_alias') {
+
+      await activateDocumentAlias((a as any).alias)
+
+      return
+
+    }
+
+    if (a.type === 'enqueue_macro_queue_job') {
+
+      const jobAlias = String((a as any).jobAlias || '').trim()
+      const docAlias = String((a as any).docAlias || '').trim()
+      const blockId = String((a as any).blockId || '').trim()
+      const planObj = (a as any).plan
+      if (!jobAlias) throw new Error('macro_queue_job_alias_required')
+      if (!docAlias) throw new Error(`macro_queue_doc_alias_required:${jobAlias}`)
+      if (!blockId) throw new Error(`macro_queue_block_id_required:${jobAlias}`)
+      if (!planObj || typeof planObj !== 'object' || Array.isArray(planObj)) throw new Error(`macro_queue_plan_required:${jobAlias}`)
+
+      const doc = docAliases[docAlias]
+      if (!doc?.id) throw new Error(`macro_queue_document_alias_missing:${docAlias}`)
+
+      let code = ''
+      try { code = JSON.stringify(planObj) } catch (e: any) { code = ''; throw new Error(`macro_queue_plan_stringify_failed:${String(e?.message || e)}`) }
+      if (!code) throw new Error(`macro_queue_plan_stringify_empty:${jobAlias}`)
+
+      const messageId = `bench_macro_queue_msg_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`
+      const dc = {
+        docId: String(doc.id),
+        docKey: String(doc.id),
+        name: String(doc.name || ''),
+        path: String(doc.fullPath || ''),
+        hostApp: String(doc.hostApp || host || '')
+      }
+      const assistantMsg: any = {
+        id: messageId,
+        type: 'assistant',
+        content: '',
+        metadata: {
+          docContext: dc,
+          macroBlockPayloads: { [blockId]: code },
+        },
+      }
+
+      const enqueue = (chatStore as any).enqueueWritebackForAssistantMessage
+      if (typeof enqueue !== 'function') throw new Error('macro_queue_enqueue_not_supported:missing_enqueueWritebackForAssistantMessage')
+      enqueue(assistantMsg, null, { excludeConfirm: true })
+
+      macroQueueJobs[jobAlias] = { messageId, blockId, docAlias }
+
+      return
+
+    }
+
+    if (a.type === 'wait_macro_queue_job') {
+
+      const jobAlias = String((a as any).jobAlias || '').trim()
+      const timeoutMs = Math.max(0, Number((a as any).timeoutMs || 0) || 0) || 45000
+      if (!jobAlias) throw new Error('macro_queue_job_alias_required')
+      const job = macroQueueJobs[jobAlias]
+      if (!job?.messageId || !job?.blockId) throw new Error(`macro_queue_job_missing:${jobAlias}`)
+      const getRun = (chatStore as any).getMacroBlockRun
+      if (typeof getRun !== 'function') throw new Error('macro_queue_wait_not_supported:missing_getMacroBlockRun')
+
+      const deadline = Date.now() + timeoutMs
+      while (true) {
+        if (Date.now() > deadline) throw new Error(`macro_queue_job_timeout:${jobAlias}`)
+        const r = getRun(job.messageId, job.blockId)
+        const st = String(r?.status || '').trim()
+        if (st === 'success') return
+        if (st === 'error') {
+          const err = String(r?.error || 'macro_queue_job_error')
+          throw new Error(`macro_queue_job_error:${jobAlias}:${err}`)
+        }
+        await sleep(120)
+      }
+
+    }
+
+    if (a.type === 'dev_skills_patch_meta') {
+
+      const tid = String((a as any).tenantId || 'public').trim() || 'public'
+      const skillId = String((a as any).skillId || '').trim()
+      if (!skillId) throw new Error('dev_skills_skill_id_required')
+
+      const payload: any = { skill_id: skillId }
+      if (typeof (a as any).enabled === 'boolean') payload.enabled = (a as any).enabled
+      if (Number.isFinite(Number((a as any).priority))) payload.priority = Number((a as any).priority)
+      if (typeof (a as any).name === 'string') payload.name = String((a as any).name || '').trim()
+
+      const cfg = getRuntimeConfig()
+      const resp = await fetch(`${cfg.apiBase}/dev/skills/patch_meta`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-AH32-Tenant-Id': tid,
+        },
+        body: JSON.stringify(payload),
+      })
+      if (!resp.ok) {
+        const text = await resp.text().catch(() => '')
+        if (resp.status === 404) throw new Error('dev_routes_not_enabled:AH32_ENABLE_DEV_ROUTES=true')
+        throw new Error(`dev_skills_patch_meta_failed:${resp.status}:${text.slice(0, 400)}`)
+      }
+      return
+
+    }
+
+    if (a.type === 'dev_skills_assert_primary_by_priority') {
+
+      const tid = String((a as any).tenantId || 'public').trim() || 'public'
+      const allow = Array.isArray((a as any).allowSkillIds) ? (a as any).allowSkillIds : []
+      const expected = String((a as any).expectedPrimarySkillId || '').trim()
+      if (!expected) throw new Error('dev_skills_expected_primary_required')
+
+      const cfg = getRuntimeConfig()
+      const resp = await fetch(`${cfg.apiBase}/dev/skills/primary_by_priority`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-AH32-Tenant-Id': tid,
+        },
+        body: JSON.stringify({ allow_skill_ids: allow }),
+      })
+      if (!resp.ok) {
+        const text = await resp.text().catch(() => '')
+        if (resp.status === 404) throw new Error('dev_routes_not_enabled:AH32_ENABLE_DEV_ROUTES=true')
+        throw new Error(`dev_skills_primary_by_priority_failed:${resp.status}:${text.slice(0, 400)}`)
+      }
+      const data: any = await resp.json().catch(() => null)
+      const got = String(data?.primary_skill_id || '').trim()
+      if (got !== expected) {
+        throw new Error(`dev_skills_primary_mismatch:expected=${expected} got=${got || '(empty)'}`)
+      }
+      return
+
+    }
+
+    if (a.type === 'dev_skills_assert_meta') {
+
+      const tid = String((a as any).tenantId || 'public').trim() || 'public'
+      const skillId = String((a as any).skillId || '').trim()
+      if (!skillId) throw new Error('dev_skills_skill_id_required')
+
+      const cfg = getRuntimeConfig()
+      const resp = await fetch(`${cfg.apiBase}/dev/skills/list`, {
+        method: 'GET',
+        headers: { 'X-AH32-Tenant-Id': tid },
+      })
+      if (!resp.ok) {
+        const text = await resp.text().catch(() => '')
+        if (resp.status === 404) throw new Error('dev_routes_not_enabled:AH32_ENABLE_DEV_ROUTES=true')
+        throw new Error(`dev_skills_list_failed:${resp.status}:${text.slice(0, 400)}`)
+      }
+      const data: any = await resp.json().catch(() => null)
+      const skills: any[] = Array.isArray(data?.skills) ? data.skills : []
+      const s = skills.find(x => String(x?.id || '').trim() === skillId) || null
+      if (!s) throw new Error(`dev_skills_skill_missing:${skillId}`)
+
+      if (typeof (a as any).enabled === 'boolean') {
+        const want = (a as any).enabled
+        const got = !!s.enabled
+        if (got !== want) throw new Error(`dev_skills_enabled_mismatch:${skillId}:expected=${want} got=${got}`)
+      }
+      const pr = Number(s?.priority ?? 0) || 0
+      if (Number.isFinite(Number((a as any).minPriority))) {
+        const min = Number((a as any).minPriority)
+        if (pr < min) throw new Error(`dev_skills_priority_too_low:${skillId}:${pr} < ${min}`)
+      }
+      if (Number.isFinite(Number((a as any).maxPriority))) {
+        const max = Number((a as any).maxPriority)
+        if (pr > max) throw new Error(`dev_skills_priority_too_high:${skillId}:${pr} > ${max}`)
+      }
+      const nc = String((a as any).nameContains || '').trim()
+      if (nc) {
+        const name = String(s?.name || '')
+        if (!name.includes(nc)) throw new Error(`dev_skills_name_missing:${skillId}:missing=${nc}`)
+      }
 
       return
 
@@ -2694,6 +2992,30 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
 
     const { story, turn } = items[i]
 
+    const storyUsesDocAliases = (() => {
+      try {
+        const acts: any[] = []
+        if (Array.isArray((story as any)?.setupActions)) acts.push(...((story as any).setupActions || []))
+        if (Array.isArray((story as any)?.turns)) {
+          for (const t of ((story as any).turns || [])) {
+            if (Array.isArray((t as any)?.actionsBeforeSend)) acts.push(...((t as any).actionsBeforeSend || []))
+            if (Array.isArray((t as any)?.actionsAfterExec)) acts.push(...((t as any).actionsAfterExec || []))
+          }
+        }
+        return acts.some(x => {
+          const tp = String((x as any)?.type || '').trim()
+          return tp === 'create_document_alias'
+            || tp === 'activate_document_alias'
+            || tp === 'enqueue_macro_queue_job'
+            || tp === 'wait_macro_queue_job'
+        })
+      } catch (e) {
+        return false
+      }
+    })()
+
+    const pinBenchDoc = !storyUsesDocAliases
+
 
 
     // Setup actions run once per story (on its first turn).
@@ -2711,9 +3033,16 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
         let appliedSkills: any[] = []
         try {
           const v = (chatStore as any).appliedSkills
-          appliedSkills = Array.isArray(v) ? v : []
+          appliedSkills = unwrapArrayRef(v)
         } catch (e2) {
           appliedSkills = []
+        }
+        let selectedSkills: any[] = []
+        try {
+          const v = (chatStore as any).selectedSkills
+          selectedSkills = unwrapArrayRef(v)
+        } catch (e3) {
+          selectedSkills = []
         }
         const ae = await evalTurnAsserts({
           host,
@@ -2723,6 +3052,7 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
           execOk: false,
           asserts: turn.asserts,
           appliedSkills,
+          selectedSkills,
           repairsUsed: 0,
         })
 
@@ -2810,9 +3140,9 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
 
       }
 
-    // Keep the bench doc active across the whole story.
+    // Keep the bench doc active across the whole story (unless the story manages doc aliases).
 
-    await applyActions([{ type: 'activate_bench_document' }])
+    if (pinBenchDoc) await applyActions([{ type: 'activate_bench_document' }])
 
   }
 
@@ -2843,9 +3173,16 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
       let appliedSkills: any[] = []
       try {
         const v = (chatStore as any).appliedSkills
-        appliedSkills = Array.isArray(v) ? v : []
+        appliedSkills = unwrapArrayRef(v)
       } catch (e2) {
         appliedSkills = []
+      }
+      let selectedSkills: any[] = []
+      try {
+        const v = (chatStore as any).selectedSkills
+        selectedSkills = unwrapArrayRef(v)
+      } catch (e3) {
+        selectedSkills = []
       }
       const ae = await evalTurnAsserts({
         host,
@@ -2855,6 +3192,7 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
         execOk: false,
         asserts: turn.asserts,
         appliedSkills,
+        selectedSkills,
         repairsUsed: 0,
       })
 
@@ -2942,11 +3280,97 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
 
     }
 
-    await applyActions([{ type: 'activate_bench_document' }])
+    if (pinBenchDoc) await applyActions([{ type: 'activate_bench_document' }])
 
 
 
     opts.onProgress?.({ idx: i + 1, total: items.length, storyName: story.name, turnName: turn.name, host, suiteId: story.suiteId })
+
+    const localOnly = !!(turn as any)?.localOnly
+    if (localOnly) {
+
+      let appliedSkills: any[] = []
+      try { appliedSkills = unwrapArrayRef((chatStore as any).appliedSkills) } catch (e) { appliedSkills = [] }
+
+      let selectedSkills: any[] = []
+      try { selectedSkills = unwrapArrayRef((chatStore as any).selectedSkills) } catch (e) { selectedSkills = [] }
+
+      const ae = await evalTurnAsserts({
+        host,
+        expectedOutput: ((turn as any)?.expectedOutput || 'either') as any,
+        assistantText: '',
+        hasCode: false,
+        execOk: true,
+        asserts: turn.asserts,
+        appliedSkills,
+        selectedSkills,
+        repairsUsed: 0,
+      })
+
+      await applyActions(turn.actionsAfterExec)
+
+      const r: ChatBenchTurnResult = {
+        story: { id: story.id, suiteId: story.suiteId, host: story.host, name: story.name },
+        turn,
+        chatSessionId,
+        macroSessionId: `bench_local_${host}_${Date.now()}_${i + 1}`,
+        documentName: getActiveDocName(),
+        ok: ae.ok,
+        assertOk: ae.ok,
+        score: ae.score,
+        assertTotalPoints: ae.totalPoints,
+        assertPassedPoints: ae.passedPoints,
+        assertFailures: ae.failures,
+        chatMs: 0,
+        execTotalMs: 0,
+        attempts: 0,
+        repairsUsed: 0,
+        tokenUsage: undefined,
+        message: ae.ok ? 'local_only_ok' : 'local_only_assert_failed',
+        assistantMessageId: undefined,
+        assistantPreview: '',
+        codeBlocks: 0,
+      }
+
+      results.push(r)
+      opts.onResult?.(r)
+
+      const summaryBySuite = (() => {
+        const bySuite: Record<string, ChatBenchTurnResult[]> = {}
+        for (const rr of results) {
+          const sid = rr.story?.suiteId || 'unknown'
+          if (!bySuite[sid]) bySuite[sid] = []
+          bySuite[sid].push(rr)
+        }
+        const out: Record<string, ChatBenchSummary> = {}
+        for (const sid of Object.keys(bySuite)) {
+          out[sid] = computeSummary(host, sid as any, bySuite[sid])
+        }
+        return out
+      })()
+
+      const partial: ChatBenchRun = {
+        runId,
+        host,
+        suiteId,
+        preset,
+        chatSessionId,
+        startedAt,
+        finishedAt: nowIso(),
+        meta,
+        stories: storyInfos,
+        results,
+        summary: computeSummary(host, suiteId, results),
+        summaryBySuite,
+        nextIdx: i + 1,
+        totalPlanned,
+      }
+
+      persistPartial(partial)
+      await trimMessages()
+      continue
+
+    }
 
 
 
@@ -3099,9 +3523,16 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
       let appliedSkills: any[] = []
       try {
         const v = (chatStore as any).appliedSkills
-        appliedSkills = Array.isArray(v) ? v : []
+        appliedSkills = unwrapArrayRef(v)
       } catch (e2) {
         appliedSkills = []
+      }
+      let selectedSkills: any[] = []
+      try {
+        const v = (chatStore as any).selectedSkills
+        selectedSkills = unwrapArrayRef(v)
+      } catch (e3) {
+        selectedSkills = []
       }
       const ae = await evalTurnAsserts({
         host,
@@ -3111,6 +3542,7 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
         execOk: false,
         asserts: turn.asserts,
         appliedSkills,
+        selectedSkills,
         repairsUsed: 0,
       })
 
@@ -3222,12 +3654,19 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
     const blocks = hasOverridePlan ? [JSON.stringify(overridePlan)] : extractPlanBlocks(assistantMsg)
 
     let appliedSkills: any[] = []
+    let selectedSkills: any[] = []
     if (!hasOverridePlan) {
       try {
         const v = (chatStore as any).appliedSkills
-        appliedSkills = Array.isArray(v) ? v : []
+        appliedSkills = unwrapArrayRef(v)
       } catch (e) {
         appliedSkills = []
+      }
+      try {
+        const v = (chatStore as any).selectedSkills
+        selectedSkills = unwrapArrayRef(v)
+      } catch (e) {
+        selectedSkills = []
       }
     }
 
@@ -3243,6 +3682,7 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
         execOk: false,
         asserts: turn.asserts,
         appliedSkills,
+        selectedSkills,
         repairsUsed: 0,
       })
 
@@ -3319,6 +3759,7 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
         execOk: false,
         asserts: turn.asserts,
         appliedSkills,
+        selectedSkills,
         repairsUsed: 0,
       })
 
@@ -3446,6 +3887,7 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
         execOk: false,
         asserts: turn.asserts,
         appliedSkills,
+        selectedSkills,
         repairsUsed: 0,
       })
 
@@ -3568,6 +4010,7 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
       asserts: turn.asserts,
       blockId: stableId,
       appliedSkills,
+      selectedSkills,
       repairsUsed,
     })
     await applyActions(turn.actionsAfterExec)

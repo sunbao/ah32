@@ -7,6 +7,8 @@ import { MACRO_BENCH_SUITES, type MacroBenchHost, type MacroBenchPreset, type Ma
 export type ChatBenchAction =
   | { type: 'ensure_bench_document'; title?: string }
   | { type: 'activate_bench_document' }
+  | { type: 'create_document_alias'; alias: string; title?: string }
+  | { type: 'activate_document_alias'; alias: string }
   | { type: 'require_host'; host: MacroBenchHost }
   // Optional: runner can attempt to drive the actual ChatPanel UI (type + click).
   | { type: 'ui_fill_input'; text: string }
@@ -34,6 +36,13 @@ export type ChatBenchAction =
   | { type: 'ensure_slide'; index: number }
   | { type: 'select_slide'; index: number }
   | { type: 'sleep'; ms: number }
+  // Macro queue coverage (no chat; runs through store macro queue to catch cross-doc issues).
+  | { type: 'enqueue_macro_queue_job'; jobAlias: string; docAlias: string; blockId: string; plan: Record<string, any> }
+  | { type: 'wait_macro_queue_job'; jobAlias: string; timeoutMs?: number }
+  // Dev-only tenant skills mutations (requires backend: AH32_ENABLE_DEV_ROUTES=true).
+  | { type: 'dev_skills_patch_meta'; tenantId?: string; skillId: string; enabled?: boolean; priority?: number; name?: string }
+  | { type: 'dev_skills_assert_primary_by_priority'; tenantId?: string; allowSkillIds: string[]; expectedPrimarySkillId: string }
+  | { type: 'dev_skills_assert_meta'; tenantId?: string; skillId: string; enabled?: boolean; minPriority?: number; maxPriority?: number; nameContains?: string }
 
 export type ChatBenchAssert =
   // Assert on assistant chat output (text-mode turns).
@@ -48,6 +57,9 @@ export type ChatBenchAssert =
   | { type: 'writer_heading_at_least'; level: 1 | 2 | 3; min?: number; points?: number }
   | { type: 'writer_shapes_at_least'; min: number; points?: number }
   | { type: 'writer_block_backup_exists'; blockId?: string; points?: number }
+  | { type: 'skills_selected_includes'; skillId: string; points?: number }
+  | { type: 'skills_selected_excludes'; skillId: string; points?: number }
+  // Backward-compatible (older benches); prefer selected_* for plan SSE split.
   | { type: 'skills_applied_includes'; skillId: string; points?: number }
   | { type: 'repairs_used_at_least'; min: number; points?: number }
   | { type: 'et_sheet_exists'; name: string; points?: number }
@@ -68,6 +80,9 @@ export type ChatBenchTurn = {
   name: string
   // What the user "types" into the chat box.
   query: string
+  // Runner-only: skip chat+plan execution, only run actions+asserts.
+  // Useful for deterministic system coverage (e.g. macro queue / dev-only fixtures).
+  localOnly?: boolean
   // What we expect from the assistant:
   // - plan: must output Plan JSON (then we execute + assert on document state)
   // - text: must output normal text (assert on assistant content; do NOT execute)
@@ -278,6 +293,164 @@ const STORIES: ChatBenchStory[] = [
   },
 
   {
+    id: storyId('system-macro-queue', 'wps', 'cross_doc_writeback_v1'),
+    suiteId: 'system-macro-queue',
+    host: 'wps',
+    name: '宏队列：跨文档排队写回不串写（Writer）',
+    description: '覆盖宏队列按 docContext 严格激活目标文档执行：两个文档连续入队，确保不写错文档。',
+    setupActions: [
+      { type: 'create_document_alias', alias: 'A', title: 'Bench-Queue-A' },
+      { type: 'clear_document' },
+      { type: 'set_cursor', pos: 'start' },
+      { type: 'insert_text', text: 'DOC_A_BASELINE', newline: true },
+      { type: 'create_document_alias', alias: 'B', title: 'Bench-Queue-B' },
+      { type: 'clear_document' },
+      { type: 'set_cursor', pos: 'start' },
+      { type: 'insert_text', text: 'DOC_B_BASELINE', newline: true },
+    ],
+    turns: [
+      {
+        id: 't1_enqueue_and_wait',
+        name: '连续入队两份写回并等待执行完成',
+        query: '[local]',
+        localOnly: true,
+        actionsBeforeSend: [
+          {
+            type: 'enqueue_macro_queue_job',
+            jobAlias: 'jobA',
+            docAlias: 'A',
+            blockId: 'bench_macro_queue_A_v1',
+            plan: {
+              schema_version: 'ah32.plan.v1',
+              host_app: 'wps',
+              meta: { kind: 'bench_system_macro_queue' },
+              actions: [
+                {
+                  id: 'u1',
+                  title: 'Upsert A',
+                  op: 'upsert_block',
+                  block_id: 'bench_macro_queue_A_v1',
+                  anchor: 'end',
+                  actions: [{ id: 't1', title: 'Insert text', op: 'insert_text', text: 'MACRO_QUEUE_DOC_A_TOKEN_V1' }],
+                },
+              ],
+            },
+          },
+          {
+            type: 'enqueue_macro_queue_job',
+            jobAlias: 'jobB',
+            docAlias: 'B',
+            blockId: 'bench_macro_queue_B_v1',
+            plan: {
+              schema_version: 'ah32.plan.v1',
+              host_app: 'wps',
+              meta: { kind: 'bench_system_macro_queue' },
+              actions: [
+                {
+                  id: 'u1',
+                  title: 'Upsert B',
+                  op: 'upsert_block',
+                  block_id: 'bench_macro_queue_B_v1',
+                  anchor: 'end',
+                  actions: [{ id: 't1', title: 'Insert text', op: 'insert_text', text: 'MACRO_QUEUE_DOC_B_TOKEN_V1' }],
+                },
+              ],
+            },
+          },
+          { type: 'wait_macro_queue_job', jobAlias: 'jobA', timeoutMs: 45000 },
+          { type: 'wait_macro_queue_job', jobAlias: 'jobB', timeoutMs: 45000 },
+        ],
+      },
+      {
+        id: 't2_assert_doc_a',
+        name: '核对文档 A 只包含 A token',
+        query: '[local]',
+        localOnly: true,
+        actionsBeforeSend: [{ type: 'activate_document_alias', alias: 'A' }],
+        asserts: [
+          { type: 'writer_text_contains', text: 'DOC_A_BASELINE' },
+          { type: 'writer_text_contains', text: 'MACRO_QUEUE_DOC_A_TOKEN_V1' },
+          { type: 'writer_text_not_contains', text: 'MACRO_QUEUE_DOC_B_TOKEN_V1' },
+        ],
+      },
+      {
+        id: 't3_assert_doc_b',
+        name: '核对文档 B 只包含 B token',
+        query: '[local]',
+        localOnly: true,
+        actionsBeforeSend: [{ type: 'activate_document_alias', alias: 'B' }],
+        asserts: [
+          { type: 'writer_text_contains', text: 'DOC_B_BASELINE' },
+          { type: 'writer_text_contains', text: 'MACRO_QUEUE_DOC_B_TOKEN_V1' },
+          { type: 'writer_text_not_contains', text: 'MACRO_QUEUE_DOC_A_TOKEN_V1' },
+        ],
+      },
+    ],
+  },
+
+  {
+    id: storyId('system-tenant-skills', 'wps', 'tenant_skills_dynamic_v1'),
+    suiteId: 'system-tenant-skills',
+    host: 'wps',
+    name: '租户 Skills：禁用/启用/优先级冲突（dev-only）',
+    description: '通过 /dev/skills/* 固定可回归地验证：禁用后不参与候选；优先级作为冲突时的确定性裁决。',
+    setupActions: [{ type: 'ensure_bench_document', title: 'Bench-TenantSkills' }],
+    turns: [
+      {
+        id: 't1_disable_doc_analyzer',
+        name: '禁用 doc-analyzer',
+        query: '[local]',
+        localOnly: true,
+        actionsBeforeSend: [
+          { type: 'dev_skills_patch_meta', skillId: 'doc-analyzer', enabled: false },
+          { type: 'dev_skills_assert_meta', skillId: 'doc-analyzer', enabled: false },
+        ],
+      },
+      {
+        id: 't2_enable_doc_analyzer',
+        name: '启用 doc-analyzer（恢复）',
+        query: '[local]',
+        localOnly: true,
+        actionsBeforeSend: [
+          { type: 'dev_skills_patch_meta', skillId: 'doc-analyzer', enabled: true },
+          { type: 'dev_skills_assert_meta', skillId: 'doc-analyzer', enabled: true },
+        ],
+      },
+      {
+        id: 't3_set_priority_finance_wins',
+        name: '设置冲突优先级：finance-audit 赢',
+        query: '[local]',
+        localOnly: true,
+        actionsBeforeSend: [
+          { type: 'dev_skills_patch_meta', skillId: 'finance-audit', priority: 80 },
+          { type: 'dev_skills_patch_meta', skillId: 'contract-review', priority: 10 },
+          {
+            type: 'dev_skills_assert_primary_by_priority',
+            allowSkillIds: ['finance-audit', 'contract-review'],
+            expectedPrimarySkillId: 'finance-audit',
+          },
+        ],
+      },
+      {
+        id: 't4_restore_priority_contract_wins',
+        name: '恢复默认优先级：contract-review 赢（恢复）',
+        query: '[local]',
+        localOnly: true,
+        actionsBeforeSend: [
+          // Restore defaults from installer built-ins (stable baseline).
+          { type: 'dev_skills_patch_meta', skillId: 'finance-audit', priority: 30 },
+          { type: 'dev_skills_patch_meta', skillId: 'contract-review', priority: 50 },
+          {
+            type: 'dev_skills_assert_primary_by_priority',
+            allowSkillIds: ['finance-audit', 'contract-review'],
+            expectedPrimarySkillId: 'contract-review',
+          },
+        ],
+      },
+    ],
+  },
+
+  {
     id: storyId('doc-analyzer', 'wps', 'doc_analyzer_v1'),
     suiteId: 'doc-analyzer',
     host: 'wps',
@@ -308,7 +481,7 @@ const STORIES: ChatBenchStory[] = [
         artifactId: 'bench_doc_analyzer_report',
         forceSkillId: 'doc-analyzer',
         asserts: [
-          { type: 'skills_applied_includes', skillId: 'doc-analyzer', points: 2 },
+          { type: 'skills_selected_includes', skillId: 'doc-analyzer', points: 2 },
           { type: 'writer_text_contains', text: '结构报告' },
           { type: 'writer_text_contains', text: '缺口清单' },
           { type: 'writer_text_contains', text: '自检清单' },
@@ -350,7 +523,7 @@ const STORIES: ChatBenchStory[] = [
         artifactId: 'bench_doc_editor_delivery',
         forceSkillId: 'doc-editor',
         asserts: [
-          { type: 'skills_applied_includes', skillId: 'doc-editor', points: 2 },
+          { type: 'skills_selected_includes', skillId: 'doc-editor', points: 2 },
           { type: 'writer_text_contains', text: '对照表' },
           { type: 'writer_text_contains', text: '修订稿' },
           { type: 'writer_table_exists', minRows: 2, minCols: 3 },
@@ -394,7 +567,7 @@ const STORIES: ChatBenchStory[] = [
         artifactId: 'bench_doc_formatter_delivery',
         forceSkillId: 'doc-formatter',
         asserts: [
-          { type: 'skills_applied_includes', skillId: 'doc-formatter', points: 2 },
+          { type: 'skills_selected_includes', skillId: 'doc-formatter', points: 2 },
           { type: 'writer_text_contains', text: '排版规范' },
           { type: 'writer_text_contains', text: '自检清单' },
         ],
@@ -436,7 +609,7 @@ const STORIES: ChatBenchStory[] = [
         artifactId: 'bench_exam_answering_delivery',
         forceSkillId: 'exam-answering',
         asserts: [
-          { type: 'skills_applied_includes', skillId: 'exam-answering', points: 2 },
+          { type: 'skills_selected_includes', skillId: 'exam-answering', points: 2 },
           { type: 'writer_text_contains', text: '答案与解析' },
           { type: 'writer_text_contains', text: '1.' },
           { type: 'writer_text_contains', text: '2.' },
@@ -467,7 +640,7 @@ const STORIES: ChatBenchStory[] = [
           { type: 'ui_click_send' },
         ],
         asserts: [
-          { type: 'skills_applied_includes', skillId: 'finance-audit', points: 2 },
+          { type: 'skills_selected_includes', skillId: 'finance-audit', points: 2 },
           { type: 'writer_table_exists', minRows: 4, minCols: 4 },
           { type: 'writer_table_header_bold' },
           { type: 'writer_text_contains', text: '变更记录' },
@@ -535,7 +708,7 @@ const STORIES: ChatBenchStory[] = [
         name: '合同风险清单表格',
         artifactId: 'bench_contract_risk_table',
         asserts: [
-          { type: 'skills_applied_includes', skillId: 'contract-review', points: 2 },
+          { type: 'skills_selected_includes', skillId: 'contract-review', points: 2 },
           { type: 'writer_table_exists', minRows: 4, minCols: 4 },
           { type: 'writer_table_header_bold' },
           { type: 'writer_text_contains', text: '变更记录' },
@@ -578,7 +751,7 @@ const STORIES: ChatBenchStory[] = [
         name: '需求-响应对照表',
         artifactId: 'bench_bid_response_table',
         asserts: [
-          { type: 'skills_applied_includes', skillId: 'bidding-helper', points: 2 },
+          { type: 'skills_selected_includes', skillId: 'bidding-helper', points: 2 },
           { type: 'writer_table_exists', minRows: 4, minCols: 4 },
           { type: 'writer_table_header_bold' },
           { type: 'writer_text_contains', text: '变更记录' },
@@ -620,7 +793,7 @@ const STORIES: ChatBenchStory[] = [
         name: '会议纪要模板（含待办表格）',
         artifactId: 'bench_meeting_minutes',
         asserts: [
-          { type: 'skills_applied_includes', skillId: 'meeting-minutes', points: 2 },
+          { type: 'skills_selected_includes', skillId: 'meeting-minutes', points: 2 },
           { type: 'writer_table_exists', minRows: 2, minCols: 2 },
           { type: 'writer_text_contains', text: '变更记录' },
           { type: 'writer_block_backup_exists' },
@@ -661,7 +834,7 @@ const STORIES: ChatBenchStory[] = [
         name: '制度大纲与标题层级',
         artifactId: 'bench_policy_outline',
         asserts: [
-          { type: 'skills_applied_includes', skillId: 'policy-format', points: 2 },
+          { type: 'skills_selected_includes', skillId: 'policy-format', points: 2 },
           { type: 'writer_text_contains', text: '概述' },
           { type: 'writer_text_contains', text: '变更记录' },
           { type: 'writer_block_backup_exists' },
@@ -703,7 +876,7 @@ const STORIES: ChatBenchStory[] = [
         name: '风险台账表格',
         artifactId: 'bench_risk_register_table',
         asserts: [
-          { type: 'skills_applied_includes', skillId: 'risk-register', points: 2 },
+          { type: 'skills_selected_includes', skillId: 'risk-register', points: 2 },
           { type: 'writer_table_exists', minRows: 4, minCols: 4 },
           { type: 'writer_table_header_bold' },
           { type: 'writer_text_contains', text: '变更记录' },
@@ -751,7 +924,7 @@ const STORIES: ChatBenchStory[] = [
           { type: 'insert_text', text: '3. 合同争议解决方式：（____）仲裁。' },
         ],
         asserts: [
-          { type: 'skills_applied_includes', skillId: 'answer-mode', points: 2 },
+          { type: 'skills_selected_includes', skillId: 'answer-mode', points: 2 },
           { type: 'writer_text_contains', text: '公司现金流量表属于财务报表' },
           { type: 'writer_text_contains', text: '深圳' },
           { type: 'writer_text_not_contains', text: '____' },
@@ -783,7 +956,7 @@ const STORIES: ChatBenchStory[] = [
           { type: 'insert_text', text: '段落B：这里是B【插入点】' },
         ],
         asserts: [
-          { type: 'skills_applied_includes', skillId: 'answer-mode', points: 2 },
+          { type: 'skills_selected_includes', skillId: 'answer-mode', points: 2 },
           { type: 'writer_text_contains', text: '段落A：这里是A【插入点】OK1' },
           { type: 'writer_text_contains', text: '段落B：这里是B【插入点】OK2' },
         ],
@@ -854,7 +1027,7 @@ const STORIES: ChatBenchStory[] = [
           { type: 'insert_text', text: '4月\\t160\\t110\\t18' },
         ],
         asserts: [
-          { type: 'skills_applied_includes', skillId: 'finance-audit', points: 2 },
+          { type: 'skills_selected_includes', skillId: 'finance-audit', points: 2 },
           { type: 'assistant_text_contains', text: '范围与口径' },
           { type: 'assistant_text_contains', text: '关键发现摘要' },
           { type: 'assistant_text_contains', text: '异常/差异清单表' },
@@ -891,7 +1064,7 @@ const STORIES: ChatBenchStory[] = [
           { type: 'insert_text', text: '4. 争议：争议提交甲方所在地仲裁委员会仲裁。' },
         ],
         asserts: [
-          { type: 'skills_applied_includes', skillId: 'contract-review', points: 2 },
+          { type: 'skills_selected_includes', skillId: 'contract-review', points: 2 },
           { type: 'assistant_text_contains', text: '执行摘要' },
           { type: 'assistant_text_contains', text: '风险清单表' },
           { type: 'assistant_text_contains', text: '需确认问题' },
@@ -929,7 +1102,7 @@ const STORIES: ChatBenchStory[] = [
           { type: 'insert_text', text: '5. 评分：技术 60 分，商务 40 分；技术里含“演示效果”10分。' },
         ],
         asserts: [
-          { type: 'skills_applied_includes', skillId: 'bidding-helper', points: 2 },
+          { type: 'skills_selected_includes', skillId: 'bidding-helper', points: 2 },
           { type: 'assistant_text_contains', text: '执行摘要' },
           { type: 'assistant_text_contains', text: '符合性/偏离矩阵' },
           { type: 'assistant_text_contains', text: '澄清问题清单' },
@@ -970,7 +1143,7 @@ const STORIES: ChatBenchStory[] = [
           { type: 'insert_text', text: '未决：前端断线重载的根因仍需定位。' },
         ],
         asserts: [
-          { type: 'skills_applied_includes', skillId: 'meeting-minutes', points: 2 },
+          { type: 'skills_selected_includes', skillId: 'meeting-minutes', points: 2 },
           { type: 'assistant_text_contains', text: '结论摘要' },
           { type: 'assistant_text_contains', text: '决议清单' },
           { type: 'assistant_text_contains', text: '待办表' },
@@ -1009,7 +1182,7 @@ const STORIES: ChatBenchStory[] = [
           { type: 'insert_text', text: '流程：需求->审批->下单->验收->付款（缺少留痕与追责说明）。' },
         ],
         asserts: [
-          { type: 'skills_applied_includes', skillId: 'policy-format', points: 2 },
+          { type: 'skills_selected_includes', skillId: 'policy-format', points: 2 },
           { type: 'assistant_text_contains', text: '结构与编号规范' },
           { type: 'assistant_text_contains', text: '建议章节结构' },
           { type: 'assistant_text_contains', text: '术语/一致性/合规问题清单' },
@@ -1046,7 +1219,7 @@ const STORIES: ChatBenchStory[] = [
           { type: 'insert_text', text: '- 文档快照过大，上传耗时长，可能超时' },
         ],
         asserts: [
-          { type: 'skills_applied_includes', skillId: 'risk-register', points: 2 },
+          { type: 'skills_selected_includes', skillId: 'risk-register', points: 2 },
           { type: 'assistant_text_contains', text: '风险登记表' },
           { type: 'assistant_text_contains', text: '风险等级口径' },
           { type: 'assistant_text_contains', text: '自检清单' },
@@ -1201,7 +1374,7 @@ const STORIES: ChatBenchStory[] = [
         name: '生成分析结果（透视）',
         artifactId: 'bench_et_analyzer_delivery',
         forceSkillId: 'et-analyzer',
-        asserts: [{ type: 'skills_applied_includes', skillId: 'et-analyzer', points: 2 }],
+        asserts: [{ type: 'skills_selected_includes', skillId: 'et-analyzer', points: 2 }],
         query:
           '在当前工作表创建一份示例“销售明细”（至少20行，字段：日期/部门/产品/金额），并做一次分析：\n' +
           '1) 生成一个“分析结果总览”sheet（用 upsert_block），包含数据概览、异常摘要、待确认项；\n' +
@@ -1226,7 +1399,7 @@ const STORIES: ChatBenchStory[] = [
         artifactId: 'bench_et_visualizer_delivery',
         forceSkillId: 'et-visualizer',
         asserts: [
-          { type: 'skills_applied_includes', skillId: 'et-visualizer', points: 2 },
+          { type: 'skills_selected_includes', skillId: 'et-visualizer', points: 2 },
           { type: 'et_chart_exists', min: 1 },
           { type: 'et_chart_has_title' },
         ],
@@ -1503,7 +1676,7 @@ const STORIES: ChatBenchStory[] = [
         artifactId: 'bench_ppt_creator_delivery',
         forceSkillId: 'ppt-creator',
         asserts: [
-          { type: 'skills_applied_includes', skillId: 'ppt-creator', points: 2 },
+          { type: 'skills_selected_includes', skillId: 'ppt-creator', points: 2 },
           { type: 'wpp_slide_count_at_least', min: 3 },
           { type: 'wpp_placeholder_text_contains', kind: 'title', text: '项目汇报' },
         ],
@@ -1531,7 +1704,7 @@ const STORIES: ChatBenchStory[] = [
         artifactId: 'bench_ppt_outline_delivery',
         forceSkillId: 'ppt-outline',
         asserts: [
-          { type: 'skills_applied_includes', skillId: 'ppt-outline', points: 2 },
+          { type: 'skills_selected_includes', skillId: 'ppt-outline', points: 2 },
           { type: 'wpp_slide_count_at_least', min: 4 },
         ],
         query:
@@ -1556,7 +1729,7 @@ const STORIES: ChatBenchStory[] = [
         artifactId: 'bench_wpp_outline_delivery',
         forceSkillId: 'wpp-outline',
         asserts: [
-          { type: 'skills_applied_includes', skillId: 'wpp-outline', points: 2 },
+          { type: 'skills_selected_includes', skillId: 'wpp-outline', points: 2 },
           { type: 'wpp_slide_count_at_least', min: 2 },
           { type: 'wpp_placeholder_text_contains', kind: 'title', text: '版式测试' },
         ],
@@ -1904,7 +2077,7 @@ const STORIES: ChatBenchStory[] = [
         name: '逐页大纲+讲稿（不创建）',
         expectedOutput: 'text',
         asserts: [
-          { type: 'skills_applied_includes', skillId: 'ppt-outline', points: 2 },
+          { type: 'skills_selected_includes', skillId: 'ppt-outline', points: 2 },
           { type: 'assistant_text_contains', text: '目标与受众' },
           { type: 'assistant_text_contains', text: '叙事主线' },
           { type: 'assistant_text_contains', text: '逐页大纲表' },
@@ -1951,7 +2124,7 @@ const STORIES: ChatBenchStory[] = [
         name: '审稿输出（不写回）',
         expectedOutput: 'text',
         asserts: [
-          { type: 'skills_applied_includes', skillId: 'ppt-review', points: 2 },
+          { type: 'skills_selected_includes', skillId: 'ppt-review', points: 2 },
           { type: 'assistant_text_contains', text: '问题概览' },
           { type: 'assistant_text_contains', text: '逐页问题清单' },
           { type: 'assistant_text_contains', text: '版式与一致性规范' },

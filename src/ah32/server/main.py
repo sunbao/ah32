@@ -647,6 +647,11 @@ if settings.enable_dev_routes:
 
     app.include_router(telemetry_dev_router)
 
+    # Dev-only tenant skills mutation helpers (gated by AH32_ENABLE_DEV_ROUTES=true).
+    from ah32.dev.skills_dev_api import router as skills_dev_router
+
+    app.include_router(skills_dev_router)
+
 
 # 安全配置
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)

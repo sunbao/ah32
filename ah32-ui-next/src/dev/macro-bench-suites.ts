@@ -23,6 +23,8 @@ export type MacroBenchSuiteId =
   // System coverage (executor/repair/UX-critical flows).
   | 'system-plan-repair'
   | 'system-block-lifecycle'
+  | 'system-macro-queue'
+  | 'system-tenant-skills'
   // Business scenarios (legacy / scenario-first suites).
   | 'finance-audit'
   | 'contract-review'
@@ -64,6 +66,8 @@ export const MACRO_BENCH_SUITES: MacroBenchSuite[] = [
   { id: 'answer-mode', name: '答题写回', description: '题号定位/括号下划线写回/不改题干（Plan-only）' },
   { id: 'system-plan-repair', name: '系统：Plan 修复', description: '验证 /agentic/plan/repair 的 deterministic fast-path' },
   { id: 'system-block-lifecycle', name: '系统：块生命周期', description: 'upsert/update/rollback/delete 的可执行回归' },
+  { id: 'system-macro-queue', name: '系统：宏队列', description: '跨文档写回队列：不串写/不踩踏/可回归' },
+  { id: 'system-tenant-skills', name: '系统：租户 Skills', description: '租户内置技能：热更新/禁用/冲突优先级（dev-only）' },
   { id: 'finance-audit', name: '财务审计', description: '报表/预算/费用/台账/核对' },
   { id: 'contract-review', name: '法务合同', description: '风险点/条款审阅/修改建议/对照表' },
   { id: 'bidding-helper', name: '招投标', description: '需求响应/证据材料/清单/里程碑' },
@@ -273,6 +277,9 @@ const T: Record<MacroBenchSuiteId, Template[]> = {
       ],
     },
   ],
+  // System suites below are chat-bench driven (macro-direct cannot express UI queue or dev mutations).
+  'system-macro-queue': [],
+  'system-tenant-skills': [],
   'finance-audit': [
     // Writer
     {
