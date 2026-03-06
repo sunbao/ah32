@@ -1059,6 +1059,15 @@ class ReActAgent:
             "\u6392\u7248",  # ??
             "\u6da6\u8272",  # ??
             "\u6539\u5199",  # ??
+            "\u6539\u6210",  # 改成（常见：把上面那张表格…改成…）
+            "\u6539\u4e3a",  # 改为
+            "\u4fee\u6539",  # 修改
+            "\u8c03\u6574",  # 调整
+            "\u4f18\u5316",  # 优化
+            "\u5b8c\u5584",  # 完善
+            "\u5347\u7ea7",  # 升级（常见：把上面的…升级为…）
+            "\u8865\u5145",  # 补充
+            "\u8865\u5168",  # 补全
         )
         doc_targets = (
             "\u6587\u6863",  # ??
@@ -1190,9 +1199,19 @@ class ReActAgent:
                 "追加",
                 "输出到",
                 "生成到",
+                "生成",
+                "创建",
+                "制作",
+                "做",
                 "写入到",
                 "写进",
                 "填到",
+                "画",
+                "绘制",
+                "排版",
+                "润色",
+                "改写",
+                "整理",
             )
             targets = (
                 "文档",
@@ -1310,7 +1329,6 @@ class ReActAgent:
             "优缺点",
             "原理",
             "怎么回事",
-            "是否",
         )
         howto_signals = (
             "如何",
@@ -1320,6 +1338,12 @@ class ReActAgent:
         )
 
         if any(k in t for k in explain_signals):
+            return True
+
+        # Special-case: "是否" is ambiguous. It's common in table headers ("凭证是否齐全") and
+        # should NOT force chat-only when the user is clearly asking for a document action.
+        # But for plain yes/no questions ("是否合规") we still treat it as chat-only.
+        if ("是否" in t) and (not explicit_write_request):
             return True
         if has_question or any(k in t for k in howto_signals):
             return False if explicit_write_request else True
