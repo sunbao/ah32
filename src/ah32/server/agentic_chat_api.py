@@ -239,6 +239,143 @@ def _extract_json_payload(text: str) -> str:
     return text.strip()
 
 
+# Keep the same id rule as ah32.plan.schema._ID_RE so we never generate an invalid id during repair.
+_PLAN_ID_RE = re.compile(r"^[a-zA-Z0-9_\-:.]{1,64}$")
+
+
+def _safe_plan_id(raw: object, fallback: str) -> str:
+    v = str(raw or "").strip()
+    if not v:
+        return fallback
+    if len(v) > 64:
+        v = v[:64]
+    return v if _PLAN_ID_RE.match(v) else fallback
+
+
+def _semantic_repair_wps_table_block_not_found(plan_obj: Dict[str, Any], block_id: str) -> Optional[Dict[str, Any]]:
+    """Repair a common valid-but-wrong pattern for Writer tables.
+
+    When the Plan uses set_table_cell_text(block_id=...) but never created that block, the frontend
+    executor fails with: "set_table_cell_text: block not found: <block_id>".
+
+    Strategy:
+    - Lift those top-level set_table_cell_text ops into an upsert_block(block_id=...),
+      and insert a minimal insert_table first.
+    - Drop block_id/table_index on the moved actions so the executor resolves the table by selection
+      inside the block scope.
+    """
+    try:
+        actions = plan_obj.get("actions")
+        if not isinstance(actions, list) or not actions:
+            return None
+
+        bid = str(block_id or "").strip()
+        if not bid:
+            return None
+
+        idxs: list[int] = []
+        cells: list[Dict[str, Any]] = []
+        for i, a in enumerate(actions):
+            if not isinstance(a, dict):
+                continue
+            if str(a.get("op") or "").strip() != "set_table_cell_text":
+                continue
+            if str(a.get("block_id") or "").strip() != bid:
+                continue
+            idxs.append(i)
+            cells.append(a)
+
+        if not idxs:
+            return None
+
+        idxs_set = set(idxs)
+        kept: list[Any] = [a for j, a in enumerate(actions) if j not in idxs_set]
+
+        upsert: Optional[Dict[str, Any]] = None
+        for a in kept:
+            if (
+                isinstance(a, dict)
+                and str(a.get("op") or "").strip() == "upsert_block"
+                and str(a.get("block_id") or "").strip() == bid
+            ):
+                upsert = a
+                break
+
+        insert_at = max(0, min(idxs)) if idxs else 0
+        if insert_at > len(kept):
+            insert_at = len(kept)
+
+        if upsert is None:
+            upsert_id = _safe_plan_id(f"repair_upsert_{bid}", "repair_upsert_block")
+            upsert = {
+                "id": upsert_id,
+                "title": f"Repair: upsert block {bid}",
+                "op": "upsert_block",
+                "block_id": bid,
+                "anchor": "end",
+                "freeze_cursor": True,
+                "actions": [],
+            }
+            kept.insert(insert_at, upsert)
+
+        nested = upsert.get("actions")
+        if not isinstance(nested, list):
+            nested = []
+
+        max_row = 1
+        max_col = 1
+        for c in cells:
+            try:
+                r = int(c.get("row") or 0)
+                co = int(c.get("col") or 0)
+                if r > max_row:
+                    max_row = r
+                if co > max_col:
+                    max_col = co
+            except Exception:
+                continue
+
+        rows = max(1, min(100, max_row))
+        cols = max(1, min(50, max_col))
+
+        has_insert_table = any(
+            isinstance(x, dict) and str(x.get("op") or "").strip() == "insert_table" for x in nested
+        )
+        if not has_insert_table:
+            it_id = _safe_plan_id(f"repair_insert_table_{bid}", "repair_insert_table")
+            nested.insert(
+                0,
+                {
+                    "id": it_id,
+                    "title": "Insert table",
+                    "op": "insert_table",
+                    "rows": rows,
+                    "cols": cols,
+                },
+            )
+
+        for k, c in enumerate(cells):
+            if not isinstance(c, dict):
+                continue
+            cc = dict(c)
+            cc.pop("block_id", None)
+            cc.pop("table_index", None)
+            cc["id"] = _safe_plan_id(cc.get("id"), f"repair_cell_{k + 1}")
+            cc["title"] = (
+                str(cc.get("title") or f"Set cell r{cc.get('row')}c{cc.get('col')}").strip()[:200]
+                or "Set cell"
+            )
+            nested.append(cc)
+
+        upsert["actions"] = nested
+
+        out = dict(plan_obj)
+        out["actions"] = kept
+        return out
+    except Exception:
+        return None
+
+
 def _normalize_path_for_hash(p: str) -> str:
     s = (p or "").strip()
     if not s:
@@ -483,15 +620,41 @@ async def plan_repair(
 
             normalized = normalize_plan_payload(request.plan, host_app=host)
             fixed0 = Plan.model_validate(normalized)
-            if fixed0.host_app == host:
+
+            # Preflight / validate-only: accept the normalized payload and return without invoking LLM.
+            if fixed0.host_app == host and fast_path_only:
                 resp = PlanRepairResponse(success=True, plan=fixed0.model_dump(mode="json"))
                 metrics_recorder.record(
                     op="plan_repair",
                     success=resp.success,
                     duration_ms=int((time.perf_counter() - t0) * 1000),
-                    extra={"host_app": host, "fast_path": True, "fast_path_only": fast_path_only},
+                    extra={"host_app": host, "fast_path": True, "fast_path_only": True},
                 )
                 return resp
+
+            # Semantic fast-path for known runtime failures (avoid LLM loops on valid-but-wrong plans).
+            try:
+                msg = str(request.error_message or "").strip()
+                m = re.search(
+                    r"set_table_cell_text:\s*block not found:\s*([a-zA-Z0-9_\-:.]{1,64})",
+                    msg,
+                    re.IGNORECASE,
+                )
+                if host == "wps" and m:
+                    bid = str(m.group(1) or "").strip()
+                    repaired = _semantic_repair_wps_table_block_not_found(fixed0.model_dump(mode="json"), bid)
+                    if repaired:
+                        fixed1 = Plan.model_validate(normalize_plan_payload(repaired, host_app=host))
+                        resp = PlanRepairResponse(success=True, plan=fixed1.model_dump(mode="json"))
+                        metrics_recorder.record(
+                            op="plan_repair",
+                            success=resp.success,
+                            duration_ms=int((time.perf_counter() - t0) * 1000),
+                            extra={"host_app": host, "fast_path": "semantic", "pattern": "set_table_cell_text:block_not_found"},
+                        )
+                        return resp
+            except Exception as e:
+                logger.debug("[plan_repair] semantic fast-path failed (ignored): %s", e, exc_info=True)
         except ValidationError as e:
             # For preflight/validate-only checks, do not invoke LLM; return deterministic error early.
             if fast_path_only:

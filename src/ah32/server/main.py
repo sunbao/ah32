@@ -116,6 +116,32 @@ logger.debug(f"📊 日志级别配置: {log_level} (环境变量: LOG_LEVEL)")
 enable_reload = os.environ.get("RELOAD", "false").lower() in ("true", "1", "yes")
 logger.debug(f"🔥 热加载配置: {'启用' if enable_reload else '禁用'} (环境变量: RELOAD)")
 
+# Reduce third-party HTTP client log noise by default.
+# These libraries can emit extremely verbose DEBUG logs (including full LLM prompts/request payloads)
+# when LOG_LEVEL=DEBUG. Keep them quiet unless explicitly enabled.
+_http_debug = os.environ.get("AH32_HTTP_DEBUG", "").lower() in ("1", "true", "yes")
+if _http_debug:
+    logging.getLogger("httpcore").setLevel(logging.DEBUG)
+    logging.getLogger("httpcore.http11").setLevel(logging.DEBUG)
+    logging.getLogger("httpcore.connection").setLevel(logging.DEBUG)
+    logging.getLogger("httpx").setLevel(logging.DEBUG)
+    logging.getLogger("urllib3.connectionpool").setLevel(logging.DEBUG)
+    logging.getLogger("openai").setLevel(logging.DEBUG)
+    logging.getLogger("openai._base_client").setLevel(logging.DEBUG)
+else:
+    # Keep root/app logs at LOG_LEVEL; only quiet these noisy deps.
+    for _n in (
+        "httpcore",
+        "httpcore.http11",
+        "httpcore.connection",
+        "httpx",
+        "urllib3",
+        "urllib3.connectionpool",
+        "openai",
+        "openai._base_client",
+    ):
+        logging.getLogger(_n).setLevel(logging.WARNING)
+
 # ========== 端口自动清理功能 ==========
 def cleanup_port(port: int = 5123):
     """自动清理被占用的端口"""
@@ -218,24 +244,9 @@ from ah32.server.tenant_user_api import router as tenant_user_router  # Tenant u
 from ah32.agents.agentic_coordinator import get_coordinator  # 阿蛤（AH32）协调器
 from ah32.services.tasks import ConversationRepository, TaskRepository
 
-# 配置日志
-log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
-log_level_value = getattr(logging, log_level, logging.INFO)
-
-logging.basicConfig(
-    level=log_level_value,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
-
-# 特别设置HTTP库的日志级别（防止连接断开的关键）
-if log_level.upper() == "DEBUG":
-    logging.getLogger('httpcore').setLevel(logging.DEBUG)
-    logging.getLogger('httpx').setLevel(logging.DEBUG)
-    logging.getLogger('urllib3.connectionpool').setLevel(logging.DEBUG)
-    # 强制设置所有HTTP相关日志为DEBUG
-    logging.getLogger('httpcore.http11').setLevel(logging.DEBUG)
-    logging.getLogger('httpcore.connection').setLevel(logging.DEBUG)
+# Note: avoid re-configuring logging handlers here.
+# Logging is configured once at module startup above (including trace/tenant fields).
+# Noisy dependency debug logs are controlled by AH32_HTTP_DEBUG.
 
 # Even when LOG_LEVEL=DEBUG, keep LangSmith log spam down; tracing can still be enabled via env.
 _langsmith_log_level = os.environ.get("AH32_LANGSMITH_LOG_LEVEL", "WARNING").upper()
