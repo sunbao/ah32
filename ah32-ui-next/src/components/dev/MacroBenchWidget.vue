@@ -30,6 +30,9 @@
         <el-button size="small" type="default" @click="stop" :disabled="!running">
           停止
         </el-button>
+        <el-button size="small" type="default" plain @click="restore" :disabled="running">
+          恢复
+        </el-button>
       </div>
     </div>
 
@@ -48,6 +51,7 @@
     </div>
 
     <div v-if="progressText" class="macro-bench-progress">{{ progressText }}</div>
+    <div v-if="lastError" class="macro-bench-error">{{ lastError }}</div>
 
     <div v-if="lastSummary" class="macro-bench-summary">
       <div class="macro-bench-summary-line">
@@ -134,7 +138,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { loadBenchResults, runMacroBenchCurrentHost, type MacroBenchRun, type MacroBenchSummary, getSuiteName } from '@/dev/macro-bench'
 import { MACRO_BENCH_PRESETS, MACRO_BENCH_SUITES, type MacroBenchHost, type MacroBenchPreset, type MacroBenchSuiteId } from '@/dev/macro-bench-suites'
@@ -144,6 +148,15 @@ import { useChatStore } from '@/stores/chat'
 
 type RunMode = 'macro' | 'chat'
 
+const TOAST_Z_INDEX = 10002
+const toast = (type: 'success' | 'warning' | 'info' | 'error', message: string) => {
+  try {
+    ElMessage({ type, message, showClose: true, duration: type === 'error' ? 6000 : 3000, zIndex: TOAST_Z_INDEX })
+  } catch (e) {
+    ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/components/dev/MacroBenchWidget.vue', e)
+  }
+}
+
 const running = ref(false)
 const stopped = ref(false)
 const progress = ref<any>(null)
@@ -151,6 +164,7 @@ const lastSummary = ref<any>(null)
 const lastJson = ref<string>('')
 const lastRun = ref<MacroBenchRun | ChatBenchRun | null>(null)
 const lastMode = ref<RunMode>('macro')
+const lastError = ref<string>('')
 
 const suites = MACRO_BENCH_SUITES
 const presets = MACRO_BENCH_PRESETS
@@ -165,11 +179,145 @@ const maxFailures = ref<number>(0)
 // NOTE: not enforced yet (we don't have reliable token/cost usage in SSE).
 const maxCost = ref<number>(0)
 
+type MacroBenchWidgetState = {
+  runMode?: RunMode
+  suiteId?: MacroBenchSuiteId | 'all'
+  preset?: MacroBenchPreset
+  maxHours?: number
+  maxTurns?: number
+  maxFailures?: number
+  maxCost?: number
+  lastMode?: RunMode
+  lastError?: string
+}
+
+const WIDGET_STATE_KEY = 'ah32_macro_bench_widget_state_v1'
+
+const safeHost = (): MacroBenchHost => {
+  try {
+    const raw = String(wpsBridge.getHostApp() || 'wps').toLowerCase()
+    if (raw === 'et' || raw === 'wpp' || raw === 'wps') return raw as MacroBenchHost
+    if (raw === 'writer') return 'wps'
+    return 'wps'
+  } catch (e) {
+    ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/components/dev/MacroBenchWidget.vue', e)
+    return 'wps'
+  }
+}
+
+const parseIsoMs = (v: any): number => {
+  const ms = Date.parse(String(v || ''))
+  return Number.isFinite(ms) ? ms : 0
+}
+
+const isValidSuiteId = (v: any): v is MacroBenchSuiteId | 'all' => {
+  if (v === 'all') return true
+  return MACRO_BENCH_SUITES.some(s => s.id === v)
+}
+
+const isValidPreset = (v: any): v is MacroBenchPreset => {
+  return MACRO_BENCH_PRESETS.some(p => p.id === v)
+}
+
+const isValidRunMode = (v: any): v is RunMode => v === 'macro' || v === 'chat'
+
+const persistWidgetState = () => {
+  try {
+    const state: MacroBenchWidgetState = {
+      runMode: runMode.value,
+      suiteId: suiteId.value,
+      preset: preset.value,
+      maxHours: maxHours.value,
+      maxTurns: maxTurns.value,
+      maxFailures: maxFailures.value,
+      maxCost: maxCost.value,
+      lastMode: lastMode.value,
+      lastError: lastError.value,
+    }
+    localStorage.setItem(WIDGET_STATE_KEY, JSON.stringify(state))
+  } catch (e) {
+    ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/components/dev/MacroBenchWidget.vue', e)
+  }
+}
+
+const restoreWidgetState = () => {
+  try {
+    const raw = localStorage.getItem(WIDGET_STATE_KEY)
+    if (!raw) return
+    const parsed: any = JSON.parse(raw)
+    if (isValidRunMode(parsed?.runMode)) runMode.value = parsed.runMode
+    if (isValidSuiteId(parsed?.suiteId)) suiteId.value = parsed.suiteId
+    if (isValidPreset(parsed?.preset)) preset.value = parsed.preset
+    if (typeof parsed?.maxHours === 'number') maxHours.value = Math.max(0, parsed.maxHours)
+    if (typeof parsed?.maxTurns === 'number') maxTurns.value = Math.max(0, parsed.maxTurns)
+    if (typeof parsed?.maxFailures === 'number') maxFailures.value = Math.max(0, parsed.maxFailures)
+    if (typeof parsed?.maxCost === 'number') maxCost.value = Math.max(0, parsed.maxCost)
+    if (isValidRunMode(parsed?.lastMode)) lastMode.value = parsed.lastMode
+    if (typeof parsed?.lastError === 'string') lastError.value = parsed.lastError
+  } catch (e) {
+    ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/components/dev/MacroBenchWidget.vue', e)
+  }
+}
+
+const loadLastRunFromStorage = (prefer?: RunMode) => {
+  try {
+    const host = safeHost()
+    const preferMode: RunMode = prefer || runMode.value
+
+    const macro = loadBenchResults({ host, suiteId: suiteId.value, preset: preset.value })
+    const chat = loadChatBenchResults({ host, suiteId: suiteId.value, preset: preset.value })
+
+    const chatRun = chat?.run || null
+    const macroRun = macro?.run || null
+    const chatAt = parseIsoMs(chat?.savedAt)
+    const macroAt = parseIsoMs(macro?.updatedAt)
+
+    const pick = (mode: RunMode) => {
+      if (mode === 'chat') return chatRun
+      return macroRun
+    }
+
+    let pickedMode: RunMode | null = null
+    let pickedRun: any = null
+
+    const preferred = pick(preferMode)
+    if (preferred) {
+      pickedMode = preferMode
+      pickedRun = preferred
+    } else if (chatRun && macroRun) {
+      pickedMode = chatAt >= macroAt ? 'chat' : 'macro'
+      pickedRun = pickedMode === 'chat' ? chatRun : macroRun
+    } else if (chatRun) {
+      pickedMode = 'chat'
+      pickedRun = chatRun
+    } else if (macroRun) {
+      pickedMode = 'macro'
+      pickedRun = macroRun
+    }
+
+    if (!pickedMode || !pickedRun) return
+    lastMode.value = pickedMode
+    runMode.value = pickedMode
+    lastRun.value = pickedRun
+    lastSummary.value = pickedRun.summary
+    if (!lastJson.value) lastJson.value = JSON.stringify(pickedRun, null, 2)
+  } catch (e) {
+    ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/components/dev/MacroBenchWidget.vue', e)
+  }
+}
+
+const restore = () => {
+  restoreWidgetState()
+  // Prefer the last-mode so the UI shows the same results after panel close/open.
+  loadLastRunFromStorage(lastMode.value)
+  persistWidgetState()
+}
+
 const chatStore = useChatStore()
 const canResume = computed(() => {
   if (runMode.value !== 'chat') return false
   try {
-    const host = (wpsBridge.getHostApp() || 'wps') as MacroBenchHost
+    const host = safeHost()
     const loaded = loadChatBenchResults({ host, suiteId: suiteId.value, preset: preset.value })
     const run = loaded?.run
     if (!run) return false
@@ -208,9 +356,7 @@ const start = async () => {
   running.value = true
   stopped.value = false
   progress.value = null
-  lastSummary.value = null
-  lastJson.value = ''
-  lastRun.value = null
+  lastError.value = ''
   lastMode.value = runMode.value
 
   // Let current macro execution abort quickly.
@@ -231,8 +377,8 @@ const start = async () => {
       lastSummary.value = out.summary as ChatBenchSummary
       lastRun.value = out as ChatBenchRun
       lastJson.value = JSON.stringify(out, null, 2)
-      if (!stopped.value) ElMessage.success(`对话驱动跑测完成：成功 ${out.summary.ok}/${out.summary.total}`)
-      else ElMessage.info('对话驱动跑测已停止')
+      if (!stopped.value) toast('success', `对话驱动跑测完成：成功 ${out.summary.ok}/${out.summary.total}`)
+      else toast('info', '对话驱动跑测已停止')
     } else {
       const out = await runMacroBenchCurrentHost({
         onProgress: (p) => { progress.value = p },
@@ -243,16 +389,18 @@ const start = async () => {
       lastSummary.value = out.summary as MacroBenchSummary
       lastRun.value = out as MacroBenchRun
       lastJson.value = JSON.stringify(out, null, 2)
-      if (!stopped.value) ElMessage.success(`宏基准测试完成：成功 ${out.summary.ok}/${out.summary.total}`)
-      else ElMessage.info('宏基准测试已停止')
+      if (!stopped.value) toast('success', `宏基准测试完成：成功 ${out.summary.ok}/${out.summary.total}`)
+      else toast('info', '宏基准测试已停止')
     }
   } catch (e: any) {
-    ElMessage.error(`${runMode.value === 'chat' ? '对话驱动跑测' : '宏基准测试'}失败：${String(e?.message || e)}`)
+    const msg = `${runMode.value === 'chat' ? '对话驱动跑测' : '宏基准测试'}失败：${String(e?.message || e)}`
+    lastError.value = msg
+    toast('error', msg)
   } finally {
     running.value = false
     // Best-effort: show persisted results from last run.
     try {
-      const host = (progress.value?.host || ((wpsBridge.getHostApp() || 'wps') as MacroBenchHost)) as MacroBenchHost
+      const host = (progress.value?.host || safeHost()) as MacroBenchHost
       if (lastMode.value === 'chat') {
         const loaded = loadChatBenchResults({ host, suiteId: suiteId.value, preset: preset.value })
         if (loaded?.run) {
@@ -271,6 +419,7 @@ const start = async () => {
     } catch (e) {
       ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/components/dev/MacroBenchWidget.vue', e)
     }
+    persistWidgetState()
   }
 }
 
@@ -278,7 +427,7 @@ const resume = async () => {
   if (running.value) return
   if (runMode.value !== 'chat') return
 
-  const host = (wpsBridge.getHostApp() || 'wps') as MacroBenchHost
+  const host = safeHost()
   const loaded = loadChatBenchResults({ host, suiteId: suiteId.value, preset: preset.value })
   const prev = loaded?.run
   if (!prev) return
@@ -286,9 +435,7 @@ const resume = async () => {
   running.value = true
   stopped.value = false
   progress.value = null
-  lastSummary.value = null
-  lastJson.value = ''
-  lastRun.value = null
+  lastError.value = ''
   lastMode.value = 'chat'
 
   try {
@@ -306,14 +453,16 @@ const resume = async () => {
     lastSummary.value = out.summary as ChatBenchSummary
     lastRun.value = out as ChatBenchRun
     lastJson.value = JSON.stringify(out, null, 2)
-    if (!stopped.value) ElMessage.success(`续跑完成：成功 ${out.summary.ok}/${out.summary.total}`)
-    else ElMessage.info('续跑已停止')
+    if (!stopped.value) toast('success', `续跑完成：成功 ${out.summary.ok}/${out.summary.total}`)
+    else toast('info', '续跑已停止')
   } catch (e: any) {
-    ElMessage.error(`续跑失败：${String(e?.message || e)}`)
+    const msg = `续跑失败：${String(e?.message || e)}`
+    lastError.value = msg
+    toast('error', msg)
   } finally {
     running.value = false
     try {
-      const host2 = (progress.value?.host || ((wpsBridge.getHostApp() || 'wps') as MacroBenchHost)) as MacroBenchHost
+      const host2 = (progress.value?.host || safeHost()) as MacroBenchHost
       const loaded2 = loadChatBenchResults({ host: host2, suiteId: suiteId.value, preset: preset.value })
       if (loaded2?.run) {
         lastRun.value = loaded2.run
@@ -323,11 +472,13 @@ const resume = async () => {
     } catch (e) {
       ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/components/dev/MacroBenchWidget.vue', e)
     }
+    persistWidgetState()
   }
 }
 
 const stop = () => {
   stopped.value = true
+  toast('info', '已请求停止（当前步骤结束后生效）')
   try { void import('@/services/macro-cancel').then(m => m.macroCancel.cancel()).catch((e) => { ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/components/dev/MacroBenchWidget.vue', e) }) } catch (e) { (globalThis as any).__ah32_reportError?.('ah32-ui-next/src/components/dev/MacroBenchWidget.vue', e) }
   try { (chatStore as any).cancelCurrentRequest?.() } catch (e) { (globalThis as any).__ah32_reportError?.('ah32-ui-next/src/components/dev/MacroBenchWidget.vue', e) }
 }
@@ -336,16 +487,16 @@ const copyJson = async () => {
   if (!lastJson.value) return
   try {
     await navigator.clipboard.writeText(lastJson.value)
-    ElMessage.success('已复制结果JSON')
+    toast('success', '已复制结果JSON')
   } catch (e) {
     ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/components/dev/MacroBenchWidget.vue', e)
     try {
       // Fallback: old WPS WebView might not support clipboard.
       ;(window as any).__BID_BENCH_JSON = lastJson.value
-      ElMessage.warning('复制失败：已写入 window.__BID_BENCH_JSON（可在控制台复制）')
+      toast('warning', '复制失败：已写入 window.__BID_BENCH_JSON（可在控制台复制）')
     } catch (e) {
       ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/components/dev/MacroBenchWidget.vue', e)
-      ElMessage.error('复制失败')
+      toast('error', '复制失败')
     }
   }
 }
@@ -355,8 +506,22 @@ const clear = () => {
   lastJson.value = ''
   progress.value = null
   lastRun.value = null
-  ElMessage.success('已清空(仅本次显示)')
+  lastError.value = ''
+  toast('success', '已清空(仅本次显示)')
+  persistWidgetState()
 }
+
+watch([runMode, suiteId, preset, maxHours, maxTurns, maxFailures, maxCost], () => {
+  persistWidgetState()
+})
+
+onMounted(() => {
+  restore()
+})
+
+onBeforeUnmount(() => {
+  persistWidgetState()
+})
 </script>
 
 <style scoped>
@@ -394,6 +559,12 @@ const clear = () => {
 .macro-bench-progress {
   font-size: 12px;
   color: #111827;
+}
+
+.macro-bench-error {
+  font-size: 12px;
+  color: #b91c1c;
+  line-height: 1.4;
 }
 
 .macro-bench-summary {
