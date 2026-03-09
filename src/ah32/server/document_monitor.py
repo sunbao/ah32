@@ -20,6 +20,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import threading
 import time
 import uuid
@@ -35,6 +36,39 @@ from ah32.tenancy.context import get_tenant_id
 from ah32.tenancy.usage_audit import UsageSpan
 
 logger = logging.getLogger(__name__)
+
+# Frontend log ingestion can be extremely noisy (multi-line batches, huge diag payloads).
+# Keep logs actionable by:
+# - splitting "[HH:MM:SS] [LEVEL] ..." batches into per-line logs
+# - truncating very large payloads
+# - down-leveling known benign warnings
+_FRONTEND_LOG_LINE_RE = re.compile(r"^\[\d{2}:\d{2}:\d{2}\]\s+\[(INFO|WARNING|ERROR|DEBUG)\]\s+(.+)$")
+_NOISY_FRONTEND_SUBSTRINGS = (
+    "requires ExecFunc context",
+    "[WPSBridge] getHostApp.ActiveDocument/Documents requires ExecFunc context",
+)
+
+
+def _frontend_log_max_chars() -> int:
+    try:
+        v = int(os.environ.get("AH32_FRONTEND_LOG_MAX_CHARS") or "4000")
+        return max(256, min(v, 200_000))
+    except Exception:
+        return 4000
+
+
+def _truncate_frontend_log(s: str) -> str:
+    raw = str(s or "")
+    limit = _frontend_log_max_chars()
+    if len(raw) <= limit:
+        return raw
+    return raw[:limit] + f"...(truncated,len={len(raw)})"
+
+
+def _is_noisy_frontend_log_line(line: str) -> bool:
+    s = str(line or "")
+    return any(x in s for x in _NOISY_FRONTEND_SUBSTRINGS)
+
 
 # Per-tenant cache + write-behind persistence (to avoid I/O storms).
 _STORE_LOCK = threading.RLock()
@@ -550,12 +584,43 @@ async def receive_log(
         meta_parts.append("boot_seq=?")
 
     meta = f" [{' '.join(meta_parts)}]" if meta_parts else ""
-    msg = f"[WPS-前端]{meta} {message}"
-    level_lower = level.lower()
-    if level_lower == "error":
-        logger.error(msg)
-    elif level_lower == "warning":
-        logger.warning(msg)
+    raw_message = str(message or "")
+    lines = raw_message.splitlines()
+    # If this looks like a batch of structured frontend log lines, split them to preserve severity.
+    if len(lines) > 1 and all(_FRONTEND_LOG_LINE_RE.match(ln.strip()) for ln in lines if ln.strip()):
+        for ln in lines:
+            ln = ln.strip()
+            if not ln:
+                continue
+            m = _FRONTEND_LOG_LINE_RE.match(ln)
+            if not m:
+                # Fallback: keep as info to avoid dropping signal.
+                logger.info(f"[WPS-前端]{meta} {_truncate_frontend_log(ln)}")
+                continue
+            sev = (m.group(1) or "INFO").strip().lower()
+            text = m.group(0)
+            msg = f"[WPS-前端]{meta} {_truncate_frontend_log(text)}"
+            if _is_noisy_frontend_log_line(text):
+                logger.debug(msg)
+            elif sev == "error":
+                logger.error(msg)
+            elif sev == "warning":
+                logger.warning(msg)
+            elif sev == "debug":
+                logger.debug(msg)
+            else:
+                logger.info(msg)
     else:
-        logger.info(msg)
+        msg = f"[WPS-前端]{meta} {_truncate_frontend_log(raw_message)}"
+        level_lower = str(level or "info").lower()
+        if _is_noisy_frontend_log_line(raw_message):
+            logger.debug(msg)
+        elif level_lower == "error":
+            logger.error(msg)
+        elif level_lower == "warning":
+            logger.warning(msg)
+        elif level_lower == "debug":
+            logger.debug(msg)
+        else:
+            logger.info(msg)
     return {"success": True}
