@@ -1597,6 +1597,24 @@ class ReActAgent:
         plan, _err = self._extract_plan_from_text(text, host_app)
         return plan is not None
 
+    def _selected_skill_ids_for_plan_contracts(self) -> list[str]:
+        out: list[str] = []
+        seen: set[str] = set()
+        try:
+            for skill in getattr(self, "_selected_skills", None) or []:
+                if isinstance(skill, str):
+                    skill_id = skill
+                else:
+                    skill_id = str(getattr(skill, "skill_id", "") or getattr(skill, "id", "") or "")
+                skill_id = skill_id.strip().lower()
+                if not skill_id or skill_id in seen:
+                    continue
+                seen.add(skill_id)
+                out.append(skill_id)
+        except Exception:
+            return []
+        return out
+
     def _extract_plan_from_text(self, text: str, host_app: str) -> tuple[Optional[dict], str]:
         payload = _extract_json_payload(text or "")
         if not payload:
@@ -1618,13 +1636,17 @@ class ReActAgent:
             except Exception:
                 pass
             plan = Plan.model_validate(normalize_plan_payload(obj, host_app=host))
+            plan_json = plan.model_dump(mode="json")
+            from ah32.plan.skill_contracts import validate_plan_contract
+
+            validate_plan_contract(plan_json, self._selected_skill_ids_for_plan_contracts())
         except ValidationError as e:
             return None, f"invalid_plan:{e.errors(include_url=False)}"
         except Exception as e:
             return None, f"invalid_plan:{e}"
         if plan.host_app != host:
             return None, f"host_app mismatch: request={host!r} plan={plan.host_app!r}"
-        return plan.model_dump(mode="json"), ""
+        return plan_json, ""
 
     def _apply_writeback_plan_overrides(self, plan: dict, *, block_id: str, anchor: str) -> dict:
         if not isinstance(plan, dict):

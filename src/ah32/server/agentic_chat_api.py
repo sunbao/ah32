@@ -669,6 +669,7 @@ class PlanGenerateRequest(BaseModel):
     document_name: str = ""
     host_app: str = "wps"
     capabilities: Optional[Dict[str, Any]] = None
+    selected_skill_ids: Optional[List[str]] = None
 
 
 class PlanGenerateResponse(BaseModel):
@@ -686,6 +687,7 @@ class PlanRepairRequest(BaseModel):
     document_name: str = ""
     host_app: str = "wps"
     capabilities: Optional[Dict[str, Any]] = None
+    selected_skill_ids: Optional[List[str]] = None
     attempt: int = 1
     error_type: str
     error_message: str
@@ -720,13 +722,16 @@ async def plan_repair(
         try:
             from ah32.plan.schema import Plan
             from ah32.plan.normalize import normalize_plan_payload
+            from ah32.plan.skill_contracts import SkillPlanContractError, validate_plan_contract
 
             normalized = normalize_plan_payload(request.plan, host_app=host)
             fixed0 = Plan.model_validate(normalized)
+            fixed0_json = fixed0.model_dump(mode="json")
+            validate_plan_contract(fixed0_json, request.selected_skill_ids)
 
             # Preflight / validate-only: accept the normalized payload and return without invoking LLM.
             if fixed0.host_app == host and fast_path_only:
-                resp = PlanRepairResponse(success=True, plan=fixed0.model_dump(mode="json"))
+                resp = PlanRepairResponse(success=True, plan=fixed0_json)
                 metrics_recorder.record(
                     op="plan_repair",
                     success=resp.success,
@@ -739,10 +744,16 @@ async def plan_repair(
             try:
                 msg = str(request.error_message or "").strip()
                 if host == "wps" and re.search(r"\bBID\.answerModeApply\b.*runtime not loaded", msg, re.IGNORECASE):
-                    repaired = _semantic_repair_wps_answer_mode_apply_missing(fixed0.model_dump(mode="json"))
+                    repaired = _semantic_repair_wps_answer_mode_apply_missing(fixed0_json)
                     if repaired:
                         fixed1 = Plan.model_validate(normalize_plan_payload(repaired, host_app=host))
-                        resp = PlanRepairResponse(success=True, plan=fixed1.model_dump(mode="json"))
+                        fixed1_json = fixed1.model_dump(mode="json")
+                        validate_plan_contract(
+                            fixed1_json,
+                            request.selected_skill_ids,
+                            allow_answer_mode_runtime_fallback=True,
+                        )
+                        resp = PlanRepairResponse(success=True, plan=fixed1_json)
                         metrics_recorder.record(
                             op="plan_repair",
                             success=resp.success,
@@ -757,10 +768,12 @@ async def plan_repair(
                 )
                 if host == "wps" and m:
                     bid = str(m.group(1) or "").strip()
-                    repaired = _semantic_repair_wps_table_block_not_found(fixed0.model_dump(mode="json"), bid)
+                    repaired = _semantic_repair_wps_table_block_not_found(fixed0_json, bid)
                     if repaired:
                         fixed1 = Plan.model_validate(normalize_plan_payload(repaired, host_app=host))
-                        resp = PlanRepairResponse(success=True, plan=fixed1.model_dump(mode="json"))
+                        fixed1_json = fixed1.model_dump(mode="json")
+                        validate_plan_contract(fixed1_json, request.selected_skill_ids)
+                        resp = PlanRepairResponse(success=True, plan=fixed1_json)
                         metrics_recorder.record(
                             op="plan_repair",
                             success=resp.success,
@@ -770,6 +783,17 @@ async def plan_repair(
                         return resp
             except Exception as e:
                 logger.debug("[plan_repair] semantic fast-path failed (ignored): %s", e, exc_info=True)
+        except SkillPlanContractError as e:
+            if fast_path_only:
+                resp = PlanRepairResponse(success=False, error=f"invalid plan: {str(e)}")
+                metrics_recorder.record(
+                    op="plan_repair",
+                    success=resp.success,
+                    duration_ms=int((time.perf_counter() - t0) * 1000),
+                    extra={"host_app": host, "fast_path": True, "fast_path_only": True},
+                )
+                return resp
+            pass
         except ValidationError as e:
             # For preflight/validate-only checks, do not invoke LLM; return deterministic error early.
             if fast_path_only:
@@ -808,6 +832,7 @@ async def plan_repair(
             f"session_id: {request.session_id}\n"
             f"document_name: {request.document_name}\n"
             f"host_app: {host}\n"
+            f"selected_skill_ids: {json.dumps(request.selected_skill_ids or [], ensure_ascii=False)}\n"
             f"capabilities: {json.dumps(request.capabilities, ensure_ascii=False, default=str) if request.capabilities else ''}\n"
             f"attempt: {request.attempt}\n\n"
             f"error_type: {request.error_type}\n"
@@ -831,10 +856,24 @@ async def plan_repair(
 
         from ah32.plan.schema import Plan
         from ah32.plan.normalize import normalize_plan_payload
+        from ah32.plan.skill_contracts import validate_plan_contract
 
         try:
             fixed_obj = json.loads(payload)
             fixed = Plan.model_validate(normalize_plan_payload(fixed_obj, host_app=host))
+            fixed_json = fixed.model_dump(mode="json")
+            validate_plan_contract(
+                fixed_json,
+                request.selected_skill_ids,
+                allow_answer_mode_runtime_fallback=bool(
+                    host == "wps"
+                    and re.search(
+                        r"\bBID\.answerModeApply\b.*runtime not loaded",
+                        str(request.error_message or "").strip(),
+                        re.IGNORECASE,
+                    )
+                ),
+            )
         except (ValidationError, json.JSONDecodeError, TypeError, ValueError) as e:
             if isinstance(e, ValidationError):
                 resp = PlanRepairResponse(success=False, error=f"invalid plan: {e.errors(include_url=False)}")
@@ -861,7 +900,7 @@ async def plan_repair(
             )
             return resp
 
-        resp = PlanRepairResponse(success=True, plan=fixed.model_dump(mode="json"))
+        resp = PlanRepairResponse(success=True, plan=fixed_json)
         metrics_recorder.record(
             op="plan_repair",
             success=resp.success,
@@ -904,6 +943,7 @@ async def plan_generate(
 
         from ah32.plan.schema import Plan
         from ah32.plan.normalize import normalize_plan_payload
+        from ah32.plan.skill_contracts import SkillPlanContractError, validate_plan_contract
 
         caps_text = (
             json.dumps(request.capabilities, ensure_ascii=False, default=str) if request.capabilities else ""
@@ -914,6 +954,7 @@ async def plan_generate(
             f"session_id: {request.session_id}\n"
             f"document_name: {request.document_name}\n"
             f"host_app: {host}\n"
+            f"selected_skill_ids: {json.dumps(request.selected_skill_ids or [], ensure_ascii=False)}\n"
             f"capabilities: {caps_text}\n\n"
             f"User request:\n{request.user_query}\n"
         )
@@ -965,6 +1006,12 @@ async def plan_generate(
 
             try:
                 plan = Plan.model_validate(normalize_plan_payload(plan_obj, host_app=host))
+                plan_json = plan.model_dump(mode="json")
+                validate_plan_contract(plan_json, request.selected_skill_ids)
+            except SkillPlanContractError as e:
+                error_type = "invalid_plan"
+                error_message = str(e)
+                continue
             except (ValidationError, TypeError, ValueError) as e:
                 error_type = "invalid_plan"
                 if isinstance(e, ValidationError):
@@ -978,7 +1025,7 @@ async def plan_generate(
                 error_message = f"host_app mismatch: request={host!r} plan={plan.host_app!r}"
                 continue
 
-            resp = PlanGenerateResponse(success=True, plan=plan.model_dump(mode="json"))
+            resp = PlanGenerateResponse(success=True, plan=plan_json)
             metrics_recorder.record(
                 op="plan_generate",
                 success=resp.success,

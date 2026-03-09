@@ -26,7 +26,7 @@ export class PlanClient {
     this.hostApp = hostApp || 'unknown'
   }
 
-  async generatePlan(userQuery: string): Promise<PlanGenerateResult> {
+  async generatePlan(userQuery: string, selectedSkillIds: string[] = []): Promise<PlanGenerateResult> {
     try {
       const cfg = getRuntimeConfig()
       const capabilities = wpsBridge.getCapabilities(false)
@@ -46,7 +46,8 @@ export class PlanClient {
           session_id: this.sessionId,
           document_name: this.documentName,
           host_app: this.hostApp,
-          capabilities
+          capabilities,
+          selected_skill_ids: Array.isArray(selectedSkillIds) ? selectedSkillIds : []
         })
       })
 
@@ -69,7 +70,13 @@ export class PlanClient {
     }
   }
 
-  async repairPlan(plan: any, errorType: string, errorMessage: string, attempt: number = 1): Promise<PlanRepairResult> {
+  async repairPlan(
+    plan: any,
+    errorType: string,
+    errorMessage: string,
+    attempt: number = 1,
+    selectedSkillIds: string[] = [],
+  ): Promise<PlanRepairResult> {
     try {
       const cfg = getRuntimeConfig()
       const capabilities = wpsBridge.getCapabilities(false)
@@ -89,6 +96,7 @@ export class PlanClient {
           document_name: this.documentName,
           host_app: this.hostApp,
           capabilities,
+          selected_skill_ids: Array.isArray(selectedSkillIds) ? selectedSkillIds : [],
           attempt,
           error_type: errorType,
           error_message: errorMessage,

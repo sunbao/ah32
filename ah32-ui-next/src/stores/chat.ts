@@ -460,6 +460,15 @@ export const useChatStore = defineStore('chat', () => {
         }
     }
 
+    const getSelectedSkillIdsForSession = (sessionId?: string | null): string[] => {
+        const sid = normalizeSessionId(sessionId || currentSessionId.value)
+        const rt = getRuntime(sid)
+        const list = Array.isArray(rt.selectedSkills) ? rt.selectedSkills : []
+        return list
+            .map((skill: any) => String(skill?.id || '').trim())
+            .filter((skillId: string, index: number, arr: string[]) => !!skillId && arr.indexOf(skillId) === index)
+    }
+
     const syncLastMacroBlockIdForSession = (sessionId?: string | null) => {
         const sid = (sessionId ? String(sessionId) : '').trim() || getSessionKey()
         // Prefer explicit per-session memory if it exists.
@@ -3173,7 +3182,8 @@ export const useChatStore = defineStore('chat', () => {
                                 currentPlan,
                                 'preflight_validate',
                                 'preflight_validate',
-                                0
+                                0,
+                                getSelectedSkillIdsForSession(job.sessionId)
                             )
                             if (preflight.success && preflight.plan) {
                                 currentPlan = preflight.plan
@@ -3181,7 +3191,13 @@ export const useChatStore = defineStore('chat', () => {
                                 const pe = String(preflight.error || '')
                                 if (pe.toLowerCase().includes('invalid plan')) {
                                     didRepair = true
-                                    const repaired0 = await planClient.repairPlan(currentPlan, 'invalid_plan', pe, 1)
+                                    const repaired0 = await planClient.repairPlan(
+                                        currentPlan,
+                                        'invalid_plan',
+                                        pe,
+                                        1,
+                                        getSelectedSkillIdsForSession(job.sessionId)
+                                    )
                                     if (!repaired0.success || !repaired0.plan) {
                                         lastErr = String(repaired0.error || pe || 'plan_repair_failed')
                                     } else {
@@ -3234,7 +3250,13 @@ export const useChatStore = defineStore('chat', () => {
                             lastErr = String(res?.message || 'Plan execution failed')
                             if (attempt >= 2) break
                             didRepair = true
-                            const repaired = await planClient.repairPlan(currentPlan, 'exec_failed', lastErr, attempt)
+                            const repaired = await planClient.repairPlan(
+                                currentPlan,
+                                'exec_failed',
+                                lastErr,
+                                attempt,
+                                getSelectedSkillIdsForSession(job.sessionId)
+                            )
                             if (!repaired.success || !repaired.plan) {
                                 lastErr = String(repaired.error || 'plan_repair_failed')
                                 try { logToBackend?.(`[MacroQueue] plan.repair_failed block=${b.blockId} attempt=${attempt} err=${lastErr}`) } catch (e) { (globalThis as any).__ah32_reportError?.('ah32-ui-next/src/stores/chat.ts', e) }
