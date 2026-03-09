@@ -376,6 +376,109 @@ def _semantic_repair_wps_table_block_not_found(plan_obj: Dict[str, Any], block_i
         return None
 
 
+def _semantic_repair_wps_answer_mode_apply_missing(plan_obj: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Repair when the frontend cannot run `answer_mode_apply`.
+
+    Some WPS runtimes load a reduced executor (no js-macro runtime), which makes `answer_mode_apply`
+    fail with an error like: "BID.answerModeApply not available (js-macro runtime not loaded)".
+
+    Strategy: rewrite `answer_mode_apply` into a plain `upsert_block` + `insert_text` fallback so the
+    Plan can still execute deterministically without requiring the macro runtime.
+    """
+    try:
+        actions = plan_obj.get("actions")
+        if not isinstance(actions, list) or not actions:
+            return None
+
+        counter = 0
+
+        def render_answers(items: Any) -> str:
+            if not isinstance(items, list):
+                return ""
+            parts: list[str] = []
+            for it in items:
+                if not isinstance(it, dict):
+                    continue
+                q = str(it.get("q") or "").strip()
+                a = str(it.get("answer") or "").strip()
+                if not q and not a:
+                    continue
+                if q:
+                    parts.append(f"Q: {q}")
+                if a:
+                    parts.append(f"A: {a}")
+                parts.append("")
+            text = "\n".join(parts).strip()
+            if not text:
+                return ""
+            if len(text) > 180_000:
+                text = text[:180_000] + f"...(truncated,len={len(text)})"
+            return text
+
+        def rewrite_list(lst: list[Any]) -> list[Any]:
+            nonlocal counter
+            out: list[Any] = []
+            for a in lst:
+                if not isinstance(a, dict):
+                    out.append(a)
+                    continue
+                op = str(a.get("op") or "").strip()
+                if op == "upsert_block":
+                    nested = a.get("actions")
+                    if isinstance(nested, list):
+                        a = dict(a)
+                        a["actions"] = rewrite_list(nested)
+                    out.append(a)
+                    continue
+                if op != "answer_mode_apply":
+                    out.append(a)
+                    continue
+
+                counter += 1
+                bid = str(a.get("block_id") or "").strip() or "answer_mode"
+                bid = _safe_plan_id(bid, "answer_mode")
+                text = render_answers(a.get("answers"))
+                if not text:
+                    # If we can't render anything meaningful, drop this op (but keep other actions).
+                    continue
+
+                upsert_id = _safe_plan_id(a.get("id"), f"repair_answer_mode_{counter}")
+                title = str(a.get("title") or "Apply answers").strip()[:200] or "Apply answers"
+                it_id = _safe_plan_id(f"{upsert_id}_text", f"repair_answer_text_{counter}")
+                out.append(
+                    {
+                        "id": upsert_id,
+                        "title": title,
+                        "op": "upsert_block",
+                        "block_id": bid,
+                        "anchor": "cursor",
+                        "freeze_cursor": True,
+                        "actions": [
+                            {
+                                "id": it_id,
+                                "title": "Insert answers",
+                                "op": "insert_text",
+                                "text": text,
+                                "new_paragraph_before": False,
+                                "new_paragraph_after": True,
+                            }
+                        ],
+                    }
+                )
+            return out
+
+        rewritten = rewrite_list(actions)
+        if rewritten == actions:
+            return None
+        if not rewritten:
+            return None
+        out_plan = dict(plan_obj)
+        out_plan["actions"] = rewritten
+        return out_plan
+    except Exception:
+        return None
+
+
 def _normalize_path_for_hash(p: str) -> str:
     s = (p or "").strip()
     if not s:
@@ -635,6 +738,18 @@ async def plan_repair(
             # Semantic fast-path for known runtime failures (avoid LLM loops on valid-but-wrong plans).
             try:
                 msg = str(request.error_message or "").strip()
+                if host == "wps" and re.search(r"\bBID\.answerModeApply\b.*runtime not loaded", msg, re.IGNORECASE):
+                    repaired = _semantic_repair_wps_answer_mode_apply_missing(fixed0.model_dump(mode="json"))
+                    if repaired:
+                        fixed1 = Plan.model_validate(normalize_plan_payload(repaired, host_app=host))
+                        resp = PlanRepairResponse(success=True, plan=fixed1.model_dump(mode="json"))
+                        metrics_recorder.record(
+                            op="plan_repair",
+                            success=resp.success,
+                            duration_ms=int((time.perf_counter() - t0) * 1000),
+                            extra={"host_app": host, "fast_path": "semantic", "pattern": "answer_mode_apply:runtime_missing"},
+                        )
+                        return resp
                 m = re.search(
                     r"set_table_cell_text:\s*block not found:\s*([a-zA-Z0-9_\-:.]{1,64})",
                     msg,
