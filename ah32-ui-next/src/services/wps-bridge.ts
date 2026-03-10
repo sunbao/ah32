@@ -7,6 +7,7 @@
  */
 
 import { getClientId } from '@/utils/client-id'
+import { patchReloadDiag } from '@/utils/reload-diag'
 
 // VBA常量映射表 - WPS免费版不支持VBA，但JS API仍使用这些值
 const VBA_CONSTANTS = {
@@ -2916,29 +2917,72 @@ export const WPSHelper = {
     steps?: any[]
     debugInfo?: any
   }> {
+    const startedAt = Date.now()
+    const startedAtIso = new Date().toISOString()
+    let ok: boolean | null = null
+    let finalMessage = ''
+
+    try {
+      const hasAnswerModeApply = !!(WPSHelper as any)._planHasOp?.(plan, 'answer_mode_apply')
+      patchReloadDiag({
+        inflight_plan: { at: startedAtIso, stage: 'execute', answer_mode_apply: hasAnswerModeApply ? 1 : 0 },
+        lastPlanStartAt: startedAtIso,
+      })
+    } catch (e) {
+      ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/wps-bridge.ts', e)
+    }
+
     try {
       // Some plan ops (e.g. answer_mode_apply) delegate to BID helper functions implemented
       // in the JS macro runtime. Preload it only when required.
-      if (WPSHelper._planHasOp(plan, 'answer_mode_apply') || WPSHelper._planHasOp(plan, 'rollback_block')) {
-        await getJSMacroExecutor()
+      try {
+        if (WPSHelper._planHasOp(plan, 'answer_mode_apply') || WPSHelper._planHasOp(plan, 'rollback_block')) {
+          await getJSMacroExecutor()
+        }
+      } catch (e) {
+        console.error('预加载宏运行时失败:', e)
+        ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/wps-bridge.ts', e)
       }
-    } catch (e) {
-      console.error('预加载宏运行时失败:', e)
+
+      const executor = await getPlanExecutor()
+      if (!executor) {
+        ok = false
+        finalMessage = 'Plan executor not available'
+        return {
+          success: false,
+          message: finalMessage,
+          debugInfo: _planExecutorLoadError ? { loadError: _planExecutorLoadError } : undefined
+        }
+      }
+
+      const result = await wpsBridge.runWithWpsApi(
+        'executePlan',
+        () => executor.executePlan(plan, onStep),
+        { success: false, message: 'executePlan failed (WPS API not available)' }
+      )
+      ok = !!result?.success
+      finalMessage = String(result?.message || '')
+      return result
+    } catch (e: any) {
+      ok = false
+      finalMessage = String(e?.message || e || 'executePlan failed')
+      try { console.error('[WPSHelper.executePlan] failed:', e) } catch (_e2) {}
       ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/wps-bridge.ts', e)
-    }
-    const executor = await getPlanExecutor()
-    if (!executor) {
-      return {
-        success: false,
-        message: 'Plan executor not available',
-        debugInfo: _planExecutorLoadError ? { loadError: _planExecutorLoadError } : undefined
+      return { success: false, message: finalMessage }
+    } finally {
+      try {
+        const elapsed = Date.now() - startedAt
+        patchReloadDiag({
+          inflight_plan: null,
+          lastPlanOk: ok,
+          lastPlanMessage: finalMessage ? finalMessage.slice(0, 240) : '',
+          lastPlanElapsedMs: elapsed,
+          lastPlanEndAt: new Date().toISOString(),
+        })
+      } catch (e) {
+        ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/wps-bridge.ts', e)
       }
     }
-    return wpsBridge.runWithWpsApi(
-      'executePlan',
-      () => executor.executePlan(plan, onStep),
-      { success: false, message: 'executePlan failed (WPS API not available)' }
-    )
   },
 
   // 错误报告便捷方法

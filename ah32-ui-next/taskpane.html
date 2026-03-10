@@ -325,10 +325,12 @@
         }
       }
 
-      // Keep a lightweight heartbeat in localStorage so BOOT diag can show "last seen" within ~1s.
+      // Keep a lightweight heartbeat in localStorage so BOOT diag can show recent liveness.
+      // IMPORTANT: Avoid writing too frequently. Some WPS WebViews are sensitive to sync localStorage churn.
       // Do NOT send network logs here (avoid log spam).
       try {
         var hbSeq = 0
+        var maxHeapMb = null
         setInterval(function () {
           hbSeq = hbSeq + 1
           var usedMb = null
@@ -338,14 +340,20 @@
               usedMb = Math.round(pm.usedJSHeapSize / 1024 / 1024)
             }
           } catch (e) { usedMb = null }
+          try {
+            if (typeof usedMb === 'number' && (typeof maxHeapMb !== 'number' || usedMb > maxHeapMb)) {
+              maxHeapMb = usedMb
+            }
+          } catch (e) {}
           _writeDiagLife({
             lastHeartbeatAt: new Date().toISOString(),
             lastHeartbeatSeq: hbSeq,
             lastVisibilityState: _safeVisibilityState(),
             lastOnline: (typeof navigator !== 'undefined' && typeof navigator.onLine === 'boolean') ? navigator.onLine : null,
-            lastJsHeapUsedMb: usedMb
+            lastJsHeapUsedMb: usedMb,
+            maxJsHeapUsedMb: maxHeapMb
           })
-        }, 1000)
+        }, 5000)
       } catch (e) {
         reportTaskpaneError('heartbeat_init', e, 'warning')
       }
@@ -384,10 +392,22 @@
           var online2 = ''
           var inflightPlan = ''
           var inflightChat = ''
+          var heapMaxMb = ''
+
+          // Prefer direct sampling at unload time (more accurate than the last heartbeat).
+          try {
+            var pm2 = performance && performance.memory ? performance.memory : null
+            if (pm2 && typeof pm2.usedJSHeapSize === 'number') {
+              heapMb = String(Math.round(pm2.usedJSHeapSize / 1024 / 1024))
+            }
+          } catch (e) {}
           try {
             var diag2 = readJson(DIAG_KEY) || null
             if (diag2 && typeof diag2 === 'object') {
-              try { if (typeof diag2.lastJsHeapUsedMb === 'number') heapMb = String(diag2.lastJsHeapUsedMb) } catch (e) {}
+              try {
+                if (!heapMb && typeof diag2.lastJsHeapUsedMb === 'number') heapMb = String(diag2.lastJsHeapUsedMb)
+              } catch (e) {}
+              try { if (typeof diag2.maxJsHeapUsedMb === 'number') heapMaxMb = String(diag2.maxJsHeapUsedMb) } catch (e) {}
               try { if (typeof diag2.lastHeartbeatSeq === 'number') hbSeq2 = String(diag2.lastHeartbeatSeq) } catch (e) {}
               try { if (typeof diag2.lastOnline === 'boolean') online2 = diag2.lastOnline ? '1' : '0' } catch (e) {}
               try {
@@ -407,6 +427,7 @@
 
           var msg2 = '[LIFECYCLE] beforeunload state=' + st
           if (heapMb) msg2 = msg2 + ' heap_mb=' + heapMb
+          if (heapMaxMb) msg2 = msg2 + ' heap_max_mb=' + heapMaxMb
           if (hbSeq2) msg2 = msg2 + ' hb_seq=' + hbSeq2
           if (online2) msg2 = msg2 + ' online=' + online2
           if (inflightPlan) msg2 = msg2 + ' inflight_plan=' + inflightPlan

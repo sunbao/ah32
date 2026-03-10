@@ -1,6 +1,7 @@
 import { getRuntimeConfig } from '@/utils/runtime-config'
 import { wpsBridge, WPSHelper } from '@/services/wps-bridge'
 import { reportAuditEvent } from '@/services/audit-client'
+import { patchReloadDiag } from '@/utils/reload-diag'
 import {
   MACRO_BENCH_SUITES,
   buildBenchCases,
@@ -399,6 +400,22 @@ export const runMacroBenchCurrentHost = async (opts?: RunBenchOptions): Promise<
 
     const sessionId = `bench_ui_${host}_${Date.now()}_${i + 1}`
     const docName = getActiveDocName()
+    try {
+      patchReloadDiag({
+        inflight_plan: {
+          at: nowIso(),
+          stage: 'bench_generate',
+          run_id: runId,
+          session_id: sessionId,
+          case_id: c.id,
+          suite: c.suiteId,
+          doc_name: docName || null,
+        },
+      })
+    } catch (e) {
+      ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench.ts', e)
+    }
+
     // 1) generate (single call)
     const t0 = performance.now()
     let plan: any = null
@@ -452,9 +469,9 @@ export const runMacroBenchCurrentHost = async (opts?: RunBenchOptions): Promise<
     // Ensure a stable artifact id so reruns overwrite instead of duplicating content.
     const stableId = `bench_${host}_${c.id}`.replace(/[^a-zA-Z0-9_\-:.]/g, "_").slice(0, 64)
     const ensurePlanBlockId = (input: any, blockId: string) => {
+      // IMPORTANT: Avoid JSON deep-clone here. Some plans can carry large strings (writeback content),
+      // and cloning doubles memory pressure on WPS WebView and can trigger auto-reload.
       if (!input || typeof input !== "object") return input
-      let cloned: any
-      try { cloned = JSON.parse(JSON.stringify(input)) } catch (e) { cloned = input }
       const ops = new Set(["upsert_block", "delete_block", "rollback_block", "set_selection_by_block"])
       const walk = (actions: any[]) => {
         for (const a of actions || []) {
@@ -465,8 +482,8 @@ export const runMacroBenchCurrentHost = async (opts?: RunBenchOptions): Promise<
           if (Array.isArray(a.actions)) walk(a.actions)
         }
       }
-      try { if (Array.isArray(cloned.actions)) walk(cloned.actions) } catch (e) { ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench.ts', e) }
-      return cloned
+      try { if (Array.isArray((input as any).actions)) walk((input as any).actions) } catch (e) { ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench.ts', e) }
+      return input
     }
 
     let currentPlan = ensurePlanBlockId(plan, stableId)
@@ -474,6 +491,22 @@ export const runMacroBenchCurrentHost = async (opts?: RunBenchOptions): Promise<
     let attempts = 0
     let ok = false
     let message = ""
+
+    try {
+      patchReloadDiag({
+        inflight_plan: {
+          at: nowIso(),
+          stage: 'bench_execute',
+          run_id: runId,
+          session_id: sessionId,
+          case_id: c.id,
+          suite: c.suiteId,
+          doc_name: docName || null,
+        },
+      })
+    } catch (e) {
+      ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench.ts', e)
+    }
 
     while (attempts < maxAttempts) {
       attempts += 1
@@ -537,6 +570,24 @@ export const runMacroBenchCurrentHost = async (opts?: RunBenchOptions): Promise<
         repairs_used: repairsUsed,
       },
     })
+
+    try {
+      patchReloadDiag({
+        inflight_plan: null,
+        lastBenchPlanOk: ok,
+        lastBenchPlanCaseId: c.id,
+        lastBenchPlanSuite: c.suiteId,
+        lastBenchPlanRunId: runId,
+        lastBenchPlanEndAt: nowIso(),
+      })
+    } catch (e) {
+      ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench.ts', e)
+    }
+
+    // Help GC: release large references ASAP between cases (best-effort).
+    try { plan = null } catch (e) {}
+    try { currentPlan = null } catch (e) {}
+    await sleep(0)
   }
 
   const summaryBySuite = (() => {
