@@ -816,6 +816,61 @@ export const useChatStore = defineStore('chat', () => {
         }
     }
 
+    const _sanitizeMessageMetadataForStorage = (meta: any): any => {
+        try {
+            if (!meta || typeof meta !== 'object' || Array.isArray(meta)) return meta
+            const out: any = { ...(meta as any) }
+
+            // Keep doc bindings stable but avoid persisting heavy/unexpected fields that may appear in host-specific objects.
+            try {
+                const dc = out?.docContext
+                if (dc && typeof dc === 'object' && !Array.isArray(dc)) {
+                    out.docContext = {
+                        docId: String((dc as any)?.docId || (dc as any)?.doc_id || '').trim(),
+                        docKey: String((dc as any)?.docKey || (dc as any)?.doc_key || '').trim(),
+                        name: String((dc as any)?.name || '').trim(),
+                        path: String((dc as any)?.path || '').trim(),
+                        hostApp: String((dc as any)?.hostApp || (dc as any)?.host_app || '').trim(),
+                    }
+                }
+            } catch (e) {
+                ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/stores/chat.ts', e)
+            }
+
+            // Avoid persisting huge Plan JSON blobs into local storage / IDB on WPS webviews.
+            // These payloads are still available in runtime + macro runs; persistence is best-effort.
+            try {
+                const payloads = out?.macroBlockPayloads
+                if (payloads && typeof payloads === 'object' && !Array.isArray(payloads)) {
+                    const entries = Object.entries(payloads as any).slice(-6)
+                    const capped: Record<string, string> = {}
+                    let truncated = false
+                    for (const [k, v] of entries) {
+                        const key = String(k || '').trim()
+                        if (!key) continue
+                        const s = (typeof v === 'string' || typeof v === 'number') ? String(v) : ''
+                        if (!s) continue
+                        if (s.length > 60_000) {
+                            capped[key] = s.slice(0, 60_000) + '...'
+                            truncated = true
+                        } else {
+                            capped[key] = s
+                        }
+                    }
+                    out.macroBlockPayloads = capped
+                    if (truncated) out.macroBlockPayloads_truncated = true
+                }
+            } catch (e) {
+                ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/stores/chat.ts', e)
+            }
+
+            return out
+        } catch (e) {
+            ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/stores/chat.ts', e)
+            return meta
+        }
+    }
+
     const normalizeMessagesForStorage = (
         source: Message[],
         opts?: { maxMessages?: number; maxChars?: number }
@@ -839,7 +894,7 @@ export const useChatStore = defineStore('chat', () => {
             content: m.content || '',
             thinking: m.thinking,
             isSystem: m.isSystem,
-            metadata: m.metadata,
+            metadata: _sanitizeMessageMetadataForStorage(m.metadata),
             timestamp: (m.timestamp instanceof Date ? m.timestamp : new Date(m.timestamp as any)).toISOString()
         }))
     }
@@ -958,13 +1013,15 @@ export const useChatStore = defineStore('chat', () => {
                 savedAt: new Date().toISOString(),
                 sessionId: s,
                 docKey: inferredDocKey,
-                messages: normalizeMessagesForStorage(bucketMessages),
+                // This path is hit during streaming; keep it bounded to avoid WPS webviews triggering reloads.
+                messages: normalizeMessagesForStorage(bucketMessages, {
+                    maxMessages: MAX_STORED_MESSAGES_LOCAL,
+                    maxChars: MAX_STORED_CHARS_LOCAL
+                }),
                 lastUserQuery: (s === active ? lastUserQuery.value : undefined),
                 lastMacroBlockId: (s === active ? lastMacroBlockId.value : undefined),
                 lastMacroBlockIdBySession: lastMacroBlockIdBySession.value,
-                macroArtifacts: macroArtifacts.value,
-                executedMacroMessageIds: executedMacroMessageIds.value,
-                macroBlockRuns: macroBlockRuns.value
+                // NOTE: macroArtifacts/macroBlockRuns are global; persisting them per-session is expensive and redundant.
             }
 
             if (chatSessionStore.isAvailable()) {

@@ -775,6 +775,50 @@ export const chatApi = {
       }
 	    } catch (error: any) {
 	      console.error('[API] 流式响应失败:', error)
+	      let errorKind = 'unknown'
+	      let errorKindReason = ''
+	      try {
+	        const now = Date.now()
+	        const errName = String(error?.name || '')
+	        const errMsg = String(error?.message || error || '')
+	        const online = (typeof navigator !== 'undefined' && typeof (navigator as any).onLine === 'boolean')
+	          ? (navigator as any).onLine
+	          : null
+	        let diag: any = null
+	        try {
+	          const raw = String(localStorage.getItem('ah32_reload_diag_v1') || '')
+	          diag = raw && raw.trim() ? JSON.parse(raw) : null
+	        } catch (_e) {
+	          diag = null
+	        }
+
+	        const recent = (t: any) => {
+	          const ms = Date.parse(String(t || ''))
+	          if (!Number.isFinite(ms)) return false
+	          const d = now - ms
+	          return d >= 0 && d <= 4000
+	        }
+
+	        const rBefore = recent((diag as any)?.lastBeforeUnloadAt)
+	        const rPagehide = recent((diag as any)?.lastPagehideAt)
+	        const rUnload = recent((diag as any)?.lastUnloadAt)
+	        const diagOnline = (diag as any)?.lastOnline
+
+	        // Unload/pagehide is the #1 cause of "Failed to fetch" during streaming on WPS webviews.
+	        if (rBefore || rPagehide || rUnload) {
+	          errorKind = 'taskpane_unloading'
+	          errorKindReason = `recent_beforeunload=${rBefore ? '1' : '0'} recent_pagehide=${rPagehide ? '1' : '0'} recent_unload=${rUnload ? '1' : '0'} vis=${String((diag as any)?.lastVisibilityState || '')}`
+	        } else if (online === false || diagOnline === false) {
+	          errorKind = 'offline'
+	          errorKindReason = `navigator_online=${online === false ? '0' : online === true ? '1' : '?'} diag_lastOnline=${diagOnline === false ? '0' : diagOnline === true ? '1' : '?'}`
+	        } else if (errName === 'AbortError') {
+	          errorKind = 'abort'
+	        } else if (/Failed to fetch/i.test(errMsg) || /NetworkError/i.test(errMsg)) {
+	          errorKind = 'fetch_failed'
+	        }
+	      } catch (e) {
+	        ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/api.ts', e)
+	      }
 	      try {
 	        const elapsed = Date.now() - startedAt
 	        patchReloadDiag({
@@ -782,17 +826,32 @@ export const chatApi = {
 	          lastChatOk: false,
 	          lastChatElapsedMs: elapsed,
 	          lastChatEndAt: new Date().toISOString(),
+	          lastChatErrorName: String(error?.name || ''),
 	          lastChatError: String(error?.message || error || ''),
+	          lastChatErrorKind: errorKind,
+	          lastChatErrorKindReason: errorKindReason,
 	        })
 	      } catch (e) {
 	        ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/api.ts', e)
 	      }
 	      try {
 	        const elapsed = Date.now() - startedAt
-	        logToBackend(`[CHAT] stream failed elapsed_ms=${elapsed} msg=${String(error?.message || error || '').slice(0, 260)}`, 'warning')
+	        logToBackend(`[CHAT] stream failed kind=${errorKind} elapsed_ms=${elapsed} name=${String(error?.name || '').slice(0, 40)} msg=${String(error?.message || error || '').slice(0, 200)} reason=${String(errorKindReason || '').slice(0, 180)}`, 'warning')
 	      } catch (e) {
 	        ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/api.ts', e)
 	      }
+
+	      if (errorKind === 'taskpane_unloading') {
+        const err = new Error('Taskpane 发生自动重载/卸载，导致请求中断（非人为操作）。请重试；如频繁出现请截图并反馈 boot_seq。')
+        ;(err as any).cause = error
+        throw err
+      }
+
+	      if (errorKind === 'offline') {
+        const err = new Error('网络离线或后端不可达，导致请求失败。请检查网络/代理后重试。')
+        ;(err as any).cause = error
+        throw err
+      }
 
 	      // 如果是超时错误，提供更友好的错误信息
 	      if (error.name === 'AbortError') {
@@ -804,7 +863,7 @@ export const chatApi = {
       }
 
       throw error
-    } finally {
+	    } finally {
       if (idleTimer) {
         clearTimeout(idleTimer)
         idleTimer = null
