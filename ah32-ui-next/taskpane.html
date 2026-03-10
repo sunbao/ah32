@@ -377,7 +377,42 @@
         window.addEventListener('beforeunload', function () {
           var st = _safeVisibilityState()
           _writeDiagLife({ lastBeforeUnloadAt: new Date().toISOString(), lastVisibilityState: st })
-          _logLife('info', '[LIFECYCLE] beforeunload state=' + st)
+
+          // Include lightweight diag fields to help root-cause "auto reload" (non-user reloads) on WPS webviews.
+          var heapMb = ''
+          var hbSeq2 = ''
+          var online2 = ''
+          var inflightPlan = ''
+          var inflightChat = ''
+          try {
+            var diag2 = readJson(DIAG_KEY) || null
+            if (diag2 && typeof diag2 === 'object') {
+              try { if (typeof diag2.lastJsHeapUsedMb === 'number') heapMb = String(diag2.lastJsHeapUsedMb) } catch (e) {}
+              try { if (typeof diag2.lastHeartbeatSeq === 'number') hbSeq2 = String(diag2.lastHeartbeatSeq) } catch (e) {}
+              try { if (typeof diag2.lastOnline === 'boolean') online2 = diag2.lastOnline ? '1' : '0' } catch (e) {}
+              try {
+                var ip = diag2.inflight_plan
+                if (ip && typeof ip === 'object') {
+                  inflightPlan = String(ip.stage || ip.at || '1')
+                }
+              } catch (e) {}
+              try {
+                var ic = diag2.inflight_chat
+                if (ic && typeof ic === 'object') {
+                  inflightChat = String(ic.stage || ic.at || '1')
+                }
+              } catch (e) {}
+            }
+          } catch (e) {}
+
+          var msg2 = '[LIFECYCLE] beforeunload state=' + st
+          if (heapMb) msg2 = msg2 + ' heap_mb=' + heapMb
+          if (hbSeq2) msg2 = msg2 + ' hb_seq=' + hbSeq2
+          if (online2) msg2 = msg2 + ' online=' + online2
+          if (inflightPlan) msg2 = msg2 + ' inflight_plan=' + inflightPlan
+          if (inflightChat) msg2 = msg2 + ' inflight_chat=' + inflightChat
+
+          _logLife('info', msg2)
         })
       } catch (e) {
         reportTaskpaneError('bind_beforeunload', e, 'warning')

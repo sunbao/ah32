@@ -4,6 +4,7 @@ import { reportAuditEvent } from './audit-client'
 import { emitTelemetryEvent } from './telemetry'
 import { getRuntimeConfig } from '@/utils/runtime-config'
 import { getClientId } from '@/utils/client-id'
+import { patchReloadDiag } from '@/utils/reload-diag'
 
 type PlanDiagLevel = 'info' | 'warning' | 'error'
 const _planDiagLastAt: Record<PlanDiagLevel, number> = { info: 0, warning: 0, error: 0 }
@@ -766,6 +767,16 @@ export class PlanExecutor {
       onStep?.(s)
     }
 
+    const startedAt = Date.now()
+    const startedAtIso = (() => {
+      try { return new Date().toISOString() } catch (_e) { return '' }
+    })()
+    let diagHostApp = ''
+    let diagSchema = ''
+    let diagActionCount = 0
+    let diagOps: string[] = []
+    let diagBlockId = ''
+
     let parsed: Plan | null = null
     try {
       parsed = this.parsePlan(plan)
@@ -773,7 +784,55 @@ export class PlanExecutor {
 
       try {
         const actions = Array.isArray((parsed as any)?.actions) ? (parsed as any).actions : []
+        diagHostApp = String((parsed as any)?.host_app || '')
+        diagSchema = String((parsed as any)?.schema_version || '')
+        diagActionCount = actions.length
+        try {
+          diagOps = Array.from(new Set(this.collectOps(actions as any))).slice(0, 12)
+        } catch (e) {
+          ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e)
+          diagOps = []
+        }
+        try {
+          const find = (xs: any[]): string => {
+            for (const a of xs || []) {
+              if (a && a.op === 'upsert_block' && typeof a.block_id === 'string') return String(a.block_id || '').trim()
+              if (a && Array.isArray(a.actions)) {
+                const nested = find(a.actions)
+                if (nested) return nested
+              }
+            }
+            return ''
+          }
+          diagBlockId = find(actions as any)
+        } catch (e) {
+          ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e)
+          diagBlockId = ''
+        }
         _planDiag('info', `start host=${String((parsed as any)?.host_app || '')} actions=${actions.length}`)
+      } catch (e) {
+        ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e)
+      }
+
+      // Record in-flight plan context so post-reload BOOT logs can tell whether the taskpane unloaded mid-plan.
+      try {
+        patchReloadDiag({
+          inflight_plan: {
+            at: startedAtIso,
+            stage: 'execute',
+            host_app: diagHostApp,
+            schema_version: diagSchema,
+            actions: diagActionCount,
+            ops: diagOps,
+            block_id: diagBlockId || null,
+          },
+          lastPlanStartAt: startedAtIso,
+          lastPlanHostApp: diagHostApp,
+          lastPlanSchemaVersion: diagSchema,
+          lastPlanActions: diagActionCount,
+          lastPlanOps: diagOps,
+          lastPlanBlockId: diagBlockId || null,
+        })
       } catch (e) {
         ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e)
       }
@@ -827,6 +886,19 @@ export class PlanExecutor {
         debugInfo: { schema_version: parsed.schema_version, host_app: parsed.host_app, actual_host: actualHost }
       }
       try {
+        const elapsed = Date.now() - startedAt
+        patchReloadDiag({
+          inflight_plan: null,
+          lastPlanOk: true,
+          lastPlanElapsedMs: elapsed,
+          lastPlanEndAt: new Date().toISOString(),
+          lastPlanError: '',
+        })
+        _planDiag('info', `done ok=true ms=${elapsed} actions=${diagActionCount} ops=${diagOps.slice(0, 8).join(',')}`)
+      } catch (e) {
+        ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e)
+      }
+      try {
         const ops: string[] = []
         const collect = (actions: any[]) => {
           for (const a of actions || []) {
@@ -854,7 +926,7 @@ export class PlanExecutor {
           block_id: blockId,
           ops: Array.from(new Set(ops)),
           success: true,
-          extra: { schema_version: parsed.schema_version }
+          extra: { schema_version: parsed.schema_version, exec_ms: Date.now() - startedAt }
         })
       } catch (e) {
         ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e)
@@ -862,6 +934,18 @@ export class PlanExecutor {
       return result
     } catch (error) {
       const msg = _errMsg(error)
+      try {
+        const elapsed = Date.now() - startedAt
+        patchReloadDiag({
+          inflight_plan: null,
+          lastPlanOk: false,
+          lastPlanElapsedMs: elapsed,
+          lastPlanEndAt: new Date().toISOString(),
+          lastPlanError: msg,
+        })
+      } catch (e) {
+        ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e)
+      }
       _planDiag('error', `failed: ${msg}`)
       logger.error('[PlanExecutor] execution failed', error)
       try {
@@ -870,13 +954,15 @@ export class PlanExecutor {
           host_app: wpsBridge.getHostApp() || 'unknown',
           success: false,
           error_type: 'execution_error',
-          error_message: msg
+          error_message: msg,
+          extra: { exec_ms: Date.now() - startedAt }
         })
       } catch (e) {
         ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e)
       }
       return { success: false, message: msg, steps, debugInfo: { error: msg } }
     } finally {
+      try { patchReloadDiag({ inflight_plan: null }) } catch (_e) {}
       this._planImageResources = null
       this._planImageUrlCache = null
     }
@@ -3461,7 +3547,18 @@ export class PlanExecutor {
       const keys = this.blockBackupKeys(doc, id)
       if (!keys.length) return
 
-      const payload: any = { text: String(text || '') }
+      const MAX_BACKUP_CHARS = 200_000
+      const rawText = String(text || '')
+      if (rawText && rawText.length > MAX_BACKUP_CHARS) {
+        try {
+          _planDiag('warning', `skip backup too large block_id=${id.slice(0, 64)} len=${rawText.length}`)
+        } catch (e) {
+          ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e)
+        }
+        return
+      }
+
+      const payload: any = { text: rawText }
       try {
         payload.ts = new Date().toISOString()
       } catch (e0) {
