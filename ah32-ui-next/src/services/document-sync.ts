@@ -436,7 +436,10 @@ export async function syncOpenDocumentsNow(): Promise<boolean> {
   const inWps = wpsBridge.isInWPSEnvironment()
   if (!inWps) return false
 
-  const wpsDocs = wpsBridge.getAllOpenDocuments()
+  // IMPORTANT: do NOT compute per-doc statistics during background sync.
+  // `ComputeStatistics()` is expensive and has been observed to destabilize WPS taskpane WebView
+  // (auto-reload) when called frequently (e.g. on doc-change events + MacroBench writebacks).
+  const wpsDocs = wpsBridge.getAllOpenDocuments({ includeStats: false })
   // Sync empty list too, so closing documents immediately clears the snapshot for this host.
   return syncAllDocuments(wpsDocs.map((doc) => ({ doc })), { force: true, reason: 'sync_open_documents_now' })
 }
@@ -464,7 +467,8 @@ export async function detectAndSync(): Promise<boolean> {
     return false
   }
 
-  const wpsDocs = wpsBridge.getAllOpenDocuments()
+  // Avoid expensive stats in high-frequency detect-and-sync.
+  const wpsDocs = wpsBridge.getAllOpenDocuments({ includeStats: false })
   logToBackend('getAllOpenDocuments count: ' + wpsDocs.length)
 
   if (wpsDocs.length === 0) {

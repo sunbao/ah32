@@ -68,7 +68,9 @@ export const useDocumentStore = defineStore('document', () => {
       } catch (error) {
         logger.warn('获取聚合文档列表失败，回退到本地列表:', error)
         try {
-          docs = wpsBridge.getAllOpenDocuments()
+          // Avoid expensive per-doc statistics in fallback (WPS ComputeStatistics is slow and can
+          // destabilize the embedded taskpane WebView when called frequently).
+          docs = wpsBridge.getAllOpenDocuments({ includeStats: false })
           logger.info(`刷新文档列表(本地): 发现 ${docs.length} 个文档`)
         } catch (e2) {
           logger.error('获取文档列表失败:', e2)
