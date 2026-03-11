@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="unified-status-indicator">
     <el-tooltip :content="tooltipContent" placement="top" trigger="hover">
       <div
@@ -15,10 +15,8 @@
         </el-icon>
       </div>
     </el-tooltip>
-
-    <!-- 悬停详情面板 -->
-    <!-- Teleport to body to avoid being clipped by taskpane/containers with overflow hidden -->
-    <teleport to="body">
+    <!-- 状态详情面板 -->
+    <!-- NOTE: Avoid <teleport> in WPS taskpane. Some WebViews crash with `Cannot read properties of null (reading 'insertBefore')` during patch. -->
       <div
         v-show="showDetails"
         ref="panelRef"
@@ -165,7 +163,6 @@
         </el-button>
       </div>
       </div>
-    </teleport>
   </div>
 </template>
 

@@ -3,17 +3,18 @@
     <div class="macro-bench-row">
       <div class="macro-bench-title">宏基准测试(开发)</div>
       <div class="macro-bench-actions">
-        <el-select v-model="runMode" size="small" style="width: 120px" :disabled="running" :teleported="true" popper-class="ah32-macro-bench-select-popper">
-          <el-option label="宏直出" value="macro" />
-          <el-option label="对话驱动" value="chat" />
-        </el-select>
-        <el-select v-model="suiteId" size="small" style="width: 140px" :disabled="running" :teleported="true" popper-class="ah32-macro-bench-select-popper">
-          <el-option label="全部场景" value="all" />
-          <el-option v-for="s in suites" :key="s.id" :label="s.name" :value="s.id" />
-        </el-select>
-        <el-select v-model="preset" size="small" style="width: 120px" :disabled="running" :teleported="true" popper-class="ah32-macro-bench-select-popper">
-          <el-option v-for="p in presets" :key="p.id" :label="p.name" :value="p.id" />
-        </el-select>
+        <!-- Use native <select> in WPS taskpane: ElementPlus poppers/teleport are flaky in some WebViews. -->
+        <select v-model="runMode" class="macro-bench-native-select" :disabled="running">
+          <option value="macro">宏直出</option>
+          <option value="chat">对话驱动</option>
+        </select>
+        <select v-model="suiteId" class="macro-bench-native-select macro-bench-native-select-wide" :disabled="running">
+          <option value="all">全部场景</option>
+          <option v-for="s in suites" :key="s.id" :value="s.id">{{ s.name }}</option>
+        </select>
+        <select v-model="preset" class="macro-bench-native-select" :disabled="running">
+          <option v-for="p in presets" :key="p.id" :value="p.id">{{ p.name }}</option>
+        </select>
         <el-button size="small" type="primary" :loading="running" @click="start" :disabled="running">
           运行(当前宿主)
         </el-button>
@@ -372,9 +373,12 @@ const start = async () => {
 
   try {
     if (runMode.value === 'chat') {
+      const ctrl = new AbortController()
+      macroAbort.value = ctrl
       const out = await runChatBenchCurrentHost(chatStore as any, {
         onProgress: (p) => { progress.value = p },
         shouldStop: () => stopped.value,
+        signal: ctrl.signal,
         suiteId: suiteId.value,
         preset: preset.value,
         maxHours: maxHours.value,
@@ -452,9 +456,12 @@ const resume = async () => {
   lastMode.value = 'chat'
 
   try {
+    const ctrl = new AbortController()
+    macroAbort.value = ctrl
     const out = await runChatBenchCurrentHost(chatStore as any, {
       onProgress: (p) => { progress.value = p },
       shouldStop: () => stopped.value,
+      signal: ctrl.signal,
       suiteId: suiteId.value,
       preset: preset.value,
       resumeFrom: prev,
@@ -534,6 +541,8 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  // Avoid leaving long-running bench promises updating UI after the widget is gone.
+  try { if (running.value) stop() } catch (e) { ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/components/dev/MacroBenchWidget.vue', e) }
   persistWidgetState()
 })
 </script>
@@ -562,6 +571,25 @@ onBeforeUnmount(() => {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.macro-bench-native-select {
+  height: 24px;
+  font-size: 12px;
+  padding: 0 8px;
+  border: 1px solid rgba(0, 0, 0, 0.18);
+  border-radius: 6px;
+  background: #fff;
+  color: #111827;
+}
+
+.macro-bench-native-select:disabled {
+  background: rgba(0, 0, 0, 0.03);
+  color: rgba(17, 24, 39, 0.65);
+}
+
+.macro-bench-native-select-wide {
+  min-width: 180px;
 }
 
 .macro-bench-label {
@@ -679,7 +707,4 @@ onBeforeUnmount(() => {
   white-space: nowrap;
 }
 
-:global(.ah32-macro-bench-select-popper) {
-  z-index: 10001 !important;
-}
 </style>

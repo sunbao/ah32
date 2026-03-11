@@ -382,6 +382,8 @@ import { useChatStore } from '@/stores/chat'
 
 import type { Message } from '@/services/types'
 import { isDevUiEnabled } from '@/utils/dev-ui'
+import { parseJsonRelaxed } from '@/utils/relaxed-json'
+import { logger } from '@/utils/logger'
 
 
 
@@ -657,10 +659,16 @@ const _extractPlansFromContent = (content: string): any[] => {
       const raw = String(m[1] || '').trim()
       if (!raw) continue
       try {
-        const parsed = JSON.parse(raw)
-        if (parsed && typeof parsed === 'object' && (parsed as any).schema_version === 'ah32.plan.v1') out.push(parsed)
+        const parsed = parseJsonRelaxed(raw, { maxChars: 500_000, allowRepair: true })
+        const v: any = parsed.ok ? parsed.value : null
+        if (v && typeof v === 'object' && (v as any).schema_version === 'ah32.plan.v1') out.push(v)
+        else if (!parsed.ok && raw.includes('"schema_version"') && raw.includes('ah32.plan.v1')) {
+          logger.debug(`[MessageItem] plan fence parse failed (len=${raw.length}): ${String(parsed.error || '')}`)
+          try { (globalThis as any).__ah32_logToBackend?.(`[MessageItem] plan fence parse failed: ${String(parsed.error || '')}`, 'warning') } catch (_e) {}
+        }
       } catch (e) {
-        ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/components/chat/MessageItem.vue', e)
+        // Never crash rendering; parse errors are expected in some model outputs.
+        logger.debug('[MessageItem] plan fence parse threw (ignored)', e)
       }
     }
   } catch (e) {
@@ -671,12 +679,16 @@ const _extractPlansFromContent = (content: string): any[] => {
   try {
     const t = src.trim()
     if (_isLikelyPlanJson(t)) {
-      const parsed = JSON.parse(t)
-      if (parsed && typeof parsed === 'object' && (parsed as any).schema_version === 'ah32.plan.v1') out.push(parsed)
+      const parsed = parseJsonRelaxed(t, { maxChars: 800_000, allowRepair: true })
+      const v: any = parsed.ok ? parsed.value : null
+      if (v && typeof v === 'object' && (v as any).schema_version === 'ah32.plan.v1') out.push(v)
+      else if (!parsed.ok) {
+        logger.debug(`[MessageItem] raw plan parse failed (len=${t.length}): ${String(parsed.error || '')}`)
+      }
     }
   } catch (e) {
-    // Best-effort: ignore but keep it observable.
-    ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/components/chat/MessageItem.vue', e)
+    // Best-effort: ignore. Raw plan parsing must never hard-fail rendering.
+    logger.debug('[MessageItem] raw plan parse threw (ignored)', e)
   }
 
   return out
@@ -1198,15 +1210,15 @@ const codeBlocks = computed<CodeBlock[]>(() => {
     let plan: any = null
 
     try {
-
-      plan = JSON.parse(raw)
-
+      const parsed = parseJsonRelaxed(raw, { maxChars: 500_000, allowRepair: true })
+      plan = parsed.ok ? parsed.value : null
+      if (!plan && !parsed.ok && raw.includes('"schema_version"') && raw.includes('ah32.plan.v1')) {
+        logger.debug(`[MessageItem] plan json parse failed (len=${raw.length}): ${String(parsed.error || '')}`)
+        try { (globalThis as any).__ah32_logToBackend?.(`[MessageItem] plan json parse failed: ${String(parsed.error || '')}`, 'warning') } catch (_e) {}
+      }
     } catch (e) {
-
-      ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/components/chat/MessageItem.vue', e)
-
       plan = null
-
+      logger.debug('[MessageItem] plan json parse threw (ignored)', e)
     }
 
     if (!plan || plan.schema_version !== 'ah32.plan.v1') continue
@@ -1281,8 +1293,9 @@ const codeBlocks = computed<CodeBlock[]>(() => {
       }
 
     } catch (e: any) {
-
-      throw e
+      // Never crash the message bubble because macro-run metadata is unavailable.
+      logger.debug('[MessageItem] getMacroBlockRun failed (ignored)', e)
+      try { (globalThis as any).__ah32_logToBackend?.(`[MessageItem] getMacroBlockRun failed: ${String(e?.message || e)}`, 'warning') } catch (_e) {}
 
     }
 
@@ -1378,7 +1391,8 @@ const codeBlocks = computed<CodeBlock[]>(() => {
 
       if (_isLikelyPlanJson(raw)) {
 
-        const plan: any = JSON.parse(raw)
+        const parsed = parseJsonRelaxed(raw, { maxChars: 800_000, allowRepair: true })
+        const plan: any = parsed.ok ? parsed.value : null
 
         if (plan && typeof plan === 'object' && plan.schema_version === 'ah32.plan.v1') {
 
@@ -1430,10 +1444,10 @@ const codeBlocks = computed<CodeBlock[]>(() => {
 
           let displayCode = hydratedCode
           try {
-            const parsed = JSON.parse(hydratedCode)
-            displayCode = JSON.stringify(_redactForDisplay(parsed), null, 2)
+            const p2 = parseJsonRelaxed(hydratedCode, { maxChars: 800_000, allowRepair: true })
+            if (p2.ok) displayCode = JSON.stringify(_redactForDisplay(p2.value), null, 2)
           } catch (e) {
-            ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/components/chat/MessageItem.vue', e)
+            logger.debug('[MessageItem] redact plan display failed (ignored)', e)
           }
 
           blocks.push({

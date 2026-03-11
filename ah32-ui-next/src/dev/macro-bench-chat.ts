@@ -1,4 +1,5 @@
 import { getRuntimeConfig } from '@/utils/runtime-config'
+import { parseJsonRelaxed } from '@/utils/relaxed-json'
 
 import { wpsBridge, WPSHelper } from '@/services/wps-bridge'
 import { jsMacroExecutor } from '@/services/js-macro-executor'
@@ -525,6 +526,20 @@ const getActiveDocName = (): string => {
 const extractPlanBlocks = (assistantMsg: any): string[] => {
   const out: string[] = []
 
+  const tryParsePlanJson = (raw: string): { ok: boolean; json?: string } => {
+    const text = String(raw || '').trim()
+    if (!text) return { ok: false }
+    const parsed = parseJsonRelaxed(text, { maxChars: 900_000, allowRepair: true })
+    if (!parsed.ok || !parsed.value || typeof parsed.value !== 'object' || Array.isArray(parsed.value)) return { ok: false }
+    if (String((parsed.value as any).schema_version || '').trim() !== 'ah32.plan.v1') return { ok: false }
+    try {
+      // Re-serialize so we always execute strict JSON (and normalize any repaired control chars).
+      return { ok: true, json: JSON.stringify(parsed.value) }
+    } catch (_e) {
+      return { ok: true, json: text }
+    }
+  }
+
   // Preferred: plan is delivered out-of-band via SSE `event: plan` and attached to message metadata.
   try {
     const payloads = assistantMsg?.metadata?.macroBlockPayloads
@@ -532,14 +547,8 @@ const extractPlanBlocks = (assistantMsg: any): string[] => {
       for (const v of Object.values(payloads as any)) {
         const body = (typeof v === 'string' ? v : '').trim()
         if (!body) continue
-        try {
-          const parsed = JSON.parse(body)
-          if (parsed && typeof parsed === 'object' && (parsed as any).schema_version === 'ah32.plan.v1') {
-            out.push(body)
-          }
-        } catch (e) {
-          ;(globalThis as any).__ah32_reportError?.("ah32-ui-next/src/dev/macro-bench-chat.ts", e)
-        }
+        const p = tryParsePlanJson(body)
+        if (p.ok && p.json) out.push(p.json)
       }
     }
   } catch (e) {
@@ -554,13 +563,23 @@ const extractPlanBlocks = (assistantMsg: any): string[] => {
   while ((m = re.exec(src)) !== null) {
     const body = String(m[1] || "").trim()
     if (!body) continue
-    try {
-      const parsed = JSON.parse(body)
-      if (parsed && typeof parsed === "object" && parsed.schema_version === "ah32.plan.v1") {
-        out.push(body)
-      }
-    } catch (e) {
-      ;(globalThis as any).__ah32_reportError?.("ah32-ui-next/src/dev/macro-bench-chat.ts", e)
+    const p = tryParsePlanJson(body)
+    if (p.ok && p.json) out.push(p.json)
+  }
+
+  // Some bench turns require raw JSON output (no ``` fence).
+  if (out.length === 0) {
+    const t = src.trim()
+    const candidate = (() => {
+      if (t.startsWith('{') && t.endsWith('}')) return t
+      const first = t.indexOf('{')
+      const last = t.lastIndexOf('}')
+      if (first >= 0 && last > first) return t.slice(first, last + 1)
+      return ''
+    })()
+    if (candidate) {
+      const p = tryParsePlanJson(candidate)
+      if (p.ok && p.json) out.push(p.json)
     }
   }
   return out
@@ -1677,6 +1696,7 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
   preset: MacroBenchPreset
 
   shouldStop?: () => boolean
+  signal?: AbortSignal
 
   onProgress?: (p: { idx: number; total: number; storyName: string; turnName: string; host: MacroBenchHost; suiteId: MacroBenchSuiteId }) => void
 
@@ -1709,6 +1729,12 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
   const suiteId = opts.suiteId || 'all'
 
   const preset = opts.preset || 'standard'
+
+  const shouldStopNow = () => {
+    try { if (opts.shouldStop?.()) return true } catch (_e) {}
+    try { if (opts.signal?.aborted) return true } catch (_e) {}
+    return false
+  }
 
   const resumed = opts.resumeFrom || null
 
@@ -2646,7 +2672,7 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
 
     for (const a of actions) {
 
-      if (opts.shouldStop?.()) break
+      if (shouldStopNow()) break
 
       await applyAction(a)
 
@@ -2952,7 +2978,7 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
 
   for (let i = startIdx; i < items.length; i++) {
 
-    if (opts.shouldStop?.()) break
+    if (shouldStopNow()) break
 
     if (maxTurns > 0) {
 
@@ -3961,7 +3987,12 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
     const stableId = normalizeBlockId(turn.artifactId || `bench_chat_${host}_${story.suiteId}_${story.id}_${turn.id}`)
 
     let planObj: any = null
-    try { planObj = JSON.parse(rawPlan) } catch (e) { planObj = null }
+    try {
+      const parsed = parseJsonRelaxed(rawPlan, { maxChars: 900_000, allowRepair: true })
+      planObj = parsed.ok ? parsed.value : null
+    } catch (_e) {
+      planObj = null
+    }
 
     let ok = false
     let message = ""
