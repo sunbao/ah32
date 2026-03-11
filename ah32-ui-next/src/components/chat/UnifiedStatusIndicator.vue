@@ -235,7 +235,9 @@ const devToolsEnabled = computed(() => !!devUiEnabled)
 const dotRef = ref<HTMLElement | null>(null)
 const panelRef = ref<HTMLElement | null>(null)
 const panelStyle = ref<Record<string, string>>({})
-const panelPlacement = ref<'bottom' | 'top'>('bottom')
+const panelPlacement = ref<'bottom' | 'top'>('bottom')
+
+let panelResizeObserver: ResizeObserver | null = null
 
 const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v))
 
@@ -594,13 +596,34 @@ onMounted(() => {
 
   // 点击外部关闭面板
   document.addEventListener('click', handleClickOutside)
-  window.addEventListener('resize', updatePanelPosition)
+  window.addEventListener('resize', updatePanelPosition)
+
+  // Keep the panel within viewport when its size changes (user resize / dynamic content).
+  try {
+    const RO: any = (globalThis as any).ResizeObserver
+    if (typeof RO === 'function') {
+      panelResizeObserver = new RO(() => {
+        try {
+          if (!showDetails.value) return
+          updatePanelPosition()
+        } catch (e) {
+          ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/components/chat/UnifiedStatusIndicator.vue', e)
+        }
+      })
+      if (panelRef.value) panelResizeObserver.observe(panelRef.value)
+    }
+  } catch (e) {
+    ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/components/chat/UnifiedStatusIndicator.vue', e)
+  }
 })
 
 onUnmounted(() => {
   // 无需清理定时器（已删除）
   document.removeEventListener('click', handleClickOutside)
-  window.removeEventListener('resize', updatePanelPosition)
+  window.removeEventListener('resize', updatePanelPosition)
+
+  try { panelResizeObserver?.disconnect() } catch (_e) {}
+  panelResizeObserver = null
 })
 
 watch(showDetails, (v) => {
@@ -679,9 +702,18 @@ watch(showDetails, (v) => {
   border: 1px solid rgba(102, 126, 234, 0.2);
   border-radius: 8px;
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
-  min-width: 240px;
-  max-height: 70vh;
-  overflow-y: auto;
+  min-width: 240px;
+
+  // Default size; will clamp to viewport.
+  width: 420px;
+
+  max-width: calc(100vw - 20px);
+  // Allow more content without "falling off screen".
+  max-height: calc(100vh - 20px);
+  overflow: auto;
+
+  // Let devs resize when MacroBench results are long.
+  resize: both;
   overscroll-behavior: contain;
   z-index: 9999;
   animation: fadeInScale 0.2s ease-out;
@@ -713,7 +745,15 @@ watch(showDetails, (v) => {
   }
 }
 
-.panel-header {
+.panel-header {
+
+  position: sticky;
+
+  top: 0;
+
+  background: white;
+
+  z-index: 2;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -798,7 +838,15 @@ watch(showDetails, (v) => {
   display: block;
 }
 
-.panel-footer {
+.panel-footer {
+
+  position: sticky;
+
+  bottom: 0;
+
+  background: white;
+
+  z-index: 2;
   padding: 12px 16px;
   border-top: 1px solid rgba(102, 126, 234, 0.1);
   display: flex;
