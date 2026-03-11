@@ -104,6 +104,10 @@ export class JSMacroExecutor {
 
   private jsonBoundaryWarned: Set<string> = new Set()
 
+  // Cache preambles after we apply deterministic sanitization/escaping for WPS Taskpane engines.
+  // Without caching, the same (large) preamble would be re-processed on every macro/assert run.
+  private safePreambleCache: { wps?: string; et?: string; wpp?: string; unknown?: string } = {}
+
 
 
   constructor() {
@@ -1390,6 +1394,17 @@ export class JSMacroExecutor {
         execCode = sanitized.code
       }
 
+      // Some WPS Taskpane JS engines (or their host bridges) will throw SyntaxError: Invalid or unexpected token
+      // when the dynamic source passed into `new Function(...)` contains non-ASCII characters inside literals.
+      // Escape non-ASCII characters inside strings/comments/regex literals deterministically to keep the
+      // *source* ASCII-only while preserving runtime semantics (text content stays the same).
+      const asciiEscaped = this.escapeNonAsciiInLiteralsAndComments(execCode)
+      if (asciiEscaped.changed) {
+        normalizeMeta.changed = true
+        normalizeMeta.notes = Array.from(new Set([...(normalizeMeta.notes || []), ...(asciiEscaped.notes || [])]))
+        execCode = asciiEscaped.code
+      }
+
       execCodeForDebug = execCode
 
 
@@ -2430,6 +2445,215 @@ export class JSMacroExecutor {
 
     return { code: out, changed, notes: Array.from(new Set(notes)) }
 
+  }
+
+  private escapeNonAsciiInLiteralsAndComments(
+    code: string
+  ): { code: string; changed: boolean; notes: string[] } {
+    const src = String(code || '')
+    const buf: string[] = []
+
+    let changed = false
+    const notes: string[] = []
+
+    // Only ES5 features: avoid any fancy unicode regex props or template strings here.
+    type Mode = 'normal' | 'single' | 'double' | 'regex' | 'line_comment' | 'block_comment'
+    let mode: Mode = 'normal'
+
+    let strEscaped = false
+    let regexEscaped = false
+    let regexInCharClass = false
+
+    const prevNonWs = () => {
+      for (let k = buf.length - 1; k >= 0; k--) {
+        const c = buf[k]
+        if (c !== ' ' && c !== '\t' && c !== '\r' && c !== '\n') return c
+      }
+      return ''
+    }
+
+    const mayStartRegexLiteral = (prev: string) => {
+      // Best-effort heuristic (same as sanitizeMacroUnicode): treat `/.../` as a regex literal only when it
+      // appears in a position where an expression can start. This avoids mistaking division `a / b` as regex.
+      if (!prev) return true
+      return '([,{=:+-!&|?;*%^~<>'.includes(prev)
+    }
+
+    const toHex4 = (n: number) => n.toString(16).toUpperCase().padStart(4, '0')
+    const pushEscapedCodePoint = (cp: number) => {
+      if (cp <= 0xffff) {
+        buf.push('\\u' + toHex4(cp))
+      } else {
+        // Surrogate pair for ES5 parsers (avoid \\u{...} which is ES6).
+        const x = cp - 0x10000
+        const hi = 0xd800 + ((x >> 10) & 0x3ff)
+        const lo = 0xdc00 + (x & 0x3ff)
+        buf.push('\\u' + toHex4(hi), '\\u' + toHex4(lo))
+      }
+      changed = true
+    }
+
+    for (let i = 0; i < src.length; i++) {
+      const ch = src[i] || ''
+      const next = i + 1 < src.length ? (src[i + 1] || '') : ''
+
+      if (mode === 'line_comment') {
+        if (ch === '\n') {
+          buf.push(ch)
+          mode = 'normal'
+          continue
+        }
+        const cp = src.codePointAt(i) || 0
+        if (cp > 0x7f) {
+          // Keep comment ASCII-only as well (some host bridges choke on non-ASCII even in comments).
+          pushEscapedCodePoint(cp)
+          if (cp > 0xffff) i++
+          continue
+        }
+        buf.push(ch)
+        continue
+      }
+
+      if (mode === 'block_comment') {
+        if (ch === '*' && next === '/') {
+          buf.push(ch, next)
+          i++
+          mode = 'normal'
+          continue
+        }
+        const cp = src.codePointAt(i) || 0
+        if (cp > 0x7f) {
+          pushEscapedCodePoint(cp)
+          if (cp > 0xffff) i++
+          continue
+        }
+        buf.push(ch)
+        continue
+      }
+
+      if (mode === 'single' || mode === 'double') {
+        buf.push(ch)
+        if (strEscaped) {
+          strEscaped = false
+          continue
+        }
+        if (ch === '\\') {
+          strEscaped = true
+          continue
+        }
+        if (mode === 'single' && ch === '\'') {
+          mode = 'normal'
+          continue
+        }
+        if (mode === 'double' && ch === '"') {
+          mode = 'normal'
+          continue
+        }
+        const cp = src.codePointAt(i) || 0
+        if (cp > 0x7f) {
+          // Replace the previously pushed `ch` with an escape.
+          buf.pop()
+          pushEscapedCodePoint(cp)
+          if (cp > 0xffff) i++
+        }
+        continue
+      }
+
+      if (mode === 'regex') {
+        if (regexEscaped) {
+          buf.push(ch)
+          regexEscaped = false
+          continue
+        }
+        if (ch === '\\') {
+          buf.push(ch)
+          regexEscaped = true
+          continue
+        }
+        if (ch === '[') {
+          buf.push(ch)
+          regexInCharClass = true
+          continue
+        }
+        if (ch === ']' && regexInCharClass) {
+          buf.push(ch)
+          regexInCharClass = false
+          continue
+        }
+        if (ch === '/' && !regexInCharClass) {
+          buf.push(ch)
+          mode = 'normal'
+          continue
+        }
+        const cp = src.codePointAt(i) || 0
+        if (cp > 0x7f) {
+          pushEscapedCodePoint(cp)
+          if (cp > 0xffff) i++
+          continue
+        }
+        buf.push(ch)
+        continue
+      }
+
+      // mode === 'normal'
+      if (ch === '/' && next === '/') {
+        buf.push(ch, next)
+        i++
+        mode = 'line_comment'
+        continue
+      }
+      if (ch === '/' && next === '*') {
+        buf.push(ch, next)
+        i++
+        mode = 'block_comment'
+        continue
+      }
+      if (ch === '\'') {
+        buf.push(ch)
+        mode = 'single'
+        strEscaped = false
+        continue
+      }
+      if (ch === '"') {
+        buf.push(ch)
+        mode = 'double'
+        strEscaped = false
+        continue
+      }
+
+      // Regex literal detection (best-effort).
+      if (ch === '/' && next !== '/' && next !== '*') {
+        const prev = prevNonWs()
+        if (mayStartRegexLiteral(prev)) {
+          buf.push(ch)
+          mode = 'regex'
+          regexEscaped = false
+          regexInCharClass = false
+          continue
+        }
+      }
+
+      buf.push(ch)
+    }
+
+    if (changed) notes.push('escaped non-ASCII characters inside strings/comments/regex literals')
+    return { code: buf.join(''), changed, notes }
+  }
+
+  private getSafePreamble(hostApp: 'wps' | 'et' | 'wpp' | 'unknown', raw: string): string {
+    const key = hostApp || 'unknown'
+    const cached = (this.safePreambleCache as any)[key]
+    if (typeof cached === 'string' && cached.length > 0) return cached
+    try {
+      const s1 = this.sanitizeMacroUnicode(String(raw || ''))
+      const s2 = this.escapeNonAsciiInLiteralsAndComments(String(s1.code || ''))
+      const out = String(s2.code || '')
+      ;(this.safePreambleCache as any)[key] = out
+      return out
+    } catch (e) {
+      ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/js-macro-executor.ts', e)
+      return raw
+    }
   }
 
 
@@ -11417,13 +11641,13 @@ try { if (typeof window !== 'undefined') window.BID = BID } catch (e) { try { if
 
       isWriter
 
-        ? writerPreamble
+        ? this.getSafePreamble('wps', writerPreamble)
 
         : (hostApp === 'et'
 
-            ? etPreamble
+            ? this.getSafePreamble('et', etPreamble)
 
-            : (hostApp === 'wpp' ? wppPreamble : etPreamble))
+            : (hostApp === 'wpp' ? this.getSafePreamble('wpp', wppPreamble) : this.getSafePreamble('et', etPreamble)))
 
 
 
