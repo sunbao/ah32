@@ -20,7 +20,7 @@
     <!-- Teleport to body to avoid being clipped by taskpane/containers with overflow hidden -->
     <teleport to="body">
       <div
-        v-if="showDetails"
+        v-show="showDetails"
         ref="panelRef"
         class="status-details-panel"
         :class="{ 'panel-top': panelPlacement === 'top' }"

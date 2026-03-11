@@ -69,7 +69,39 @@ const getActiveDocName = (): string => {
   }
 }
 
-const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
+const makeAbortError = () => {
+  const err: any = new Error('aborted')
+  err.name = 'AbortError'
+  return err
+}
+
+const isAbortError = (e: any): boolean => {
+  try {
+    if (!e) return false
+    if (String(e?.name || '') === 'AbortError') return true
+    const msg = String(e?.message || e || '').toLowerCase()
+    // Some WebViews throw plain Error with an "aborted" message.
+    return msg.includes('aborted')
+  } catch (_e) {
+    return false
+  }
+}
+
+const sleep = (ms: number, signal?: AbortSignal) => new Promise<void>((resolve, reject) => {
+  const t = setTimeout(() => resolve(), ms)
+  if (!signal) return
+  if (signal.aborted) {
+    clearTimeout(t)
+    reject(makeAbortError())
+    return
+  }
+  const onAbort = () => {
+    try { clearTimeout(t) } catch (_e) {}
+    try { signal.removeEventListener('abort', onAbort) } catch (_e) {}
+    reject(makeAbortError())
+  }
+  try { signal.addEventListener('abort', onAbort, { once: true }) } catch (_e) {}
+})
 
 const checkBackendHealth = async (): Promise<boolean> => {
   const cfg = getRuntimeConfig()
@@ -91,10 +123,11 @@ const checkBackendHealth = async (): Promise<boolean> => {
   }
 }
 
-const callGeneratePlan = async (args: { query: string; sessionId: string; documentName: string; host: MacroBenchHost }) => {
+const callGeneratePlan = async (args: { query: string; sessionId: string; documentName: string; host: MacroBenchHost; signal?: AbortSignal }) => {
   const cfg = getRuntimeConfig()
   const caps = wpsBridge.getCapabilities(false)
   const url = `${cfg.apiBase}/agentic/plan/generate`
+  if (args.signal?.aborted) throw makeAbortError()
 
   const resp = await fetch(url, {
     method: 'POST',
@@ -102,6 +135,7 @@ const callGeneratePlan = async (args: { query: string; sessionId: string; docume
       'Content-Type': 'application/json',
       ...(cfg.apiKey ? { 'X-API-Key': cfg.apiKey } : {}),
     },
+    signal: args.signal,
     body: JSON.stringify({
       user_query: args.query,
       session_id: args.sessionId,
@@ -132,6 +166,7 @@ const callGeneratePlanWithRetry = async (args: {
   sessionId: string
   documentName: string
   host: MacroBenchHost
+  signal?: AbortSignal
 }) => {
   const cfg = getRuntimeConfig()
   const maxAttempts = 3
@@ -141,12 +176,13 @@ const callGeneratePlanWithRetry = async (args: {
     try {
       return await callGeneratePlan(args)
     } catch (e: any) {
+      if (args.signal?.aborted || isAbortError(e)) throw e
       lastErr = e
       const msg = String(e?.message || e)
       // Retry only on network-level fetch failures.
       if (!/Failed to fetch|NetworkError|ERR_CONNECTION/i.test(msg)) break
       if (i < maxAttempts) {
-        await sleep(400 * i)
+        await sleep(400 * i, args.signal)
       }
     }
   }
@@ -163,10 +199,12 @@ const callRepairPlan = async (args: {
   errorType: string
   errorMessage: string
   attempt: number
+  signal?: AbortSignal
 }) => {
   const cfg = getRuntimeConfig()
   const caps = wpsBridge.getCapabilities(false)
   const url = `${cfg.apiBase}/agentic/plan/repair`
+  if (args.signal?.aborted) throw makeAbortError()
 
   const resp = await fetch(url, {
     method: 'POST',
@@ -174,6 +212,7 @@ const callRepairPlan = async (args: {
       'Content-Type': 'application/json',
       ...(cfg.apiKey ? { 'X-API-Key': cfg.apiKey } : {}),
     },
+    signal: args.signal,
     body: JSON.stringify({
       session_id: args.sessionId,
       document_name: args.documentName,
@@ -334,6 +373,7 @@ export type RunBenchOptions = {
   }) => void
   onResult?: (r: MacroBenchCaseResult) => void
   shouldStop?: () => boolean
+  signal?: AbortSignal
 }
 
 export const getSuiteName = (id: MacroBenchSuiteId) => {
@@ -344,6 +384,11 @@ export const runMacroBenchCurrentHost = async (opts?: RunBenchOptions): Promise<
   const host = (wpsBridge.getHostApp() || 'wps') as MacroBenchHost
   const suiteId = (opts?.suiteId || 'all') as MacroBenchSuiteId | 'all'
   const preset = (opts?.preset || 'standard') as MacroBenchPreset
+  const shouldStopNow = () => {
+    try { if (opts?.shouldStop?.()) return true } catch (_e) {}
+    try { if (opts?.signal?.aborted) return true } catch (_e) {}
+    return false
+  }
 
   const cases = buildBenchCases({
     host,
@@ -392,53 +437,173 @@ export const runMacroBenchCurrentHost = async (opts?: RunBenchOptions): Promise<
     saveBenchResults(run)
   }
 
-  for (let i = 0; i < cases.length; i++) {
-    const c = cases[i]
-    if (opts?.shouldStop?.()) break
+  try {
+    for (let i = 0; i < cases.length; i++) {
+      const c = cases[i]
+      if (shouldStopNow()) break
 
-    opts?.onProgress?.({ idx: i + 1, total, caseName: c.name, host, suiteId: c.suiteId })
+      opts?.onProgress?.({ idx: i + 1, total, caseName: c.name, host, suiteId: c.suiteId })
 
-    const sessionId = `bench_ui_${host}_${Date.now()}_${i + 1}`
-    const docName = getActiveDocName()
-    try {
-      patchReloadDiag({
-        inflight_plan: {
-          at: nowIso(),
-          stage: 'bench_generate',
-          run_id: runId,
-          session_id: sessionId,
-          case_id: c.id,
-          suite: c.suiteId,
-          doc_name: docName || null,
-        },
-      })
-    } catch (e) {
-      ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench.ts', e)
-    }
-
-    // 1) generate (single call)
-    const t0 = performance.now()
-    let plan: any = null
-    let genMs = 0
-    try {
-      const gen = await callGeneratePlanWithRetry({ query: c.query, sessionId, documentName: docName, host })
-      genMs = gen.durationMs || Math.round(performance.now() - t0)
-      if (!gen.success || !gen.plan) {
-        throw new Error(gen.error || "generate_empty_or_failed")
+      const sessionId = `bench_ui_${host}_${Date.now()}_${i + 1}`
+      const docName = getActiveDocName()
+      try {
+        patchReloadDiag({
+          inflight_plan: {
+            at: nowIso(),
+            stage: 'bench_generate',
+            run_id: runId,
+            session_id: sessionId,
+            case_id: c.id,
+            suite: c.suiteId,
+            doc_name: docName || null,
+          },
+        })
+      } catch (e) {
+        ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench.ts', e)
       }
-      plan = gen.plan
-    } catch (e: any) {
-      const msg = `generate_failed: ${String(e?.message || e)}`
+
+      // 1) generate (single call)
+      const t0 = performance.now()
+      let plan: any = null
+      let genMs = 0
+      try {
+        if (shouldStopNow()) break
+        const gen = await callGeneratePlanWithRetry({ query: c.query, sessionId, documentName: docName, host, signal: opts?.signal })
+        genMs = gen.durationMs || Math.round(performance.now() - t0)
+        if (!gen.success || !gen.plan) {
+          throw new Error(gen.error || "generate_empty_or_failed")
+        }
+        plan = gen.plan
+      } catch (e: any) {
+        if (shouldStopNow() || isAbortError(e)) break
+        const msg = `generate_failed: ${String(e?.message || e)}`
+        const r: MacroBenchCaseResult = {
+          case: c,
+          sessionId,
+          documentName: docName,
+          ok: false,
+          generateMs: Math.round(performance.now() - t0),
+          execTotalMs: 0,
+          attempts: 0,
+          repairsUsed: 0,
+          message: msg,
+        }
+        results.push(r)
+        persistPartial()
+        opts?.onResult?.(r)
+
+        void reportAuditEvent({
+          session_id: sessionId,
+          host_app: host,
+          mode: "plan",
+          success: false,
+          error_type: "bench_generate_failed",
+          error_message: msg,
+          extra: { bench: true, case: c.id, suite: c.suiteId, phase: "generate" },
+        })
+
+        // If the backend is down, stop the bench early (otherwise we just spam failures).
+        if (/Failed to fetch/i.test(msg)) {
+          const healthy = await checkBackendHealth()
+          if (!healthy) break
+        }
+
+        continue
+      }
+
+      if (shouldStopNow()) break
+
+      // 2) execute (+ repair loops via /agentic/plan/repair)
+      const t1 = performance.now()
+
+      // Ensure a stable artifact id so reruns overwrite instead of duplicating content.
+      const stableId = `bench_${host}_${c.id}`.replace(/[^a-zA-Z0-9_\-:.]/g, "_").slice(0, 64)
+      const ensurePlanBlockId = (input: any, blockId: string) => {
+        // IMPORTANT: Avoid JSON deep-clone here. Some plans can carry large strings (writeback content),
+        // and cloning doubles memory pressure on WPS WebView and can trigger auto-reload.
+        if (!input || typeof input !== "object") return input
+        const ops = new Set(["upsert_block", "delete_block", "rollback_block", "set_selection_by_block"])
+        const walk = (actions: any[]) => {
+          for (const a of actions || []) {
+            if (!a || typeof a !== "object") continue
+            if (typeof a.op === "string" && ops.has(String(a.op))) {
+              try { a.block_id = blockId } catch (e) { /* ignore */ }
+            }
+            if (Array.isArray(a.actions)) walk(a.actions)
+          }
+        }
+        try { if (Array.isArray((input as any).actions)) walk((input as any).actions) } catch (e) { ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench.ts', e) }
+        return input
+      }
+
+      let currentPlan = ensurePlanBlockId(plan, stableId)
+      const maxAttempts = 3
+      let attempts = 0
+      let ok = false
+      let message = ""
+
+      try {
+        patchReloadDiag({
+          inflight_plan: {
+            at: nowIso(),
+            stage: 'bench_execute',
+            run_id: runId,
+            session_id: sessionId,
+            case_id: c.id,
+            suite: c.suiteId,
+            doc_name: docName || null,
+          },
+        })
+      } catch (e) {
+        ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench.ts', e)
+      }
+
+      while (attempts < maxAttempts) {
+        if (shouldStopNow()) break
+        attempts += 1
+        const exec = await WPSHelper.executePlan(currentPlan)
+        if (exec?.success) {
+          ok = true
+          message = String(exec?.message || "")
+          break
+        }
+        message = String(exec?.message || "Plan execution failed")
+        if (shouldStopNow()) break
+        try {
+          const repaired = await callRepairPlan({
+            plan: currentPlan,
+            sessionId,
+            documentName: docName,
+            host,
+            errorType: "exec_failed",
+            errorMessage: message,
+            attempt: attempts,
+            signal: opts?.signal,
+          })
+          if (!repaired.success || !repaired.plan) break
+          currentPlan = ensurePlanBlockId(repaired.plan, stableId)
+        } catch (e: any) {
+          if (shouldStopNow() || isAbortError(e)) break
+          message = `plan_repair_failed: ${String(e?.message || e)}`
+          break
+        }
+      }
+
+      if (shouldStopNow()) break
+
+      const execMs = Math.round(performance.now() - t1)
+      const repairsUsed = attempts > 0 ? Math.max(0, attempts - 1) : 0
+
       const r: MacroBenchCaseResult = {
         case: c,
         sessionId,
         documentName: docName,
-        ok: false,
-        generateMs: Math.round(performance.now() - t0),
-        execTotalMs: 0,
-        attempts: 0,
-        repairsUsed: 0,
-        message: msg,
+        ok,
+        generateMs: genMs,
+        execTotalMs: execMs,
+        attempts,
+        repairsUsed,
+        message,
       }
       results.push(r)
       persistPartial()
@@ -448,146 +613,42 @@ export const runMacroBenchCurrentHost = async (opts?: RunBenchOptions): Promise<
         session_id: sessionId,
         host_app: host,
         mode: "plan",
-        success: false,
-        error_type: "bench_generate_failed",
-        error_message: msg,
-        extra: { bench: true, case: c.id, suite: c.suiteId, phase: "generate" },
-      })
-
-      // If the backend is down, stop the bench early (otherwise we just spam failures).
-      if (/Failed to fetch/i.test(msg)) {
-        const healthy = await checkBackendHealth()
-        if (!healthy) break
-      }
-
-      continue
-    }
-
-    // 2) execute (+ repair loops via /agentic/plan/repair)
-    const t1 = performance.now()
-
-    // Ensure a stable artifact id so reruns overwrite instead of duplicating content.
-    const stableId = `bench_${host}_${c.id}`.replace(/[^a-zA-Z0-9_\-:.]/g, "_").slice(0, 64)
-    const ensurePlanBlockId = (input: any, blockId: string) => {
-      // IMPORTANT: Avoid JSON deep-clone here. Some plans can carry large strings (writeback content),
-      // and cloning doubles memory pressure on WPS WebView and can trigger auto-reload.
-      if (!input || typeof input !== "object") return input
-      const ops = new Set(["upsert_block", "delete_block", "rollback_block", "set_selection_by_block"])
-      const walk = (actions: any[]) => {
-        for (const a of actions || []) {
-          if (!a || typeof a !== "object") continue
-          if (typeof a.op === "string" && ops.has(String(a.op))) {
-            try { a.block_id = blockId } catch (e) { /* ignore */ }
-          }
-          if (Array.isArray(a.actions)) walk(a.actions)
-        }
-      }
-      try { if (Array.isArray((input as any).actions)) walk((input as any).actions) } catch (e) { ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench.ts', e) }
-      return input
-    }
-
-    let currentPlan = ensurePlanBlockId(plan, stableId)
-    const maxAttempts = 3
-    let attempts = 0
-    let ok = false
-    let message = ""
-
-    try {
-      patchReloadDiag({
-        inflight_plan: {
-          at: nowIso(),
-          stage: 'bench_execute',
-          run_id: runId,
-          session_id: sessionId,
-          case_id: c.id,
+        success: ok,
+        error_type: ok ? undefined : "bench_exec_failed",
+        error_message: ok ? undefined : message.slice(0, 800),
+        extra: {
+          bench: true,
+          case: c.id,
           suite: c.suiteId,
-          doc_name: docName || null,
+          generate_ms: genMs,
+          exec_total_ms: execMs,
+          attempts,
+          repairs_used: repairsUsed,
         },
       })
-    } catch (e) {
-      ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench.ts', e)
-    }
 
-    while (attempts < maxAttempts) {
-      attempts += 1
-      const exec = await WPSHelper.executePlan(currentPlan)
-      if (exec?.success) {
-        ok = true
-        message = String(exec?.message || "")
-        break
-      }
-      message = String(exec?.message || "Plan execution failed")
       try {
-        const repaired = await callRepairPlan({
-          plan: currentPlan,
-          sessionId,
-          documentName: docName,
-          host,
-          errorType: "exec_failed",
-          errorMessage: message,
-          attempt: attempts,
+        patchReloadDiag({
+          inflight_plan: null,
+          lastBenchPlanOk: ok,
+          lastBenchPlanCaseId: c.id,
+          lastBenchPlanSuite: c.suiteId,
+          lastBenchPlanRunId: runId,
+          lastBenchPlanEndAt: nowIso(),
         })
-        if (!repaired.success || !repaired.plan) break
-        currentPlan = ensurePlanBlockId(repaired.plan, stableId)
-      } catch (e: any) {
-        message = `plan_repair_failed: ${String(e?.message || e)}`
-        break
+      } catch (e) {
+        ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench.ts', e)
       }
+
+      // Help GC: release large references ASAP between cases (best-effort).
+      try { plan = null } catch (e) {}
+      try { currentPlan = null } catch (e) {}
+      // Yield to event loop between cases; do not tie to abort signal to avoid throwing on stop.
+      await sleep(0)
     }
-
-    const execMs = Math.round(performance.now() - t1)
-    const repairsUsed = attempts > 0 ? Math.max(0, attempts - 1) : 0
-
-    const r: MacroBenchCaseResult = {
-      case: c,
-      sessionId,
-      documentName: docName,
-      ok,
-      generateMs: genMs,
-      execTotalMs: execMs,
-      attempts,
-      repairsUsed,
-      message,
-    }
-    results.push(r)
-    persistPartial()
-    opts?.onResult?.(r)
-
-    void reportAuditEvent({
-      session_id: sessionId,
-      host_app: host,
-      mode: "plan",
-      success: ok,
-      error_type: ok ? undefined : "bench_exec_failed",
-      error_message: ok ? undefined : message.slice(0, 800),
-      extra: {
-        bench: true,
-        case: c.id,
-        suite: c.suiteId,
-        generate_ms: genMs,
-        exec_total_ms: execMs,
-        attempts,
-        repairs_used: repairsUsed,
-      },
-    })
-
-    try {
-      patchReloadDiag({
-        inflight_plan: null,
-        lastBenchPlanOk: ok,
-        lastBenchPlanCaseId: c.id,
-        lastBenchPlanSuite: c.suiteId,
-        lastBenchPlanRunId: runId,
-        lastBenchPlanEndAt: nowIso(),
-      })
-    } catch (e) {
-      ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench.ts', e)
-    }
-
-    // Help GC: release large references ASAP between cases (best-effort).
-    try { plan = null } catch (e) {}
-    try { currentPlan = null } catch (e) {}
-    await sleep(0)
+  } finally {
+    // Ensure inflight marker doesn't get stuck on aborted runs.
+    try { patchReloadDiag({ inflight_plan: null }) } catch (e) { ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench.ts', e) }
   }
 
   const summaryBySuite = (() => {

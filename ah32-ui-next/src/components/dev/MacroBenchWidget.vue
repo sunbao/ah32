@@ -27,8 +27,14 @@
         >
           续跑
         </el-button>
-        <el-button size="small" type="default" @click="stop" :disabled="!running">
-          停止
+        <el-button
+          size="small"
+          type="default"
+          @click="stop"
+          :disabled="!running || stopped"
+          :loading="running && stopped"
+        >
+          {{ stopped ? '停止中' : '停止' }}
         </el-button>
         <el-button size="small" type="default" plain @click="restore" :disabled="running">
           恢复
@@ -159,6 +165,7 @@ const toast = (type: 'success' | 'warning' | 'info' | 'error', message: string) 
 
 const running = ref(false)
 const stopped = ref(false)
+const macroAbort = ref<AbortController | null>(null)
 const progress = ref<any>(null)
 const lastSummary = ref<any>(null)
 const lastJson = ref<string>('')
@@ -355,6 +362,7 @@ const start = async () => {
   if (running.value) return
   running.value = true
   stopped.value = false
+  macroAbort.value = null
   progress.value = null
   lastError.value = ''
   lastMode.value = runMode.value
@@ -380,11 +388,14 @@ const start = async () => {
       if (!stopped.value) toast('success', `对话驱动跑测完成：成功 ${out.summary.ok}/${out.summary.total}`)
       else toast('info', '对话驱动跑测已停止')
     } else {
+      const ctrl = new AbortController()
+      macroAbort.value = ctrl
       const out = await runMacroBenchCurrentHost({
         onProgress: (p) => { progress.value = p },
         shouldStop: () => stopped.value,
         suiteId: suiteId.value,
-        preset: preset.value
+        preset: preset.value,
+        signal: ctrl.signal,
       })
       lastSummary.value = out.summary as MacroBenchSummary
       lastRun.value = out as MacroBenchRun
@@ -398,6 +409,7 @@ const start = async () => {
     toast('error', msg)
   } finally {
     running.value = false
+    macroAbort.value = null
     // Best-effort: show persisted results from last run.
     try {
       const host = (progress.value?.host || safeHost()) as MacroBenchHost
@@ -434,6 +446,7 @@ const resume = async () => {
 
   running.value = true
   stopped.value = false
+  macroAbort.value = null
   progress.value = null
   lastError.value = ''
   lastMode.value = 'chat'
@@ -478,7 +491,8 @@ const resume = async () => {
 
 const stop = () => {
   stopped.value = true
-  toast('info', '已请求停止（当前步骤结束后生效）')
+  try { macroAbort.value?.abort() } catch (e) { ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/components/dev/MacroBenchWidget.vue', e) }
+  toast('info', macroAbort.value ? '已请求停止（已中断当前网络请求）' : '已请求停止（当前步骤结束后生效）')
   try { void import('@/services/macro-cancel').then(m => m.macroCancel.cancel()).catch((e) => { ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/components/dev/MacroBenchWidget.vue', e) }) } catch (e) { (globalThis as any).__ah32_reportError?.('ah32-ui-next/src/components/dev/MacroBenchWidget.vue', e) }
   try { (chatStore as any).cancelCurrentRequest?.() } catch (e) { (globalThis as any).__ah32_reportError?.('ah32-ui-next/src/components/dev/MacroBenchWidget.vue', e) }
 }
