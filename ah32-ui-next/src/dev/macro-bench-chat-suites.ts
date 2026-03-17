@@ -1349,7 +1349,9 @@ const STORIES: ChatBenchStory[] = [
         id: 't1_answer',
         name: '生成答案与解析（写回文末）',
         artifactId: 'bench_exam_answering_delivery',
+        forceSkillId: 'exam-answering',
         asserts: [
+          { type: 'skills_selected_includes', skillId: 'exam-answering', points: 2 },
           { type: 'writer_text_contains', text: '答案与解析' },
           { type: 'writer_text_contains', text: '1.' },
           { type: 'writer_block_backup_exists' },

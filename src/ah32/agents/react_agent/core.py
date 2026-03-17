@@ -3546,6 +3546,7 @@ class ReActAgent:
                 # - If frontend is confident (>= accept_threshold) or explicit switch, force primary skill.
                 # - Else, optionally constrain backend routing to the frontend candidate set.
                 allow_skill_ids = None
+                forced_front_skill_id = ""
                 front_router_metrics = None
                 try:
                     sel = None
@@ -3611,6 +3612,7 @@ class ReActAgent:
                             except Exception:
                                 forced = None
                             if forced is not None:
+                                forced_front_skill_id = str(forced.skill_id or "").strip()
                                 selected_skills = [forced]
                                 skills_used_payload = [
                                     {
@@ -3803,6 +3805,20 @@ class ReActAgent:
 
                         ]
 
+                    if forced_front_skill_id:
+                        selected_skills = [
+                            s
+                            for s in (selected_skills or [])
+                            if str(getattr(s, "skill_id", "") or getattr(s, "id", "") or "").strip()
+                            == forced_front_skill_id
+                        ]
+                        if selected_skills:
+                            skills_used_payload = [
+                                item
+                                for item in (skills_used_payload or [])
+                                if str((item or {}).get("id") or "").strip() == forced_front_skill_id
+                            ]
+
                 except Exception:
 
                     # Embeddings may be unavailable (offline bootstrap). Fall back to lexical routing.
@@ -3856,6 +3872,20 @@ class ReActAgent:
                             if x.get("skill") is not None
 
                         ]
+
+                    if forced_front_skill_id:
+                        selected_skills = [
+                            s
+                            for s in (selected_skills or [])
+                            if str(getattr(s, "skill_id", "") or getattr(s, "id", "") or "").strip()
+                            == forced_front_skill_id
+                        ]
+                        if selected_skills:
+                            skills_used_payload = [
+                                item
+                                for item in (skills_used_payload or [])
+                                if str((item or {}).get("id") or "").strip() == forced_front_skill_id
+                            ]
 
 
 
