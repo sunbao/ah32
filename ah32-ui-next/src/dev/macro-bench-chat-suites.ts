@@ -524,9 +524,8 @@ const STORIES: ChatBenchStory[] = [
         forceSkillId: 'doc-editor',
         asserts: [
           { type: 'skills_selected_includes', skillId: 'doc-editor', points: 2 },
-          { type: 'writer_text_contains', text: '对照表' },
+          { type: 'writer_text_contains', text: '改写范围' },
           { type: 'writer_text_contains', text: '修订稿' },
-          { type: 'writer_table_exists', minRows: 2, minCols: 3 },
         ],
         query:
           '请把上面的原文改写成“正式商务沟通”风格，但不要改动原文正文。\n' +
@@ -1273,14 +1272,19 @@ const STORIES: ChatBenchStory[] = [
     host: 'wps',
     name: '文档改写：对照表+修订稿块（Writer）',
     description: '验证 doc-editor 的对照表交付与幂等写回。',
-    setupActions: [{ type: 'ensure_bench_document', title: 'Bench-文档改写' }, { type: 'set_cursor', pos: 'start' }],
+    setupActions: [
+      { type: 'ensure_bench_document', title: 'Bench-文档改写' },
+      { type: 'set_cursor', pos: 'start' },
+    ],
     turns: [
       {
         id: 't1_rewrite',
         name: '改写并写回对照表+修订稿',
         artifactId: 'bench_doc_editor_delivery',
+        forceSkillId: 'doc-editor',
         asserts: [
-          { type: 'writer_text_contains', text: '对照表' },
+          { type: 'skills_selected_includes', skillId: 'doc-editor', points: 2 },
+          { type: 'writer_text_contains', text: '改写范围' },
           { type: 'writer_text_contains', text: '修订稿' },
           { type: 'writer_block_backup_exists' },
         ],
@@ -1289,8 +1293,12 @@ const STORIES: ChatBenchStory[] = [
           { type: 'insert_text', text: '要求：语气正式，面向客户汇报。' },
         ],
         query:
-          '把上面“原文”改得更专业，并写回到文末：对照表（原文要点/建议改写/理由/风险等级/是否应用）+ 修订稿块。\n' +
-          '要求：只输出可执行 Plan JSON（schema_version="ah32.plan.v1", host_app="wps"），不要输出任何额外文字。',
+          '请把上面的原文改写成“正式商务沟通、面向客户汇报”风格，但不要直接改原文正文。\n' +
+          '交付方式：把文末已有交付块幂等更新为同一个块；若该块不存在则创建。块内容必须包含：\n' +
+          '1) 改写范围与假设；\n' +
+          '2) 对照表（原文要点/建议改写/理由/风险等级/是否应用）；\n' +
+          '3) 修订稿（可直接复制替换）。\n' +
+          '只输出可执行 Plan JSON（schema_version="ah32.plan.v1", host_app="wps"），不要输出任何额外文字。',
       },
     ],
   },

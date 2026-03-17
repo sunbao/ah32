@@ -2,7 +2,6 @@ import { getRuntimeConfig } from '@/utils/runtime-config'
 import { parseJsonRelaxed } from '@/utils/relaxed-json'
 
 import { wpsBridge, WPSHelper } from '@/services/wps-bridge'
-import { jsMacroExecutor } from '@/services/js-macro-executor'
 
 import { reportAuditEvent } from '@/services/audit-client'
 
@@ -211,6 +210,19 @@ const unwrapArrayRef = (v: any): any[] => {
   }
 }
 
+const applyForcedSkillSelection = (turn: any, selectedSkills: any[]): any[] => {
+  try {
+    const forcedId = String(turn?.forceSkillId || '').trim()
+    if (!forcedId) return Array.isArray(selectedSkills) ? selectedSkills : []
+    const list = Array.isArray(selectedSkills) ? selectedSkills.slice() : []
+    if (list.some((skill: any) => String(skill?.id || '').trim() === forcedId)) return list
+    return [{ id: forcedId, name: forcedId, score: 1 }, ...list]
+  } catch (e) {
+    ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e)
+    return Array.isArray(selectedSkills) ? selectedSkills : []
+  }
+}
+
 const previewText = (raw: any): string => {
 
   try {
@@ -223,7 +235,7 @@ const previewText = (raw: any): string => {
 
     const out = withoutCode || s
 
-    return out.length > 140 ? out.slice(0, 140) + '…' : out
+    return out.length > 140 ? out.slice(0, 140) + '...' : out
 
   } catch (e) {
 
@@ -235,9 +247,57 @@ const previewText = (raw: any): string => {
 
 }
 
+const normalizeBenchSessionToken = (raw: any): string => {
+
+  try {
+
+    return String(raw || '')
+
+      .trim()
+
+      .replace(/[^a-zA-Z0-9_-]+/g, '_')
+
+      .replace(/_+/g, '_')
+
+      .replace(/^_+|_+$/g, '')
+
+      .slice(0, 72) || 'story'
+
+  } catch (e) {
+
+    ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e)
+
+    return 'story'
+
+  }
+
+}
+
 
 
 const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
+
+const makeAbortError = () => {
+  const err: any = new Error('aborted')
+  err.name = 'AbortError'
+  return err
+}
+
+const sleepAbortable = (ms: number, signal?: AbortSignal) => new Promise<void>((resolve, reject) => {
+  const t = setTimeout(() => resolve(), ms)
+  if (!signal) return
+  if (signal.aborted) {
+    clearTimeout(t)
+    reject(makeAbortError())
+    return
+  }
+  const onAbort = () => {
+    try { clearTimeout(t) } catch (_e) {}
+    try { signal.removeEventListener('abort', onAbort) } catch (_e) {}
+    reject(makeAbortError())
+  }
+  try { signal.addEventListener('abort', onAbort, { once: true }) } catch (_e) {}
+})
 
 
 
@@ -521,23 +581,124 @@ const getActiveDocName = (): string => {
 
 }
 
+const hasWriterBlockBackupFallback = (blockId: string): boolean => {
+  try {
+    if (typeof localStorage === 'undefined') return false
+    const id = String(blockId || '').trim()
+    if (!id) return false
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = String(localStorage.key(i) || '')
+      if (!key.startsWith('__ah32:block_backup:')) continue
+      if (!key.endsWith(`:${id}`)) continue
+      const raw = localStorage.getItem(key)
+      if (!raw) continue
+      try {
+        const payload: any = JSON.parse(raw)
+        if (typeof payload?.text === 'string') return true
+        if (Array.isArray(payload?.ops) && payload.ops.length > 0) return true
+      } catch (e) {
+        ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e)
+      }
+    }
+    return false
+  } catch (e) {
+    ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e)
+    return false
+  }
+}
+
 
 
 const extractPlanBlocks = (assistantMsg: any): string[] => {
   const out: string[] = []
 
   const tryParsePlanJson = (raw: string): { ok: boolean; json?: string } => {
-    const text = String(raw || '').trim()
+    let text = String(raw || '').trim()
     if (!text) return { ok: false }
-    const parsed = parseJsonRelaxed(text, { maxChars: 900_000, allowRepair: true })
-    if (!parsed.ok || !parsed.value || typeof parsed.value !== 'object' || Array.isArray(parsed.value)) return { ok: false }
-    if (String((parsed.value as any).schema_version || '').trim() !== 'ah32.plan.v1') return { ok: false }
-    try {
-      // Re-serialize so we always execute strict JSON (and normalize any repaired control chars).
-      return { ok: true, json: JSON.stringify(parsed.value) }
-    } catch (_e) {
-      return { ok: true, json: text }
+    const normalizeParsedPlan = (parsedValue: any, fallbackText: string): { ok: boolean; json?: string } => {
+      if (!parsedValue || typeof parsedValue !== 'object' || Array.isArray(parsedValue)) return { ok: false }
+      const schemaVersion = String(
+        (parsedValue as any).schema_version
+        || (parsedValue as any).schemaVersion
+        || (parsedValue as any).schema
+        || ''
+      ).trim()
+      if (schemaVersion !== 'ah32.plan.v1') return { ok: false }
+      try {
+        if (!(parsedValue as any).schema_version) (parsedValue as any).schema_version = schemaVersion
+        // Re-serialize so we always execute strict JSON (and normalize any repaired control chars).
+        return { ok: true, json: JSON.stringify(parsedValue) }
+      } catch (_e) {
+        return { ok: true, json: fallbackText }
+      }
     }
+    try {
+      if (text.startsWith('```')) {
+        text = text.replace(/^```[a-z0-9_.-]*\s*/i, '').replace(/```$/i, '').trim()
+      }
+      const nl = text.indexOf('\n')
+      if (nl > 0 && nl <= 20) {
+        const first = text.slice(0, nl).trim().toLowerCase()
+        const rest = text.slice(nl + 1).trim()
+        if ((first === 'json' || first === 'plan' || first.startsWith('ah32')) && rest.startsWith('{')) {
+          text = rest
+        }
+      }
+    } catch (e) {
+      ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e)
+    }
+    const parsed = parseJsonRelaxed(text, { maxChars: 900_000, allowRepair: true })
+    if (parsed.ok) return normalizeParsedPlan(parsed.value, text)
+    const firstBrace = text.indexOf('{')
+    const lastBrace = text.lastIndexOf('}')
+    if (firstBrace < 0 || lastBrace <= firstBrace) return { ok: false }
+    const sliced = text.slice(firstBrace, lastBrace + 1)
+    const extracted = parseJsonRelaxed(sliced, { maxChars: 900_000, allowRepair: true })
+    if (!extracted.ok) return { ok: false }
+    return normalizeParsedPlan(extracted.value, sliced)
+  }
+
+  const extractBalancedJsonObjects = (text: string): string[] => {
+    const objects: string[] = []
+    const source = String(text || '')
+    let objectStart = -1
+    let depth = 0
+    let inString = false
+    let escaped = false
+    for (let index = 0; index < source.length; index++) {
+      const char = source[index]
+      if (objectStart < 0) {
+        if (char === '{') {
+          objectStart = index
+          depth = 1
+          inString = false
+          escaped = false
+        }
+        continue
+      }
+      if (inString) {
+        if (escaped) escaped = false
+        else if (char === '\\') escaped = true
+        else if (char === '"') inString = false
+        continue
+      }
+      if (char === '"') {
+        inString = true
+        continue
+      }
+      if (char === '{') {
+        depth += 1
+        continue
+      }
+      if (char === '}') {
+        depth -= 1
+        if (depth === 0) {
+          objects.push(source.slice(objectStart, index + 1))
+          objectStart = -1
+        }
+      }
+    }
+    return objects
   }
 
   // Preferred: plan is delivered out-of-band via SSE `event: plan` and attached to message metadata.
@@ -545,7 +706,7 @@ const extractPlanBlocks = (assistantMsg: any): string[] => {
     const payloads = assistantMsg?.metadata?.macroBlockPayloads
     if (payloads && typeof payloads === 'object' && !Array.isArray(payloads)) {
       for (const v of Object.values(payloads as any)) {
-        const body = (typeof v === 'string' ? v : '').trim()
+        const body = (typeof v === 'string' ? v : JSON.stringify(v || '')).trim()
         if (!body) continue
         const p = tryParsePlanJson(body)
         if (p.ok && p.json) out.push(p.json)
@@ -582,6 +743,15 @@ const extractPlanBlocks = (assistantMsg: any): string[] => {
       if (p.ok && p.json) out.push(p.json)
     }
   }
+  if (out.length === 0 && src.includes('ah32.plan.v1')) {
+    for (const objectText of extractBalancedJsonObjects(src)) {
+      const p = tryParsePlanJson(objectText)
+      if (p.ok && p.json) {
+        out.push(p.json)
+        break
+      }
+    }
+  }
   return out
 }
 
@@ -608,6 +778,32 @@ const normalizeBlockId = (raw: string): string => {
 
   return String(raw || '').replace(/[^a-zA-Z0-9_\-:.]/g, '_').slice(0, 64)
 
+}
+
+const countLocalPlanRepairs = (input: any): number => {
+  let repairs = 0
+  const walk = (actions: any[]) => {
+    for (const action of actions || []) {
+      if (!action || typeof action !== 'object') continue
+      if (String((action as any).op || '') === 'upsert_block') {
+        const hasActionsArray = Array.isArray((action as any).actions) && (action as any).actions.length > 0
+        const hasLegacyContent =
+          typeof (action as any).content === 'string' ||
+          typeof (action as any).text === 'string' ||
+          Array.isArray((action as any).content)
+        if (!hasActionsArray && hasLegacyContent) repairs += 1
+      }
+      if (Array.isArray((action as any).actions)) walk((action as any).actions)
+    }
+  }
+  try {
+    if (input && typeof input === 'object' && Array.isArray((input as any).actions)) {
+      walk((input as any).actions)
+    }
+  } catch (e) {
+    ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e)
+  }
+  return repairs
 }
 
 const ensurePlanBlockIdForSystemOps = (input: any, blockId: string): any => {
@@ -665,864 +861,512 @@ const assertPoints = (a: { points?: number } | undefined, fallback: number = 1):
 
 
 
-const runAssertScript = async (script: string): Promise<{ ok: boolean; message: string }> => {
+const runDirectAssert = async (
+  host: MacroBenchHost,
+  a: ChatBenchAssert,
+  blockId?: string | null
+): Promise<{ ok: boolean; message: string } | null> => {
+
+  if (host !== 'wps' && host !== 'et' && host !== 'wpp') return null
 
   try {
 
-    const r = await jsMacroExecutor.executeJS(String(script || ''), true)
+    const type = String((a as any)?.type || '').trim()
 
-    return { ok: !!r?.success, message: String(r?.message || '') }
+    if (!type) return null
+
+    const result = wpsBridge.runWithWpsApi(
+      `bench.assert.${type}`,
+      () => {
+        const app = wpsBridge.getApplication()
+        const bid = (window as any).BID || null
+        const getWorkbook = () => {
+          try {
+            return app?.ActiveWorkbook || (app?.Workbooks ? app.Workbooks.Item(1) : null) || null
+          } catch (_e) {
+            return null
+          }
+        }
+        const getSheet = () => {
+          try {
+            return app?.ActiveSheet || null
+          } catch (_e) {
+            return null
+          }
+        }
+        const getPresentation = () => {
+          try {
+            return app?.ActivePresentation || (app?.Presentations ? app.Presentations.Item(1) : null) || null
+          } catch (_e) {
+            return null
+          }
+        }
+        const getRange = (sheet: any, addr: string) => {
+          try {
+            if (!sheet?.Range) return null
+            return sheet.Range(String(addr))
+          } catch (_e) {
+            return null
+          }
+        }
+        const getChartObjectsCount = (sheet: any) => {
+          let count = 0
+          try { count = Number(sheet?.ChartObjects?.().Count || 0) } catch (_e) { count = 0 }
+          if (count > 0) return count
+          try { count = Number(sheet?.ChartObjects?.Count || 0) } catch (_e) { count = 0 }
+          return count
+        }
+        const getChartObjectAt = (sheet: any, index: number) => {
+          try {
+            const direct = sheet?.ChartObjects?.(index)
+            if (direct) return direct
+          } catch (_e) {}
+          try {
+            const collection = sheet?.ChartObjects?.()
+            const item = collection?.Item?.(index)
+            if (item) return item
+          } catch (_e) {}
+          try {
+            return sheet?.ChartObjects?.Item?.(index) || null
+          } catch (_e) {
+            return null
+          }
+        }
+        const getSlideCount = (pres: any) => {
+          try {
+            return Number(pres?.Slides?.Count || 0)
+          } catch (_e) {
+            return 0
+          }
+        }
+        const getLastSlide = (pres: any) => {
+          const count = getSlideCount(pres)
+          if (count <= 0) return null
+          try {
+            return pres.Slides.Item(count)
+          } catch (_e) {
+            return null
+          }
+        }
+        const getShapeCount = (slide: any) => {
+          try {
+            return Number(slide?.Shapes?.Count || 0)
+          } catch (_e) {
+            return 0
+          }
+        }
+        const getShapeText = (shape: any) => {
+          let text = ''
+          try {
+            if (shape?.TextFrame && shape.TextFrame.HasText && shape.TextFrame.TextRange) {
+              text = String(shape.TextFrame.TextRange.Text || '')
+            }
+          } catch (_e) {
+            text = ''
+          }
+          return text
+        }
+        const getPlaceholderType = (shape: any) => {
+          try {
+            return Number(shape?.PlaceholderFormat?.PlaceholderType ?? -1)
+          } catch (_e) {
+            return -1
+          }
+        }
+        const isBenchBlockShape = (shape: any) => {
+          let alt = ''
+          try { alt = String(shape?.AlternativeText || '') } catch (_e) { alt = '' }
+          return alt.indexOf('AH32_BLOCKID:') >= 0
+        }
+
+        if (host === 'wps') {
+          const doc = app?.ActiveDocument || null
+          if (!doc) return { ok: false, message: `ASSERT_FAIL:${type}:no_document` }
+
+          if (type === 'writer_text_contains') {
+            const needle = String((a as any)?.text || '')
+            let txt = ''
+            try { txt = String(doc?.Content?.Text || '') } catch (_e) { txt = '' }
+            return txt.indexOf(needle) >= 0
+              ? { ok: true, message: 'ok' }
+              : { ok: false, message: `ASSERT_FAIL:${type}:not_found:${needle}` }
+          }
+
+          if (type === 'writer_text_not_contains') {
+            const needle = String((a as any)?.text || '')
+            let txt = ''
+            try { txt = String(doc?.Content?.Text || '') } catch (_e) { txt = '' }
+            return txt.indexOf(needle) === -1
+              ? { ok: true, message: 'ok' }
+              : { ok: false, message: `ASSERT_FAIL:${type}:found:${needle}` }
+          }
+
+          if (type === 'writer_table_exists') {
+            const minRows = Math.max(1, Number((a as any)?.minRows || 1) || 1)
+            const minCols = Math.max(1, Number((a as any)?.minCols || 1) || 1)
+            let t: any = null
+            try {
+              if (doc?.Tables && Number(doc.Tables.Count || 0) >= 1) t = doc.Tables.Item(1)
+            } catch (_e) {
+              t = null
+            }
+            if (!t) return { ok: false, message: 'ASSERT_FAIL:writer_table_exists:no_table' }
+            let rows = 0
+            let cols = 0
+            try {
+              rows = Number(t?.Rows?.Count || 0)
+              cols = Number(t?.Columns?.Count || 0)
+            } catch (_e) {
+              rows = 0
+              cols = 0
+            }
+            if (rows < minRows) return { ok: false, message: `ASSERT_FAIL:writer_table_exists:rows<${minRows} got ${rows}` }
+            if (cols < minCols) return { ok: false, message: `ASSERT_FAIL:writer_table_exists:cols<${minCols} got ${cols}` }
+            return { ok: true, message: 'ok' }
+          }
+
+          if (type === 'writer_table_header_bold') {
+            let t: any = null
+            try {
+              if (doc?.Tables && Number(doc.Tables.Count || 0) >= 1) t = doc.Tables.Item(1)
+            } catch (_e) {
+              t = null
+            }
+            if (!t) return { ok: false, message: 'ASSERT_FAIL:writer_table_header_bold:no_table' }
+            let b = 0
+            try { b = Number(t?.Rows?.Item(1)?.Range?.Font?.Bold || 0) } catch (_e) { b = 0 }
+            return b === 0
+              ? { ok: false, message: 'ASSERT_FAIL:writer_table_header_bold:header_not_bold' }
+              : { ok: true, message: 'ok' }
+          }
+
+          if (type === 'writer_heading_at_least') {
+            const level = Math.max(1, Math.min(3, Number((a as any)?.level || 1) || 1))
+            const min = Math.max(1, Number((a as any)?.min || 1) || 1)
+            let c = 0
+            try {
+              const total = Number(doc?.Paragraphs?.Count || 0)
+              for (let i = 1; i <= total; i++) {
+                let p: any = null
+                try { p = doc.Paragraphs.Item(i) } catch (_e) { p = null }
+                if (!p) continue
+                let name = ''
+                try { name = String(p?.Range?.Style ? (p.Range.Style.NameLocal || p.Range.Style.Name || '') : '') } catch (_e) { name = '' }
+                if (name.indexOf(`\u6807\u9898 ${level}`) !== -1 || name.indexOf(`Heading ${level}`) !== -1) {
+                  c += 1
+                  continue
+                }
+                try {
+                  const ol = Number(p?.OutlineLevel || 0)
+                  if (ol === level) c += 1
+                } catch (_e) {}
+              }
+            } catch (_e) {
+              c = 0
+            }
+            return c >= min
+              ? { ok: true, message: 'ok' }
+              : { ok: false, message: `ASSERT_FAIL:writer_heading_at_least:count<${min} got ${c}` }
+          }
+
+          if (type === 'writer_shapes_at_least') {
+            const min = Math.max(0, Number((a as any)?.min || 0) || 0)
+            let c = 0
+            try { c += Number(doc?.Shapes?.Count || 0) } catch (_e) {}
+            try { c += Number(doc?.InlineShapes?.Count || 0) } catch (_e) {}
+            return c >= min
+              ? { ok: true, message: 'ok' }
+              : { ok: false, message: `ASSERT_FAIL:writer_shapes_at_least:count<${min} got ${c}` }
+          }
+
+          if (type === 'writer_block_backup_exists') {
+            const id = String((a as any)?.blockId || (a as any)?.block_id || blockId || '').trim()
+            if (!id) return { ok: false, message: 'ASSERT_FAIL:writer_block_backup_exists:no_block_id' }
+            if (!bid || typeof bid.hasBlockBackup !== 'function') {
+              return hasWriterBlockBackupFallback(id)
+                ? { ok: true, message: 'ok' }
+                : { ok: false, message: 'ASSERT_FAIL:writer_block_backup_exists:no_BID_hasBlockBackup' }
+            }
+            let ok = false
+            try { ok = !!bid.hasBlockBackup(id) } catch (_e) { ok = false }
+            return ok
+              ? { ok: true, message: 'ok' }
+              : { ok: false, message: `ASSERT_FAIL:writer_block_backup_exists:not_found:${id}` }
+          }
+        }
+
+        if (host === 'et') {
+          const wb = getWorkbook()
+          const sh = getSheet()
+
+          if (type === 'et_sheet_exists') {
+            const target = String((a as any)?.name || '')
+            if (!wb?.Worksheets) return { ok: false, message: 'ASSERT_FAIL:et_sheet_exists:no_workbook' }
+            let ok = false
+            try {
+              const total = Number(wb.Worksheets.Count || 0)
+              for (let i = 1; i <= total; i++) {
+                let sheet: any = null
+                try { sheet = wb.Worksheets.Item(i) } catch (_e) { sheet = null }
+                if (sheet && String(sheet.Name || '') === target) {
+                  ok = true
+                  break
+                }
+              }
+            } catch (_e) {
+              ok = false
+            }
+            return ok
+              ? { ok: true, message: 'ok' }
+              : { ok: false, message: `ASSERT_FAIL:et_sheet_exists:not_found:${target}` }
+          }
+
+          if (type === 'et_chart_exists') {
+            const min = Math.max(1, Number((a as any)?.min || 1) || 1)
+            const count = getChartObjectsCount(sh)
+            return count >= min
+              ? { ok: true, message: 'ok' }
+              : { ok: false, message: `ASSERT_FAIL:et_chart_exists:count<${min} got ${count}` }
+          }
+
+          if (type === 'et_chart_has_title') {
+            const count = getChartObjectsCount(sh)
+            if (count <= 0) return { ok: false, message: 'ASSERT_FAIL:et_chart_has_title:no_chart' }
+            const chartObj = getChartObjectAt(sh, 1)
+            const chart = chartObj?.Chart || null
+            if (!chart) return { ok: false, message: 'ASSERT_FAIL:et_chart_has_title:no_chart_obj' }
+            let ok = false
+            try { ok = !!chart.HasTitle } catch (_e) { ok = false }
+            return ok
+              ? { ok: true, message: 'ok' }
+              : { ok: false, message: 'ASSERT_FAIL:et_chart_has_title:missing' }
+          }
+
+          if (type === 'et_freeze_panes_enabled') {
+            let ok = false
+            try { ok = !!(app?.ActiveWindow && app.ActiveWindow.FreezePanes) } catch (_e) { ok = false }
+            return ok
+              ? { ok: true, message: 'ok' }
+              : { ok: false, message: 'ASSERT_FAIL:et_freeze_panes_enabled:not_enabled' }
+          }
+
+          if (type === 'et_cell_number_format_not_general') {
+            const addr = String((a as any)?.a1 || 'A1')
+            if (!sh?.Range) return { ok: false, message: 'ASSERT_FAIL:et_cell_number_format_not_general:no_sheet' }
+            const range = getRange(sh, addr)
+            if (!range) return { ok: false, message: `ASSERT_FAIL:et_cell_number_format_not_general:no_range:${addr}` }
+            let nf = ''
+            try { nf = String(range.NumberFormat || '') } catch (_e) { nf = '' }
+            return nf && nf.toLowerCase() !== 'general'
+              ? { ok: true, message: 'ok' }
+              : { ok: false, message: `ASSERT_FAIL:et_cell_number_format_not_general:general:${addr}` }
+          }
+
+          if (type === 'et_range_conditional_formats_at_least') {
+            const addr = String((a as any)?.a1 || 'A1')
+            const min = Math.max(0, Number((a as any)?.min || 0) || 0)
+            if (!sh?.Range) return { ok: false, message: 'ASSERT_FAIL:et_range_conditional_formats_at_least:no_sheet' }
+            const range = getRange(sh, addr)
+            if (!range) return { ok: false, message: `ASSERT_FAIL:et_range_conditional_formats_at_least:no_range:${addr}` }
+            let count = 0
+            try { count = Number(range?.FormatConditions?.Count || 0) } catch (_e) { count = 0 }
+            return count >= min
+              ? { ok: true, message: 'ok' }
+              : { ok: false, message: `ASSERT_FAIL:et_range_conditional_formats_at_least:count<${min} got ${count}` }
+          }
+        }
+
+        if (host === 'wpp') {
+          const pres = getPresentation()
+
+          if (type === 'wpp_slide_count_at_least') {
+            if (!pres?.Slides) return { ok: false, message: 'ASSERT_FAIL:wpp_slide_count_at_least:no_presentation' }
+            const min = Math.max(1, Number((a as any)?.min || 1) || 1)
+            const count = getSlideCount(pres)
+            return count >= min
+              ? { ok: true, message: 'ok' }
+              : { ok: false, message: `ASSERT_FAIL:wpp_slide_count_at_least:count<${min} got ${count}` }
+          }
+
+          if (type === 'wpp_last_slide_shapes_at_least') {
+            if (!pres?.Slides) return { ok: false, message: 'ASSERT_FAIL:wpp_last_slide_shapes_at_least:no_presentation' }
+            const min = Math.max(1, Number((a as any)?.min || 1) || 1)
+            const slide = getLastSlide(pres)
+            if (!slide) return { ok: false, message: 'ASSERT_FAIL:wpp_last_slide_shapes_at_least:no_slides' }
+            const count = getShapeCount(slide)
+            return count >= min
+              ? { ok: true, message: 'ok' }
+              : { ok: false, message: `ASSERT_FAIL:wpp_last_slide_shapes_at_least:shapes<${min} got ${count}` }
+          }
+
+          if (type === 'wpp_slide_text_contains') {
+            const needle = String((a as any)?.text || '').trim()
+            if (!needle) return { ok: false, message: 'ASSERT_FAIL:wpp_slide_text_contains:empty' }
+            if (!pres?.Slides) return { ok: false, message: 'ASSERT_FAIL:wpp_slide_text_contains:no_presentation' }
+            const slide = getLastSlide(pres)
+            if (!slide) return { ok: false, message: 'ASSERT_FAIL:wpp_slide_text_contains:no_last_slide' }
+            let found = false
+            const count = getShapeCount(slide)
+            for (let i = 1; i <= count; i++) {
+              let shape: any = null
+              try { shape = slide.Shapes.Item(i) } catch (_e) { shape = null }
+              if (!shape) continue
+              const text = getShapeText(shape)
+              if (text && text.indexOf(needle) >= 0) {
+                found = true
+                break
+              }
+            }
+            return found
+              ? { ok: true, message: 'ok' }
+              : { ok: false, message: `ASSERT_FAIL:wpp_slide_text_contains:missing:${needle}` }
+          }
+
+          if (type === 'wpp_placeholder_text_contains') {
+            const kind = String((a as any)?.kind || 'body').trim().toLowerCase()
+            const needle = String((a as any)?.text || '').trim()
+            const index = Math.max(1, Number((a as any)?.index || 1) || 1)
+            if (!needle) return { ok: false, message: 'ASSERT_FAIL:wpp_placeholder_text_contains:empty' }
+            if (!pres?.Slides) return { ok: false, message: 'ASSERT_FAIL:wpp_placeholder_text_contains:no_presentation' }
+            const slide = getLastSlide(pres)
+            if (!slide) return { ok: false, message: 'ASSERT_FAIL:wpp_placeholder_text_contains:no_last_slide' }
+            const typeMap: Record<string, number> = { title: 1, body: 2, subtitle: 4 }
+            const placeholderType = Object.prototype.hasOwnProperty.call(typeMap, kind) ? typeMap[kind] : null
+            if (placeholderType == null) {
+              return { ok: false, message: `ASSERT_FAIL:wpp_placeholder_text_contains:bad_kind:${kind}` }
+            }
+            let target: any = null
+            try {
+              if (kind === 'title') target = slide?.Shapes?.Title || null
+            } catch (_e) {
+              target = null
+            }
+            if (!target) {
+              const candidates: any[] = []
+              const count = getShapeCount(slide)
+              for (let i = 1; i <= count; i++) {
+                let shape: any = null
+                try { shape = slide.Shapes.Item(i) } catch (_e) { shape = null }
+                if (!shape) continue
+                if (getPlaceholderType(shape) === placeholderType) candidates.push(shape)
+              }
+              if (candidates.length >= 1) {
+                target = candidates[Math.min(candidates.length - 1, index - 1)] || candidates[0] || null
+              }
+            }
+            if (!target) {
+              return { ok: false, message: `ASSERT_FAIL:wpp_placeholder_text_contains:no_placeholder:kind=${kind}:idx=${index}` }
+            }
+            const text = getShapeText(target)
+            return text.indexOf(needle) >= 0
+              ? { ok: true, message: 'ok' }
+              : { ok: false, message: `ASSERT_FAIL:wpp_placeholder_text_contains:missing:${needle}` }
+          }
+
+          if (type === 'wpp_last_slide_within_bounds') {
+            if (!pres?.Slides) return { ok: false, message: 'ASSERT_FAIL:wpp_last_slide_within_bounds:no_presentation' }
+            const slide = getLastSlide(pres)
+            if (!slide?.Shapes) return { ok: false, message: 'ASSERT_FAIL:wpp_last_slide_within_bounds:no_shapes' }
+            const margin = Math.max(0, Number((a as any)?.margin || 0) || 0)
+            let sw = 960
+            let sh = 540
+            try {
+              if (pres?.PageSetup) {
+                sw = Number(pres.PageSetup.SlideWidth || sw)
+                sh = Number(pres.PageSetup.SlideHeight || sh)
+              }
+            } catch (_e) {}
+            const count = getShapeCount(slide)
+            for (let i = 1; i <= count; i++) {
+              let shape: any = null
+              try { shape = slide.Shapes.Item(i) } catch (_e) { shape = null }
+              if (!shape || isBenchBlockShape(shape)) continue
+              let left = 0
+              let top = 0
+              let width = 0
+              let height = 0
+              try { left = Number(shape.Left || 0) } catch (_e) { left = 0 }
+              try { top = Number(shape.Top || 0) } catch (_e) { top = 0 }
+              try { width = Number(shape.Width || 0) } catch (_e) { width = 0 }
+              try { height = Number(shape.Height || 0) } catch (_e) { height = 0 }
+              if (!isFinite(left) || !isFinite(top) || !isFinite(width) || !isFinite(height)) continue
+              if (width < 2 || height < 2) continue
+              const right = left + width
+              const bottom = top + height
+              if (left < (0 - margin) || top < (0 - margin) || right > (sw + margin) || bottom > (sh + margin)) {
+                return {
+                  ok: false,
+                  message: `ASSERT_FAIL:wpp_last_slide_within_bounds:out_of_bounds:left=${left},top=${top},right=${right},bottom=${bottom},sw=${sw},sh=${sh}`
+                }
+              }
+            }
+            return { ok: true, message: 'ok' }
+          }
+
+          if (type === 'wpp_last_slide_no_overlap') {
+            if (!pres?.Slides) return { ok: false, message: 'ASSERT_FAIL:wpp_last_slide_no_overlap:no_presentation' }
+            const slide = getLastSlide(pres)
+            if (!slide?.Shapes) return { ok: false, message: 'ASSERT_FAIL:wpp_last_slide_no_overlap:no_shapes' }
+            const rects: Array<{ i: number; l: number; t: number; r: number; b: number }> = []
+            const count = getShapeCount(slide)
+            for (let i = 1; i <= count; i++) {
+              let shape: any = null
+              try { shape = slide.Shapes.Item(i) } catch (_e) { shape = null }
+              if (!shape || isBenchBlockShape(shape)) continue
+              let left = 0
+              let top = 0
+              let width = 0
+              let height = 0
+              try { left = Number(shape.Left || 0) } catch (_e) { left = 0 }
+              try { top = Number(shape.Top || 0) } catch (_e) { top = 0 }
+              try { width = Number(shape.Width || 0) } catch (_e) { width = 0 }
+              try { height = Number(shape.Height || 0) } catch (_e) { height = 0 }
+              if (!isFinite(left) || !isFinite(top) || !isFinite(width) || !isFinite(height)) continue
+              if (width < 4 || height < 4) continue
+              rects.push({ i, l: left, t: top, r: left + width, b: top + height })
+            }
+            const overlap = (lhs: { l: number; t: number; r: number; b: number }, rhs: { l: number; t: number; r: number; b: number }) => {
+              const x1 = Math.max(lhs.l, rhs.l)
+              const y1 = Math.max(lhs.t, rhs.t)
+              const x2 = Math.min(lhs.r, rhs.r)
+              const y2 = Math.min(lhs.b, rhs.b)
+              return (x2 - x1) > 2 && (y2 - y1) > 2
+            }
+            for (let i = 0; i < rects.length; i++) {
+              for (let j = i + 1; j < rects.length; j++) {
+                if (overlap(rects[i], rects[j])) {
+                  return {
+                    ok: false,
+                    message: `ASSERT_FAIL:wpp_last_slide_no_overlap:overlap:i=${rects[i].i} j=${rects[j].i}`
+                  }
+                }
+              }
+            }
+            return { ok: true, message: 'ok' }
+          }
+        }
+
+        return null as any
+      },
+      null as any
+    )
+
+    if (result && typeof result === 'object' && 'ok' in result) {
+      return {
+        ok: !!(result as any).ok,
+        message: String((result as any).message || ((result as any).ok ? 'ok' : 'assert_failed'))
+      }
+    }
+
+    return null
 
   } catch (e: any) {
 
-    return { ok: false, message: String(e?.message || e) }
+    return { ok: false, message: String(e?.message || e || 'assert_failed') }
 
   }
 
 }
-
-
-
-const buildAssertScript = (host: MacroBenchHost, a: ChatBenchAssert, blockId?: string | null): string | null => {
-
-  const h = host
-
-  if (a.type === 'writer_table_exists') {
-
-    if (h !== 'wps') return null
-
-    const minRows = Math.max(1, Number(a.minRows || 1) || 1)
-
-    const minCols = Math.max(1, Number(a.minCols || 1) || 1)
-
-    return (
-
-      "var app = window.Application;\\n" +
-
-      "var doc = null; try { doc = app.ActiveDocument; } catch (e) {}\\n" +
-
-      `var minRows = ${minRows};\\n` +
-
-      `var minCols = ${minCols};\\n` +
-
-      "var t = null;\\n" +
-
-      "try { if (doc && doc.Tables && doc.Tables.Count >= 1) { t = doc.Tables.Item(1); } } catch (e2) { t = null }\\n" +
-
-      "if (!t) throw new Error('ASSERT_FAIL:writer_table_exists:no_table');\\n" +
-
-      "var rows = 0; var cols = 0;\\n" +
-
-      "try { rows = Number(t.Rows.Count || 0); cols = Number(t.Columns.Count || 0); } catch (e3) {}\\n" +
-
-      "if (rows < minRows) throw new Error('ASSERT_FAIL:writer_table_exists:rows<' + minRows + ' got ' + rows);\\n" +
-
-      "if (cols < minCols) throw new Error('ASSERT_FAIL:writer_table_exists:cols<' + minCols + ' got ' + cols);\\n" +
-
-      "true;"
-
-    )
-
-  }
-
-  if (a.type === 'writer_table_header_bold') {
-
-    if (h !== 'wps') return null
-
-    return (
-
-      "var app = window.Application;\\n" +
-
-      "var doc = null; try { doc = app.ActiveDocument; } catch (e) {}\\n" +
-
-      "var t = null;\\n" +
-
-      "try { if (doc && doc.Tables && doc.Tables.Count >= 1) { t = doc.Tables.Item(1); } } catch (e2) { t = null }\\n" +
-
-      "if (!t) throw new Error('ASSERT_FAIL:writer_table_header_bold:no_table');\\n" +
-
-      "var b = 0;\\n" +
-
-      "try { b = Number(t.Rows.Item(1).Range.Font.Bold); } catch (e3) { b = 0 }\\n" +
-
-      // COM: -1/1=true, 0=false, 999999=mixed -> accept non-zero.
-
-      "if (b === 0) throw new Error('ASSERT_FAIL:writer_table_header_bold:header_not_bold');\\n" +
-
-      "true;"
-
-    )
-
-  }
-
-  if (a.type === 'writer_text_contains') {
-
-    if (h !== 'wps') return null
-
-    const needle = JSON.stringify(String(a.text || ''))
-
-    return (
-
-      "var app = window.Application;\\n" +
-
-      "var doc = null; try { doc = app.ActiveDocument; } catch (e) {}\\n" +
-
-      `var needle = ${needle};\\n` +
-
-      "var txt = '';\\n" +
-
-      "try { txt = String((doc && doc.Content && doc.Content.Text) ? doc.Content.Text : ''); } catch (e2) { txt = '' }\\n" +
-
-      "if (txt.indexOf(String(needle)) === -1) throw new Error('ASSERT_FAIL:writer_text_contains:not_found:' + String(needle));\\n" +
-
-      "true;"
-
-    )
-
-  }
-
-  if (a.type === 'writer_text_not_contains') {
-
-    if (h !== 'wps') return null
-
-    const needle = JSON.stringify(String((a as any).text || ''))
-
-    return (
-
-      "var app = window.Application;\\n" +
-
-      "var doc = null; try { doc = app.ActiveDocument; } catch (e) {}\\n" +
-
-      `var needle = ${needle};\\n` +
-
-      "var txt = '';\\n" +
-
-      "try { txt = String((doc && doc.Content && doc.Content.Text) ? doc.Content.Text : ''); } catch (e2) { txt = '' }\\n" +
-
-      "if (txt.indexOf(String(needle)) !== -1) throw new Error('ASSERT_FAIL:writer_text_not_contains:found:' + String(needle));\\n" +
-
-      "true;"
-
-    )
-
-  }
-
-  if (a.type === 'writer_heading_at_least') {
-
-    if (h !== 'wps') return null
-
-    const level = Math.max(1, Math.min(3, Number((a as any).level || 1) || 1))
-
-    const min = Math.max(1, Number((a as any).min || 1) || 1)
-
-    return (
-
-      "var app = window.Application;\\n" +
-
-      "var doc = null; try { doc = app.ActiveDocument; } catch (e) {}\\n" +
-
-      `var level = ${level};\\n` +
-
-      `var min = ${min};\\n` +
-
-      "if (!doc || !doc.Paragraphs) throw new Error('ASSERT_FAIL:writer_heading_at_least:no_document');\\n" +
-
-      "var c = 0;\\n" +
-
-      "try {\\n" +
-
-      "  for (var i = 1; i <= doc.Paragraphs.Count; i++) {\\n" +
-
-      "    var p = null;\\n" +
-
-      "    try { p = doc.Paragraphs.Item(i); } catch (e1) { p = null }\\n" +
-
-      "    if (!p) continue;\\n" +
-
-      "    var name = '';\\n" +
-
-      "    try { name = String(p.Range && p.Range.Style ? (p.Range.Style.NameLocal || p.Range.Style.Name || '') : ''); } catch (e2) { name = '' }\\n" +
-
-      "    name = String(name || '');\\n" +
-
-      "    if (name.indexOf('标题 ' + String(level)) !== -1 || name.indexOf('Heading ' + String(level)) !== -1) { c++; continue; }\\n" +
-
-      "    try {\\n" +
-
-      "      var ol = Number(p.OutlineLevel || 0);\\n" +
-
-      "      if (ol === level) { c++; continue; }\\n" +
-
-      "    } catch (e3) {}\\n" +
-
-      "  }\\n" +
-
-      "} catch (e0) {}\\n" +
-
-      "if (c < min) throw new Error('ASSERT_FAIL:writer_heading_at_least:count<' + min + ' got ' + c);\\n" +
-
-      "true;"
-
-    )
-
-  }
-
-  if (a.type === 'writer_shapes_at_least') {
-
-    if (h !== 'wps') return null
-
-    const min = Math.max(0, Number((a as any).min || 0) || 0)
-
-    return (
-
-      "var app = window.Application;\\n" +
-
-      "var doc = null; try { doc = app.ActiveDocument; } catch (e) {}\\n" +
-
-      `var min = ${min};\\n` +
-
-      "if (!doc) throw new Error('ASSERT_FAIL:writer_shapes_at_least:no_document');\\n" +
-
-      "var c = 0;\\n" +
-
-      "try { if (doc.Shapes) c += Number(doc.Shapes.Count || 0); } catch (e1) {}\\n" +
-
-      "try { if (doc.InlineShapes) c += Number(doc.InlineShapes.Count || 0); } catch (e2) {}\\n" +
-
-      "if (c < min) throw new Error('ASSERT_FAIL:writer_shapes_at_least:count<' + min + ' got ' + c);\\n" +
-
-      "true;"
-
-    )
-
-  }
-
-  if (a.type === 'et_sheet_exists') {
-
-    if (h !== 'et') return null
-
-    const name = JSON.stringify(String(a.name || ''))
-
-    return (
-
-      "var app = window.Application;\\n" +
-
-      `var target = ${name};\\n` +
-
-      "var wb = null; try { wb = app.ActiveWorkbook || (app.Workbooks ? app.Workbooks.Item(1) : null); } catch (e) {}\\n" +
-
-      "var ok = false;\\n" +
-
-      "try {\\n" +
-
-      "  if (wb && wb.Worksheets) {\\n" +
-
-      "    for (var i = 1; i <= wb.Worksheets.Count; i++) {\\n" +
-
-      "      var sh = null;\\n" +
-
-      "      try { sh = wb.Worksheets.Item(i); } catch (e2) { sh = null }\\n" +
-
-      "      if (sh && String(sh.Name) === String(target)) { ok = true; break; }\\n" +
-
-      "    }\\n" +
-
-      "  }\\n" +
-
-      "} catch (e3) {}\\n" +
-
-      "if (!ok) throw new Error('ASSERT_FAIL:et_sheet_exists:not_found:' + String(target));\\n" +
-
-      "true;"
-
-    )
-
-  }
-
-  if (a.type === 'et_chart_exists') {
-
-    if (h !== 'et') return null
-
-    const min = Math.max(1, Number(a.min || 1) || 1)
-
-    return (
-
-      "var app = window.Application;\\n" +
-
-      `var min = ${min};\\n` +
-
-      "var sh = null; try { sh = app.ActiveSheet; } catch (e) { sh = null }\\n" +
-
-      "var c = 0;\\n" +
-
-      "try {\\n" +
-
-      "  if (sh && sh.ChartObjects) {\\n" +
-
-      "    try { c = Number(sh.ChartObjects().Count || 0); } catch (e2) { try { c = Number(sh.ChartObjects.Count || 0); } catch (e3) {} }\\n" +
-
-      "  }\\n" +
-
-      "} catch (e4) {}\\n" +
-
-      "if (c < min) throw new Error('ASSERT_FAIL:et_chart_exists:count<' + min + ' got ' + c);\\n" +
-
-      "true;"
-
-    )
-
-  }
-
-  if (a.type === 'et_chart_has_title') {
-
-    if (h !== 'et') return null
-
-    return (
-
-      "var app = window.Application;\\n" +
-
-      "var sh = null; try { sh = app.ActiveSheet; } catch (e) { sh = null }\\n" +
-
-      "var c = 0;\\n" +
-
-      "try { if (sh && sh.ChartObjects) { try { c = Number(sh.ChartObjects().Count || 0); } catch (e2) { try { c = Number(sh.ChartObjects.Count || 0); } catch (e3) {} } } } catch (e4) {}\\n" +
-
-      "if (c <= 0) throw new Error('ASSERT_FAIL:et_chart_has_title:no_chart');\\n" +
-
-      "var ch = null;\\n" +
-
-      "try { if (sh && sh.ChartObjects) { ch = sh.ChartObjects(1).Chart; } } catch (e5) { try { ch = sh.ChartObjects().Item(1).Chart; } catch (e6) { ch = null } }\\n" +
-
-      "if (!ch) throw new Error('ASSERT_FAIL:et_chart_has_title:no_chart_obj');\\n" +
-
-      "var ok = false;\\n" +
-
-      "try { ok = !!ch.HasTitle; } catch (e7) { ok = false }\\n" +
-
-      "if (!ok) throw new Error('ASSERT_FAIL:et_chart_has_title:missing');\\n" +
-
-      "true;"
-
-    )
-
-  }
-
-  if (a.type === 'et_freeze_panes_enabled') {
-
-    if (h !== 'et') return null
-
-    return (
-
-      "var app = window.Application;\\n" +
-
-      "var w = null; try { w = app.ActiveWindow; } catch (e) { w = null }\\n" +
-
-      "var ok = false;\\n" +
-
-      "try { ok = !!(w && w.FreezePanes); } catch (e2) { ok = false }\\n" +
-
-      "if (!ok) throw new Error('ASSERT_FAIL:et_freeze_panes_enabled:not_enabled');\\n" +
-
-      "true;"
-
-    )
-
-  }
-
-  if (a.type === 'et_cell_number_format_not_general') {
-
-    if (h !== 'et') return null
-
-    const a1 = JSON.stringify(String((a as any).a1 || 'A1'))
-
-    return (
-
-      "var app = window.Application;\\n" +
-
-      `var addr = ${a1};\\n` +
-
-      "var sh = null; try { sh = app.ActiveSheet; } catch (e) { sh = null }\\n" +
-
-      "if (!sh || !sh.Range) throw new Error('ASSERT_FAIL:et_cell_number_format_not_general:no_sheet');\\n" +
-
-      "var r = null; try { r = sh.Range(String(addr)); } catch (e2) { r = null }\\n" +
-
-      "if (!r) throw new Error('ASSERT_FAIL:et_cell_number_format_not_general:no_range:' + String(addr));\\n" +
-
-      "var nf = '';\\n" +
-
-      "try { nf = String(r.NumberFormat || ''); } catch (e3) { nf = '' }\\n" +
-
-      "if (!nf || String(nf).toLowerCase() === 'general') throw new Error('ASSERT_FAIL:et_cell_number_format_not_general:general:' + String(addr));\\n" +
-
-      "true;"
-
-    )
-
-  }
-
-  if (a.type === 'et_range_conditional_formats_at_least') {
-
-    if (h !== 'et') return null
-
-    const a1 = JSON.stringify(String((a as any).a1 || 'A1'))
-
-    const min = Math.max(0, Number((a as any).min || 0) || 0)
-
-    return (
-
-      "var app = window.Application;\\n" +
-
-      `var addr = ${a1};\\n` +
-
-      `var min = ${min};\\n` +
-
-      "var sh = null; try { sh = app.ActiveSheet; } catch (e) { sh = null }\\n" +
-
-      "if (!sh || !sh.Range) throw new Error('ASSERT_FAIL:et_range_conditional_formats_at_least:no_sheet');\\n" +
-
-      "var r = null; try { r = sh.Range(String(addr)); } catch (e2) { r = null }\\n" +
-
-      "if (!r) throw new Error('ASSERT_FAIL:et_range_conditional_formats_at_least:no_range:' + String(addr));\\n" +
-
-      "var c = 0;\\n" +
-
-      "try { if (r.FormatConditions) c = Number(r.FormatConditions.Count || 0); } catch (e3) { c = 0 }\\n" +
-
-      "if (c < min) throw new Error('ASSERT_FAIL:et_range_conditional_formats_at_least:count<' + min + ' got ' + c);\\n" +
-
-      "true;"
-
-    )
-
-  }
-
-  if (a.type === 'writer_block_backup_exists') {
-
-    if (h !== 'wps') return null
-
-    const ah32 = JSON.stringify(String((a as any).blockId || (a as any).block_id || blockId || ''))
-
-    return (
-
-      "var BID = null; try { BID = window.BID; } catch (e) { BID = null }\\n" +
-
-      `var blockId = ${ah32};\\n` +
-
-      "if (!blockId) throw new Error('ASSERT_FAIL:writer_block_backup_exists:no_block_id');\\n" +
-
-      "if (!BID || typeof BID.hasBlockBackup !== 'function') throw new Error('ASSERT_FAIL:writer_block_backup_exists:no_BID_hasBlockBackup');\\n" +
-
-      "var ok = false;\\n" +
-
-      "try { ok = !!BID.hasBlockBackup(blockId); } catch (e2) { ok = false }\\n" +
-
-      "if (!ok) throw new Error('ASSERT_FAIL:writer_block_backup_exists:not_found:' + String(blockId));\\n" +
-
-      "true;"
-
-    )
-
-  }
-
-  if (a.type === 'wpp_slide_count_at_least') {
-
-    if (h !== 'wpp') return null
-
-    const min = Math.max(1, Number(a.min || 1) || 1)
-
-    return (
-
-      "var app = window.Application;\\n" +
-
-      `var min = ${min};\\n` +
-
-      "var p = null; try { p = app.ActivePresentation || (app.Presentations ? app.Presentations.Item(1) : null); } catch (e) { p = null }\\n" +
-
-      "if (!p || !p.Slides) throw new Error('ASSERT_FAIL:wpp_slide_count_at_least:no_presentation');\\n" +
-
-      "var c = 0;\\n" +
-
-      "try { c = Number(p.Slides.Count || 0); } catch (e2) { c = 0 }\\n" +
-
-      "if (c < min) throw new Error('ASSERT_FAIL:wpp_slide_count_at_least:count<' + min + ' got ' + c);\\n" +
-
-      "true;"
-
-    )
-
-  }
-
-  if (a.type === 'wpp_last_slide_shapes_at_least') {
-
-    if (h !== 'wpp') return null
-
-    const min = Math.max(1, Number(a.min || 1) || 1)
-
-    return (
-
-      "var app = window.Application;\\n" +
-
-      `var min = ${min};\\n` +
-
-      "var p = null; try { p = app.ActivePresentation || (app.Presentations ? app.Presentations.Item(1) : null); } catch (e) { p = null }\\n" +
-
-      "if (!p || !p.Slides) throw new Error('ASSERT_FAIL:wpp_last_slide_shapes_at_least:no_presentation');\\n" +
-
-      "var sc = 0;\\n" +
-
-      "try { sc = Number(p.Slides.Count || 0); } catch (e2) { sc = 0 }\\n" +
-
-      "if (sc <= 0) throw new Error('ASSERT_FAIL:wpp_last_slide_shapes_at_least:no_slides');\\n" +
-
-      "var s = null; try { s = p.Slides.Item(sc); } catch (e3) { s = null }\\n" +
-
-      "var c = 0;\\n" +
-
-      "try { if (s && s.Shapes) c = Number(s.Shapes.Count || 0); } catch (e4) { c = 0 }\\n" +
-
-      "if (c < min) throw new Error('ASSERT_FAIL:wpp_last_slide_shapes_at_least:shapes<' + min + ' got ' + c);\\n" +
-
-      "true;"
-
-    )
-
-  }
-
-  if (a.type === 'wpp_slide_text_contains') {
-
-    if (h !== 'wpp') return null
-
-    const text = JSON.stringify(String((a as any).text || '').trim())
-
-    return (
-
-      "var app = window.Application;\\n" +
-
-      `var needle = ${text};\\n` +
-
-      "if (!needle) throw new Error('ASSERT_FAIL:wpp_slide_text_contains:empty');\\n" +
-
-      "var p = null; try { p = app.ActivePresentation || (app.Presentations ? app.Presentations.Item(1) : null); } catch (e) { p = null }\\n" +
-
-      "if (!p || !p.Slides) throw new Error('ASSERT_FAIL:wpp_slide_text_contains:no_presentation');\\n" +
-
-      "var sc = 0;\\n" +
-
-      "try { sc = Number(p.Slides.Count || 0); } catch (e2) { sc = 0 }\\n" +
-
-      "if (sc <= 0) throw new Error('ASSERT_FAIL:wpp_slide_text_contains:no_slides');\\n" +
-
-      "var s = null; try { s = p.Slides.Item(sc); } catch (e3) { s = null }\\n" +
-
-      "if (!s) throw new Error('ASSERT_FAIL:wpp_slide_text_contains:no_last_slide');\\n" +
-
-      "var found = false;\\n" +
-
-      "try {\\n" +
-
-      "  if (s.Shapes) {\\n" +
-
-      "    var c = 0; try { c = Number(s.Shapes.Count || 0); } catch (e4) { c = 0 }\\n" +
-
-      "    for (var i = 1; i <= c; i++) {\\n" +
-
-      "      var sh = null; try { sh = s.Shapes.Item(i); } catch (e5) { sh = null }\\n" +
-
-      "      if (!sh) continue;\\n" +
-
-      "      var t = '';\\n" +
-
-      "      try {\\n" +
-
-      "        if (sh.TextFrame && sh.TextFrame.HasText && sh.TextFrame.TextRange) t = String(sh.TextFrame.TextRange.Text || '');\\n" +
-
-      "      } catch (e6) { t = '' }\\n" +
-
-      "      if (t && t.indexOf(needle) >= 0) { found = true; break; }\\n" +
-
-      "    }\\n" +
-
-      "  }\\n" +
-
-      "} catch (e7) {}\\n" +
-
-      "if (!found) throw new Error('ASSERT_FAIL:wpp_slide_text_contains:missing:' + String(needle));\\n" +
-
-      "true;"
-
-    )
-
-  }
-
-  if (a.type === 'wpp_placeholder_text_contains') {
-
-    if (h !== 'wpp') return null
-
-    const kind = JSON.stringify(String((a as any).kind || 'body').trim().toLowerCase())
-    const text = JSON.stringify(String((a as any).text || '').trim())
-    const index = Math.max(1, Number((a as any).index || 1) || 1)
-
-    return (
-
-      "var app = window.Application;\\n" +
-
-      `var kind = ${kind};\\n` +
-
-      `var needle = ${text};\\n` +
-
-      `var idx = ${index};\\n` +
-
-      "if (!needle) throw new Error('ASSERT_FAIL:wpp_placeholder_text_contains:empty');\\n" +
-
-      "var p = null; try { p = app.ActivePresentation || (app.Presentations ? app.Presentations.Item(1) : null); } catch (e) { p = null }\\n" +
-
-      "if (!p || !p.Slides) throw new Error('ASSERT_FAIL:wpp_placeholder_text_contains:no_presentation');\\n" +
-
-      "var sc = 0;\\n" +
-
-      "try { sc = Number(p.Slides.Count || 0); } catch (e2) { sc = 0 }\\n" +
-
-      "if (sc <= 0) throw new Error('ASSERT_FAIL:wpp_placeholder_text_contains:no_slides');\\n" +
-
-      "var s = null; try { s = p.Slides.Item(sc); } catch (e3) { s = null }\\n" +
-
-      "if (!s) throw new Error('ASSERT_FAIL:wpp_placeholder_text_contains:no_last_slide');\\n" +
-
-      "var typeMap = { title: 1, body: 2, subtitle: 4 };\\n" +
-
-      "var pt = (kind && (kind in typeMap)) ? typeMap[kind] : null;\\n" +
-
-      "if (pt == null) throw new Error('ASSERT_FAIL:wpp_placeholder_text_contains:bad_kind:' + String(kind));\\n" +
-
-      "var shapes = null; try { shapes = s.Shapes; } catch (e4) { shapes = null }\\n" +
-
-      "if (!shapes) throw new Error('ASSERT_FAIL:wpp_placeholder_text_contains:no_shapes');\\n" +
-
-      "var target = null;\\n" +
-
-      "try { if (kind === 'title') target = shapes.Title; } catch (e5) { target = null }\\n" +
-
-      "if (!target) {\\n" +
-
-      "  var candidates = [];\\n" +
-
-      "  var c = 0; try { c = Number(shapes.Count || 0); } catch (e6) { c = 0 }\\n" +
-
-      "  for (var i = 1; i <= c; i++) {\\n" +
-
-      "    var sh = null; try { sh = shapes.Item(i); } catch (e7) { sh = null }\\n" +
-
-      "    if (!sh) continue;\\n" +
-
-      "    var pf = null; try { pf = sh.PlaceholderFormat; } catch (e8) { pf = null }\\n" +
-
-      "    if (!pf) continue;\\n" +
-
-      "    var t = -1; try { t = Number(pf.PlaceholderType); } catch (e9) { t = -1 }\\n" +
-
-      "    if (t === pt) candidates.push(sh);\\n" +
-
-      "  }\\n" +
-
-      "  if (candidates.length >= 1) {\\n" +
-
-      "    target = candidates[Math.min(candidates.length - 1, idx - 1)] || candidates[0];\\n" +
-
-      "  }\\n" +
-
-      "}\\n" +
-
-      "if (!target) throw new Error('ASSERT_FAIL:wpp_placeholder_text_contains:no_placeholder:kind=' + String(kind) + ':idx=' + String(idx));\\n" +
-
-      "var txt = '';\\n" +
-
-      "try { if (target.TextFrame && target.TextFrame.TextRange) txt = String(target.TextFrame.TextRange.Text || ''); } catch (e10) { txt = '' }\\n" +
-
-      "if (txt.indexOf(String(needle)) === -1) throw new Error('ASSERT_FAIL:wpp_placeholder_text_contains:missing:' + String(needle));\\n" +
-
-      "true;"
-
-    )
-
-  }
-
-  if (a.type === 'wpp_last_slide_within_bounds') {
-
-    if (h !== 'wpp') return null
-
-    const margin = Math.max(0, Number((a as any).margin || 0) || 0)
-
-    return (
-
-      "var app = window.Application;\\n" +
-
-      `var margin = ${margin};\\n` +
-
-      "var p = null; try { p = app.ActivePresentation || (app.Presentations ? app.Presentations.Item(1) : null); } catch (e) { p = null }\\n" +
-
-      "if (!p || !p.Slides) throw new Error('ASSERT_FAIL:wpp_last_slide_within_bounds:no_presentation');\\n" +
-
-      "var sw = 960, sh = 540;\\n" +
-
-      "try { if (p.PageSetup) { sw = Number(p.PageSetup.SlideWidth || sw); sh = Number(p.PageSetup.SlideHeight || sh); } } catch (e1) {}\\n" +
-
-      "var sc = 0;\\n" +
-
-      "try { sc = Number(p.Slides.Count || 0); } catch (e2) { sc = 0 }\\n" +
-
-      "if (sc <= 0) throw new Error('ASSERT_FAIL:wpp_last_slide_within_bounds:no_slides');\\n" +
-
-      "var s = null; try { s = p.Slides.Item(sc); } catch (e3) { s = null }\\n" +
-
-      "if (!s || !s.Shapes) throw new Error('ASSERT_FAIL:wpp_last_slide_within_bounds:no_shapes');\\n" +
-
-      "var c = 0;\\n" +
-
-      "try { c = Number(s.Shapes.Count || 0); } catch (e4) { c = 0 }\\n" +
-
-      "for (var i = 1; i <= c; i++) {\\n" +
-
-      "  var x = null; try { x = s.Shapes.Item(i); } catch (e5) { x = null }\\n" +
-
-      "  if (!x) continue;\\n" +
-
-      "  var alt = '';\\n" +
-
-      "  try { alt = String(x.AlternativeText || ''); } catch (e6) { alt = '' }\\n" +
-
-      "  if (alt && alt.indexOf('AH32_BLOCKID:') >= 0) continue;\\n" +
-
-      "  var l = 0, t = 0, w = 0, h2 = 0;\\n" +
-
-      "  try { l = Number(x.Left || 0); } catch (e7) { l = 0 }\\n" +
-
-      "  try { t = Number(x.Top || 0); } catch (e8) { t = 0 }\\n" +
-
-      "  try { w = Number(x.Width || 0); } catch (e9) { w = 0 }\\n" +
-
-      "  try { h2 = Number(x.Height || 0); } catch (e10) { h2 = 0 }\\n" +
-
-      "  if (!isFinite(l) || !isFinite(t) || !isFinite(w) || !isFinite(h2)) continue;\\n" +
-
-      "  if (w < 2 || h2 < 2) continue;\\n" +
-
-      "  var r = l + w;\\n" +
-
-      "  var b = t + h2;\\n" +
-
-      "  if (l < (0 - margin) || t < (0 - margin) || r > (sw + margin) || b > (sh + margin)) {\\n" +
-
-      "    throw new Error('ASSERT_FAIL:wpp_last_slide_within_bounds:out_of_bounds:left=' + l + ',top=' + t + ',right=' + r + ',bottom=' + b + ',sw=' + sw + ',sh=' + sh);\\n" +
-
-      "  }\\n" +
-
-      "}\\n" +
-
-      "true;"
-
-    )
-
-  }
-
-  if (a.type === 'wpp_last_slide_no_overlap') {
-
-    if (h !== 'wpp') return null
-
-    return (
-
-      "var app = window.Application;\\n" +
-
-      "var p = null; try { p = app.ActivePresentation || (app.Presentations ? app.Presentations.Item(1) : null); } catch (e) { p = null }\\n" +
-
-      "if (!p || !p.Slides) throw new Error('ASSERT_FAIL:wpp_last_slide_no_overlap:no_presentation');\\n" +
-
-      "var sc = 0;\\n" +
-
-      "try { sc = Number(p.Slides.Count || 0); } catch (e2) { sc = 0 }\\n" +
-
-      "if (sc <= 0) throw new Error('ASSERT_FAIL:wpp_last_slide_no_overlap:no_slides');\\n" +
-
-      "var s = null; try { s = p.Slides.Item(sc); } catch (e3) { s = null }\\n" +
-
-      "if (!s || !s.Shapes) throw new Error('ASSERT_FAIL:wpp_last_slide_no_overlap:no_shapes');\\n" +
-
-      "var c = 0;\\n" +
-
-      "try { c = Number(s.Shapes.Count || 0); } catch (e4) { c = 0 }\\n" +
-
-      "var rects = [];\\n" +
-
-      "for (var i = 1; i <= c; i++) {\\n" +
-
-      "  var x = null; try { x = s.Shapes.Item(i); } catch (e5) { x = null }\\n" +
-
-      "  if (!x) continue;\\n" +
-
-      "  var alt = '';\\n" +
-
-      "  try { alt = String(x.AlternativeText || ''); } catch (e6) { alt = '' }\\n" +
-
-      "  if (alt && alt.indexOf('AH32_BLOCKID:') >= 0) continue;\\n" +
-
-      "  var l = 0, t = 0, w = 0, h2 = 0;\\n" +
-
-      "  try { l = Number(x.Left || 0); } catch (e7) { l = 0 }\\n" +
-
-      "  try { t = Number(x.Top || 0); } catch (e8) { t = 0 }\\n" +
-
-      "  try { w = Number(x.Width || 0); } catch (e9) { w = 0 }\\n" +
-
-      "  try { h2 = Number(x.Height || 0); } catch (e10) { h2 = 0 }\\n" +
-
-      "  if (!isFinite(l) || !isFinite(t) || !isFinite(w) || !isFinite(h2)) continue;\\n" +
-
-      "  if (w < 4 || h2 < 4) continue;\\n" +
-
-      "  rects.push({ i: i, l: l, t: t, r: l + w, b: t + h2 });\\n" +
-
-      "}\\n" +
-
-      "function _over(a, b) {\\n" +
-
-      "  var x1 = Math.max(a.l, b.l);\\n" +
-
-      "  var y1 = Math.max(a.t, b.t);\\n" +
-
-      "  var x2 = Math.min(a.r, b.r);\\n" +
-
-      "  var y2 = Math.min(a.b, b.b);\\n" +
-
-      "  return (x2 - x1) > 2 && (y2 - y1) > 2;\\n" +
-
-      "}\\n" +
-
-      "for (var a = 0; a < rects.length; a++) {\\n" +
-
-      "  for (var b = a + 1; b < rects.length; b++) {\\n" +
-
-      "    if (_over(rects[a], rects[b])) {\\n" +
-
-      "      throw new Error('ASSERT_FAIL:wpp_last_slide_no_overlap:overlap:i=' + rects[a].i + ' j=' + rects[b].i);\\n" +
-
-      "    }\\n" +
-
-      "  }\\n" +
-
-      "}\\n" +
-
-      "true;"
-
-    )
-
-  }
-
-  return null
-
-}
-
-
-
 const evalTurnAsserts = async (args: {
 
   host: MacroBenchHost
@@ -1663,19 +1507,17 @@ const evalTurnAsserts = async (args: {
 
     }
 
-    const script = buildAssertScript(args.host, a, args.blockId)
+    const direct = await runDirectAssert(args.host, a, args.blockId)
 
-    if (!script) {
+    if (direct) {
 
-      add(false, a.type, pts, 'not_evaluated:unsupported_or_wrong_host')
+      add(!!direct.ok, a.type, pts, direct.ok ? 'ok' : (direct.message || 'assert_failed'))
 
       continue
 
     }
 
-    const r = await runAssertScript(script)
-
-    add(!!r.ok, a.type, pts, r.ok ? 'ok' : (r.message || 'assert_failed'))
+    add(false, a.type, pts, 'not_evaluated:unsupported_or_wrong_host')
 
   }
 
@@ -1701,6 +1543,20 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
   onProgress?: (p: { idx: number; total: number; storyName: string; turnName: string; host: MacroBenchHost; suiteId: MacroBenchSuiteId }) => void
 
   onResult?: (r: ChatBenchTurnResult) => void
+
+  onStage?: (p: {
+    stage: string
+    host: MacroBenchHost
+    suiteId: MacroBenchSuiteId | 'all'
+    runId: string
+    chatSessionId: string
+    storyId?: string
+    storyName?: string
+    turnId?: string
+    turnName?: string
+    idx?: number
+    total?: number
+  }) => void
 
   // Optional: continue a previous run (checkpoint).
 
@@ -1754,6 +1610,21 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
 
     `bench_chat_${host}_${suiteId}_${Date.now()}`
 
+  const pushStage = (stage: string, extra?: Record<string, any>) => {
+    try {
+      opts.onStage?.({
+        stage,
+        host,
+        suiteId,
+        runId,
+        chatSessionId,
+        ...(extra || {}),
+      })
+    } catch (e) {
+      ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e)
+    }
+  }
+
 
 
   // Keep bench observable but avoid polluting user workspace: start from a clean chat view.
@@ -1764,8 +1635,16 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
 
   // locate the assistant message even when chat succeeded.
 
-  try { await (chatStore as any).switchToSession?.(chatSessionId, { bindToActiveDocument: true }) } catch (e) { (globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e) }
+  pushStage('init_switch_session')
+  try {
+    await withTimeout(
+      Promise.resolve((chatStore as any).switchToSession?.(chatSessionId, { bindToActiveDocument: true })),
+      2000,
+      'bench_init_switch_session'
+    )
+  } catch (e) { (globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e) }
 
+  pushStage('init_clear_messages')
   try { chatStore.clearMessages?.() } catch (e) { (globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e) }
 
 
@@ -1773,6 +1652,44 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
   const stories = buildChatBenchStories({ host, suiteId, preset })
 
   const storyInfos = stories.map(s => ({ id: s.id, suiteId: s.suiteId, host: s.host, name: s.name }))
+
+  const storySessionIds: Record<string, string> = {}
+
+  try {
+
+    for (const rr of (resumed?.results || [])) {
+
+      const storyId = String((rr as any)?.story?.id || '').trim()
+
+      const storyChatSessionId = String((rr as any)?.chatSessionId || '').trim()
+
+      if (storyId && storyChatSessionId) storySessionIds[storyId] = storyChatSessionId
+
+    }
+
+  } catch (e) {
+
+    ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e)
+
+  }
+
+  const getStoryChatSessionId = (story: Pick<ChatBenchStory, 'id'>): string => {
+
+    const storyId = String(story?.id || '').trim()
+
+    if (!storyId) return chatSessionId
+
+    if (!storySessionIds[storyId]) {
+
+      storySessionIds[storyId] = `${chatSessionId}__${normalizeBenchSessionToken(storyId)}`
+
+    }
+
+    return storySessionIds[storyId]
+
+  }
+
+  let activeChatSessionId = chatSessionId
 
 
 
@@ -1795,146 +1712,483 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
   let benchDocId: string | null = null
   const docAliases: Record<string, { id: string; name: string; fullPath?: string; hostApp?: string }> = {}
   const macroQueueJobs: Record<string, { messageId: string; blockId: string; docAlias: string }> = {}
-
-  const ensureBenchDoc = async (title?: string) => {
-
-    const t = String(title || '').trim()
-
-    const script = (() => {
-
-      if (host === 'wps') {
-
-        return (
-
-          "var app = window.Application;\\n" +
-
-          "try { var d = (app.Documents && app.Documents.Add) ? app.Documents.Add() : null; } catch (e) {}\\n" +
-
-          "try { if (d && d.Activate) d.Activate(); } catch (e2) {}\\n" +
-
-          (t ? `try { if (d) d.Name = '${t.replace(/'/g, "\\'")}'; } catch (e3) {}` : '') +
-
-          "\\ntrue;"
-
-        )
-
-      }
-
-      if (host === 'et') {
-
-        return (
-
-          "var app = window.Application;\\n" +
-
-          "try { var wb = (app.Workbooks && app.Workbooks.Add) ? app.Workbooks.Add() : null; } catch (e) {}\\n" +
-
-          "try { if (wb && wb.Activate) wb.Activate(); } catch (e2) {}\\n" +
-
-          "\\ntrue;"
-
-        )
-
-      }
-
-      if (host === 'wpp') {
-
-        return (
-
-          "var app = window.Application;\\n" +
-
-          "try { var p = (app.Presentations && app.Presentations.Add) ? app.Presentations.Add() : null; } catch (e) {}\\n" +
-
-          "try { if (p && p.Windows && p.Windows.Item) { var w = p.Windows.Item(1); if (w && w.Activate) w.Activate(); } } catch (e2) {}\\n" +
-
-          "\\ntrue;"
-
-        )
-
-      }
-
-      return "true;"
-
-    })()
-
-
-
-    try {
-
-      const r = await jsMacroExecutor.executeJS(script, true)
-
-      if (!r?.success) return
-
-      // Capture active doc id after creation.
-
-      try {
-
-        const docs = wpsBridge.getAllOpenDocuments()
-
-        const active = docs.find(d => d.isActive)
-
-        benchDocId = active?.id || null
-
-      } catch (e) {
-
-        ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e)
-
-      }
-
-    } catch (e) {
-
-      ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e)
-
-    }
-
+  const BENCH_PUBLIC_DOCS_DIR = 'C:\\Users\\Public\\Documents'
+  const sanitizeBenchTitle = (raw?: string) =>
+    String(raw || 'ah32_bench')
+      .replace(/[\\/:*?"<>|]/g, '_')
+      .replace(/\s+/g, '_')
+      .replace(/_+/g, '_')
+      .replace(/^_+|_+$/g, '')
+      .slice(0, 48) || 'ah32_bench'
+  const benchFileExt = host === 'wps' ? 'docx' : host === 'et' ? 'xlsx' : host === 'wpp' ? 'pptx' : ''
+  const buildBenchSavePath = (title?: string) => {
+    const base = sanitizeBenchTitle(title)
+    return `${BENCH_PUBLIC_DOCS_DIR}\\${base}_${Date.now()}.${benchFileExt || 'tmp'}`
   }
-
-  const createNewDocument = async (title?: string) => {
-    const t = String(title || '').trim()
-    const script = (() => {
-      if (host === 'wps') {
-        return (
-          "var app = window.Application;\\n" +
-          "try { var d = (app.Documents && app.Documents.Add) ? app.Documents.Add() : null; } catch (e) {}\\n" +
-          "try { if (d && d.Activate) d.Activate(); } catch (e2) {}\\n" +
-          (t ? `try { if (d) d.Name = '${t.replace(/'/g, "\\'")}'; } catch (e3) {}` : '') +
-          "\\ntrue;"
-        )
-      }
-      if (host === 'et') {
-        return (
-          "var app = window.Application;\\n" +
-          "try { var wb = (app.Workbooks && app.Workbooks.Add) ? app.Workbooks.Add() : null; } catch (e) {}\\n" +
-          "try { if (wb && wb.Activate) wb.Activate(); } catch (e2) {}\\n" +
-          "\\ntrue;"
-        )
-      }
-      if (host === 'wpp') {
-        return (
-          "var app = window.Application;\\n" +
-          "try { var p = (app.Presentations && app.Presentations.Add) ? app.Presentations.Add() : null; } catch (e) {}\\n" +
-          "try { if (p && p.Windows && p.Windows.Item) { var w = p.Windows.Item(1); if (w && w.Activate) w.Activate(); } } catch (e2) {}\\n" +
-          "\\ntrue;"
-        )
-      }
-      return "true;"
-    })()
-
+  const runBenchApi = <T>(label: string, fn: () => T, fallback: T): T =>
+    wpsBridge.runWithWpsApi(`macro-bench-chat:${label}`, fn, fallback)
+  const getActiveBenchDocumentInfo = () => {
     try {
-      const r = await jsMacroExecutor.executeJS(script, true)
-      if (!r?.success) return null
-      try {
-        const docs = wpsBridge.getAllOpenDocuments()
-        const active = docs.find(d => d.isActive)
-        if (!active?.id) return null
-        return { id: String(active.id), name: String(active.name || ''), fullPath: String((active as any).fullPath || ''), hostApp: String((active as any).hostApp || '') }
-      } catch (e) {
-        ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e)
-        return null
+      const docs = wpsBridge.getAllOpenDocuments()
+      const active = docs.find(d => d.isActive)
+      if (!active?.id) return null
+      return {
+        id: String(active.id),
+        name: String(active.name || ''),
+        fullPath: String((active as any).fullPath || ''),
+        hostApp: String((active as any).hostApp || ''),
       }
     } catch (e) {
       ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e)
       return null
     }
+  }
+
+  const ensureBenchDoc = async (title?: string) => {
+    const active = getActiveBenchDocumentInfo()
+    if (active?.id) {
+      benchDocId = active.id
+      return
+    }
+    const info = await withTimeout(createNewDocument(title), 8000, 'ensure_bench_document')
+    if (info?.id) {
+      benchDocId = info.id
+      return
+    }
+    const fallback = getActiveBenchDocumentInfo()
+    if (fallback?.id) {
+      benchDocId = fallback.id
+      return
+    }
+    throw new Error(`ensure_bench_document_failed:${host}`)
+  }
+
+  const createNewDocument = async (title?: string) => {
+    const savePath = buildBenchSavePath(title)
+    const ok = runBenchApi(
+      'createNewDocument',
+      () => {
+        const app: any = wpsBridge.getApplication()
+        if (!app) return false
+
+        if (host === 'wps') {
+          const doc = app.Documents?.Add?.()
+          if (!doc) return false
+          doc.Activate?.()
+          if (typeof doc.SaveAs2 === 'function') doc.SaveAs2(savePath)
+          else if (typeof doc.SaveAs === 'function') doc.SaveAs(savePath)
+          else return false
+          doc.Activate?.()
+          return true
+        }
+
+        if (host === 'et') {
+          const wb = app.Workbooks?.Add?.()
+          if (!wb) return false
+          wb.Activate?.()
+          if (typeof wb.SaveAs === 'function') wb.SaveAs(savePath)
+          else return false
+          wb.Activate?.()
+          return true
+        }
+
+        if (host === 'wpp') {
+          const presentation = app.Presentations?.Add?.()
+          if (!presentation) return false
+          const activateWindow = () => {
+            const win = presentation.Windows?.Item?.(1) || presentation.Windows?.Item?.call?.(presentation.Windows, 1)
+            win?.Activate?.()
+          }
+          activateWindow()
+          if (typeof presentation.SaveAs === 'function') presentation.SaveAs(savePath)
+          else return false
+          activateWindow()
+          return true
+        }
+
+        return false
+      },
+      false,
+    )
+    if (!ok) return null
+    return getActiveBenchDocumentInfo()
+  }
+
+  const BENCH_SEED_TEXT = [
+    '季度巡检单',
+    '',
+    '一、巡检范围',
+    '1. 网络设备',
+    '2. 服务器与数据库',
+    '3. 应用系统与权限',
+    '',
+    '二、发现问题',
+    '1. 部分条目编号不连续，存在“1.、3.”跳号。',
+    '2. 术语混用：巡检项/检查项/核查项未统一。',
+    '3. 引用附件缺失：附件A、附件B在正文提到但未见正文引用位置说明。',
+    '',
+    '三、整改计划',
+    '1. 本周内补齐缺失附件与责任人。',
+    '2. 下周统一编号、术语与交叉引用。',
+    '3. 月底前完成复核并输出总结。',
+    '',
+    '四、合同审阅要点',
+    '1. 付款条件：验收后30日内付款。',
+    '2. 违约责任：逾期交付按合同总额0.5%/日计收违约金。',
+    '3. 保密条款：双方对项目资料承担保密义务。',
+    '',
+    '五、会议纪要',
+    '1. 决议：先完成巡检问题清单，再安排整改复盘。',
+    '2. 行动项：张三负责编号整改，李四负责附件补齐。',
+    '',
+    '六、试题',
+    '1. 判断题：巡检记录应保留不少于一年。（ ）',
+    '2. 填空题：巡检周期为____天。',
+    '3. 简答题：请写出巡检报告至少包含的三项内容。',
+    '',
+    '七、风险台账',
+    '| 风险 | 等级 | 措施 |',
+    '| 编号不一致 | 中 | 统一编号规则 |',
+    '| 附件缺失 | 高 | 补齐附件并复核引用 |',
+  ].join('\n')
+
+  const ensureSeedDocumentForBench = async () => {
+    if (host !== 'wps') return
+    let activeId = ''
+    try {
+      const docs = wpsBridge.getAllOpenDocuments()
+      const active = docs.find(d => d.isActive)
+      activeId = String(active?.id || '').trim()
+    } catch (e) {
+      ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e)
+    }
+    if (!activeId) {
+      const created = await createNewDocument('宏基准样本文档')
+      activeId = String(created?.id || '').trim()
+    }
+    let existing = ''
+    try {
+      if (activeId) existing = String(wpsBridge.extractDocumentTextById(activeId, { maxChars: 4000 }) || '')
+    } catch (e) {
+      ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e)
+    }
+    if (existing.replace(/\s+/g, '').length >= 20) return
+    runBenchApi(
+      'ensureSeedDocumentForBench',
+      () => {
+        const app: any = wpsBridge.getApplication()
+        let doc = app?.ActiveDocument || null
+        if (!doc) doc = app?.Documents?.Add?.() || null
+        if (!doc) return false
+        doc.Activate?.()
+        const selection = app?.Selection || null
+        try {
+          if (doc.Content) doc.Content.Text = ''
+        } catch (e) {
+          ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e)
+        }
+        try {
+          if (selection?.WholeStory) selection.WholeStory()
+          if (selection?.Delete) selection.Delete()
+        } catch (e) {
+          ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e)
+        }
+        if (selection?.TypeText) selection.TypeText(BENCH_SEED_TEXT)
+        else if (doc.Range) doc.Range().Text = BENCH_SEED_TEXT
+        else if (doc.Content) doc.Content.Text = BENCH_SEED_TEXT
+        doc.Save?.()
+        return true
+      },
+      false,
+    )
+  }
+
+  const selectAllCurrentDocument = async () => {
+    const ok = runBenchApi(
+      'selectAllCurrentDocument',
+      () => {
+        const app: any = wpsBridge.getApplication()
+        if (!app) return false
+
+        if (host === 'wps') {
+          const selection = app.Selection || null
+          const doc = app.ActiveDocument || null
+          selection?.WholeStory?.()
+          doc?.Content?.Select?.()
+          return !!(selection || doc)
+        }
+
+        if (host === 'et') {
+          const sheet = app.ActiveSheet || null
+          sheet?.UsedRange?.Select?.()
+          sheet?.Cells?.Select?.()
+          return !!sheet
+        }
+
+        if (host === 'wpp') {
+          const presentation = app.ActivePresentation || app.Presentations?.Item?.(1) || null
+          const count = Number(presentation?.Slides?.Count || 0) || 0
+          if (count > 0) presentation.Slides.Item(count)?.Select?.()
+          return !!presentation
+        }
+
+        return false
+      },
+      false,
+    )
+    if (!ok) throw new Error(`select_all_failed:${host}`)
+  }
+
+  const clearCurrentDocument = async () => {
+    const ok = runBenchApi(
+      'clearCurrentDocument',
+      () => {
+        const app: any = wpsBridge.getApplication()
+        if (!app) return false
+
+        if (host === 'wps') {
+          const doc = app.ActiveDocument || null
+          const selection = app.Selection || null
+          if (!doc) return false
+          try { if (doc.Content) doc.Content.Text = '' } catch (e) { ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e) }
+          const contentStart = Number(doc?.Content?.Start)
+          if (Number.isFinite(contentStart)) {
+            selection?.SetRange?.(contentStart, contentStart)
+            selection?.Range?.SetRange?.(contentStart, contentStart)
+            selection?.Collapse?.(0)
+          }
+          return true
+        }
+
+        if (host === 'et') {
+          const sheet = app.ActiveSheet || null
+          if (!sheet) return false
+          sheet?.UsedRange?.Clear?.()
+          sheet?.Cells?.Clear?.()
+          sheet?.Range?.('A1')?.Select?.()
+          return true
+        }
+
+        if (host === 'wpp') {
+          const presentation = app.ActivePresentation || app.Presentations?.Item?.(1) || null
+          if (!presentation?.Slides) return false
+          while ((Number(presentation.Slides.Count || 0) || 0) > 0) {
+            presentation.Slides.Item(1)?.Delete?.()
+          }
+          return true
+        }
+
+        return false
+      },
+      false,
+    )
+    if (!ok) throw new Error(`clear_document_failed:${host}`)
+  }
+
+  const insertTextIntoCurrentDocument = async (text: string, newline: boolean) => {
+    const ok = runBenchApi(
+      'insertTextIntoCurrentDocument',
+      () => {
+        const app: any = wpsBridge.getApplication()
+        if (!app) return false
+
+        if (host === 'wps') {
+          const doc = app.ActiveDocument || null
+          const selection = app.Selection || null
+          const range = selection?.Range || doc?.Content || null
+          if (!range) return false
+          try {
+            range.Text = String(text)
+          } catch (e) {
+            ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e)
+            if (selection?.TypeText) selection.TypeText(String(text))
+            else return false
+          }
+          const endPos = Number(range?.End)
+          if (Number.isFinite(endPos)) {
+            selection?.SetRange?.(endPos, endPos)
+            selection?.Range?.SetRange?.(endPos, endPos)
+          }
+          selection?.Collapse?.(0)
+          if (newline) {
+            if (selection?.TypeParagraph) selection.TypeParagraph()
+            else range?.InsertParagraphAfter?.()
+          }
+          return true
+        }
+
+        if (host === 'et') {
+          const cell = app.ActiveCell || null
+          if (!cell) return false
+          cell.Value = String(text)
+          return true
+        }
+
+        return false
+      },
+      false,
+    )
+    if (!ok) throw new Error(`insert_text_failed:${host}`)
+  }
+
+  const findTextInCurrentDocument = async (needle: string) => {
+    const result = runBenchApi(
+      'findTextInCurrentDocument',
+      () => {
+        const app: any = wpsBridge.getApplication()
+        const doc = app?.ActiveDocument || null
+        if (!doc) return { ok: false, error: 'find_text:no_active_document' }
+        try {
+          const bid = (globalThis as any).BID
+          const range = typeof bid?.findTextRange === 'function' ? bid.findTextRange(String(needle)) : null
+          if (range) {
+            range.Select?.()
+            return { ok: true }
+          }
+        } catch (e) {
+          ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e)
+        }
+        const range = doc.Range?.() || null
+        const find = range?.Find || null
+        if (!range || !find) return { ok: false, error: 'find_text:no_range' }
+        find.Text = String(needle)
+        find.Forward = true
+        const ok = !!find.Execute?.()
+        if (!ok) return { ok: false, error: `find_text:not_found:${String(needle)}` }
+        range.Select?.()
+        return { ok: true }
+      },
+      { ok: false, error: 'find_text:api_failed' },
+    )
+    if (!result?.ok) throw new Error(String(result?.error || 'find_text_failed'))
+  }
+
+  const ensureSheetForBench = async (name: string) => {
+    const ok = runBenchApi(
+      'ensureSheetForBench',
+      () => {
+        const app: any = wpsBridge.getApplication()
+        const wb = app?.ActiveWorkbook || app?.Workbooks?.Item?.(1) || null
+        if (!wb?.Worksheets) return false
+        let sheet = null
+        try { sheet = wb.Worksheets.Item(name) } catch (_e) { sheet = null }
+        if (!sheet) {
+          sheet = wb.Worksheets.Add?.() || null
+          if (!sheet) return false
+          try { sheet.Name = name } catch (e) { ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e) }
+        }
+        sheet.Activate?.()
+        sheet.Range?.('A1')?.Select?.()
+        return true
+      },
+      false,
+    )
+    if (!ok) throw new Error(`ensure_sheet_failed:${name}`)
+  }
+
+  const activateSheetForBench = async (name: string) => {
+    const ok = runBenchApi(
+      'activateSheetForBench',
+      () => {
+        const app: any = wpsBridge.getApplication()
+        const wb = app?.ActiveWorkbook || app?.Workbooks?.Item?.(1) || null
+        let sheet = null
+        try { sheet = wb?.Worksheets?.Item(name) } catch (_e) { sheet = null }
+        if (!sheet) return false
+        sheet.Activate?.()
+        sheet.Range?.('A1')?.Select?.()
+        return true
+      },
+      false,
+    )
+    if (!ok) throw new Error(`activate_sheet_failed:${name}`)
+  }
+
+  const selectBenchRange = async (a1: string) => {
+    const ok = runBenchApi(
+      'selectBenchRange',
+      () => {
+        const app: any = wpsBridge.getApplication()
+        const sheet = app?.ActiveSheet || null
+        if (!sheet?.Range) return false
+        sheet.Range(String(a1)).Select?.()
+        return true
+      },
+      false,
+    )
+    if (!ok) throw new Error(`select_range_failed:${a1}`)
+  }
+
+  const ensureBenchSlide = async (index: number) => {
+    const ok = runBenchApi(
+      'ensureBenchSlide',
+      () => {
+        const app: any = wpsBridge.getApplication()
+        const presentation = app?.ActivePresentation || app?.Presentations?.Item?.(1) || null
+        if (!presentation?.Slides) return false
+        while ((Number(presentation.Slides.Count || 0) || 0) < index) {
+          presentation.Slides.Add?.((Number(presentation.Slides.Count || 0) || 0) + 1, 1)
+        }
+        presentation.Slides.Item(index)?.Select?.()
+        return true
+      },
+      false,
+    )
+    if (!ok) throw new Error(`ensure_slide_failed:${index}`)
+  }
+
+  const selectBenchSlide = async (index: number) => {
+    const ok = runBenchApi(
+      'selectBenchSlide',
+      () => {
+        const app: any = wpsBridge.getApplication()
+        const presentation = app?.ActivePresentation || app?.Presentations?.Item?.(1) || null
+        const count = Number(presentation?.Slides?.Count || 0) || 0
+        if (!presentation?.Slides || count < index) return false
+        presentation.Slides.Item(index)?.Select?.()
+        return true
+      },
+      false,
+    )
+    if (!ok) throw new Error(`select_slide_failed:${index}`)
+  }
+
+  const setBenchCursor = async (pos: 'start' | 'end') => {
+    const ok = runBenchApi(
+      'setBenchCursor',
+      () => {
+        const app: any = wpsBridge.getApplication()
+        if (!app) return false
+
+        if (host === 'wps') {
+          const selection = app.Selection || null
+          if (!selection) return false
+          const wdMove = 0
+          const wdStory = 6
+          if (pos === 'end') selection.EndOf?.(wdStory, wdMove)
+          else selection.StartOf?.(wdStory, wdMove)
+          return true
+        }
+
+        if (host === 'et') {
+          const sheet = app.ActiveSheet || null
+          if (!sheet) return false
+          if (pos === 'end') {
+            const used = sheet.UsedRange || null
+            const row = (Number(used?.Row || 1) || 1) + (Number(used?.Rows?.Count || 1) || 1) - 1
+            const col = (Number(used?.Column || 1) || 1) + (Number(used?.Columns?.Count || 1) || 1) - 1
+            sheet.Cells?.(row, col)?.Select?.()
+          } else {
+            sheet.Range?.('A1')?.Select?.()
+          }
+          return true
+        }
+
+        return false
+      },
+      false,
+    )
+    if (!ok) throw new Error(`set_cursor_failed:${host}:${pos}`)
   }
 
   const ensureDocumentAlias = async (alias: string, title?: string) => {
@@ -1961,7 +2215,8 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
 
     if (a.type === 'sleep') {
 
-      await sleep(Math.max(0, Number(a.ms || 0) || 0))
+      if (shouldStopNow()) throw makeAbortError()
+      await sleepAbortable(Math.max(0, Number(a.ms || 0) || 0), opts.signal)
 
       return
 
@@ -1990,67 +2245,11 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
     }
 
     if (a.type === 'find_text') {
-
       if (host !== 'wps') return
-
       const needle = String(a.text || '').trim()
-
       if (!needle) return
-
-      const lit = JSON.stringify(needle)
-
-      const script = (
-
-        "var app = window.Application;\\n" +
-
-        `var needle = ${lit};\\n` +
-
-        "try {\\n" +
-
-        "  if (typeof BID !== 'undefined' && BID && BID.findTextRange) {\\n" +
-
-        "    var r = null;\\n" +
-
-        "    try { r = BID.findTextRange(String(needle)); } catch (e1) { r = null }\\n" +
-
-        "    try { if (r && r.Select) r.Select(); } catch (e2) {}\\n" +
-
-        "    true;\\n" +
-
-        "  }\\n" +
-
-        "} catch (e0) {}\\n" +
-
-        "try {\\n" +
-
-        "  var doc = app.ActiveDocument;\\n" +
-
-        "  var range = doc.Range();\\n" +
-
-        "  var f = range.Find;\\n" +
-
-        "  f.Text = String(needle);\\n" +
-
-        "  f.Forward = true;\\n" +
-
-        "  var ok = false;\\n" +
-
-        "  try { ok = !!f.Execute(); } catch (e3) { ok = false }\\n" +
-
-        "  if (!ok) throw new Error('find_text:not_found:' + String(needle));\\n" +
-
-        "  try { range.Select(); } catch (e4) {}\\n" +
-
-        "} catch (e5) {}\\n" +
-
-        "true;"
-
-      )
-
-      try { await jsMacroExecutor.executeJS(script, true) } catch (e) { (globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e) }
-
+      await findTextInCurrentDocument(needle)
       return
-
     }
 
     if (a.type === 'ensure_bench_document') {
@@ -2153,6 +2352,7 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
 
       const deadline = Date.now() + timeoutMs
       while (true) {
+        if (shouldStopNow()) throw makeAbortError()
         if (Date.now() > deadline) throw new Error(`macro_queue_job_timeout:${jobAlias}`)
         const r = getRun(job.messageId, job.blockId)
         const st = String(r?.status || '').trim()
@@ -2161,7 +2361,7 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
           const err = String(r?.error || 'macro_queue_job_error')
           throw new Error(`macro_queue_job_error:${jobAlias}:${err}`)
         }
-        await sleep(120)
+        await sleepAbortable(120, opts.signal)
       }
 
     }
@@ -2271,408 +2471,78 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
     }
 
     if (a.type === 'select_all') {
-
-      const script = (() => {
-
-        if (host === 'wps') {
-
-          return (
-
-            "var app = window.Application;\\n" +
-
-            "try { if (app.Selection && app.Selection.WholeStory) { app.Selection.WholeStory(); } } catch (e) {}\\n" +
-
-            "try { if (app.ActiveDocument && app.ActiveDocument.Content && app.ActiveDocument.Content.Select) { app.ActiveDocument.Content.Select(); } } catch (e2) {}\\n" +
-
-            "true;"
-
-          )
-
-        }
-
-        if (host === 'et') {
-
-          return (
-
-            "var app = window.Application;\\n" +
-
-            "try { var sh = app.ActiveSheet; } catch (e) { sh = null }\\n" +
-
-            "try { if (sh && sh.UsedRange && sh.UsedRange.Select) { sh.UsedRange.Select(); } } catch (e2) {}\\n" +
-
-            "try { if (sh && sh.Cells && sh.Cells.Select) { sh.Cells.Select(); } } catch (e3) {}\\n" +
-
-            "true;"
-
-          )
-
-        }
-
-        if (host === 'wpp') {
-
-          return (
-
-            "var app = window.Application;\\n" +
-
-            "try { var p = app.ActivePresentation || (app.Presentations ? app.Presentations.Item(1) : null); } catch (e) { p = null }\\n" +
-
-            "try { if (p && p.Slides && p.Slides.Count >= 1) { p.Slides.Item(p.Slides.Count).Select(); } } catch (e2) {}\\n" +
-
-            "true;"
-
-          )
-
-        }
-
-        return 'true;'
-
-      })()
-
-      try { await jsMacroExecutor.executeJS(script, true) } catch (e) { (globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e) }
-
+      await selectAllCurrentDocument()
       return
-
     }
 
     if (a.type === 'clear_document') {
-
-      const script = (() => {
-
-        if (host === 'wps') {
-
-          return (
-
-            "var app = window.Application;\\n" +
-
-            "var doc = null; try { doc = app.ActiveDocument; } catch (e) {}\\n" +
-
-            "try { if (doc && doc.Content) { doc.Content.Text = ''; } } catch (e2) {}\\n" +
-
-            "try { if (app.Selection && app.Selection.WholeStory) { app.Selection.WholeStory(); app.Selection.Delete(); } } catch (e3) {}\\n" +
-
-            "true;"
-
-          )
-
-        }
-
-        if (host === 'et') {
-
-          return (
-
-            "var app = window.Application;\\n" +
-
-            "var sh = null; try { sh = app.ActiveSheet; } catch (e) {}\\n" +
-
-            "try { if (sh && sh.UsedRange && sh.UsedRange.Clear) { sh.UsedRange.Clear(); } } catch (e2) {}\\n" +
-
-            "try { if (sh && sh.Cells && sh.Cells.Clear) { sh.Cells.Clear(); } } catch (e3) {}\\n" +
-
-            "true;"
-
-          )
-
-        }
-
-        if (host === 'wpp') {
-
-          return (
-
-            "var app = window.Application;\\n" +
-
-            "var p = null; try { p = app.ActivePresentation || (app.Presentations ? app.Presentations.Item(1) : null); } catch (e) {}\\n" +
-
-            "try { if (p && p.Slides) { while (p.Slides.Count > 0) { try { p.Slides.Item(1).Delete(); } catch (e2) { break } } } } catch (e3) {}\\n" +
-
-            "true;"
-
-          )
-
-        }
-
-        return 'true;'
-
-      })()
-
-      try { await jsMacroExecutor.executeJS(script, true) } catch (e) { (globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e) }
-
+      await clearCurrentDocument()
       return
-
     }
 
     if (a.type === 'insert_text') {
-
       const text = String(a.text || '')
-
       const newline = a.newline !== false
-
-      const lit = JSON.stringify(text)
-
-      const script = (() => {
-
-        if (host === 'wps') {
-
-          return (
-
-            "var app = window.Application;\\n" +
-
-            `var t = ${lit};\\n` +
-
-            "try { if (app.Selection && app.Selection.Range) { app.Selection.Range.Text = String(t); } } catch (e) {}\\n" +
-
-            (newline ? "try { if (app.Selection && app.Selection.TypeParagraph) app.Selection.TypeParagraph(); } catch (e2) {}\\n" : '') +
-
-            "true;"
-
-          )
-
-        }
-
-        if (host === 'et') {
-
-          return (
-
-            "var app = window.Application;\\n" +
-
-            `var t = ${lit};\\n` +
-
-            "try { if (app.ActiveCell) { app.ActiveCell.Value = String(t); } } catch (e) {}\\n" +
-
-            "true;"
-
-          )
-
-        }
-
-        return 'true;'
-
-      })()
-
-      try { await jsMacroExecutor.executeJS(script, true) } catch (e) { (globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e) }
-
+      await insertTextIntoCurrentDocument(text, newline)
       return
-
     }
 
     if (a.type === 'ensure_sheet') {
-
       const name = String(a.name || '').trim() || 'Sheet1'
-
-      const lit = JSON.stringify(name)
-
-      const script = (
-
-        "var app = window.Application;\\n" +
-
-        `var target = ${lit};\\n` +
-
-        "var wb = null; try { wb = app.ActiveWorkbook || (app.Workbooks ? app.Workbooks.Item(1) : null); } catch (e) {}\\n" +
-
-        "if (!wb || !wb.Worksheets) { true; } else {\\n" +
-
-        "  var sh = null;\\n" +
-
-        "  try { sh = wb.Worksheets.Item(target); } catch (e2) { sh = null }\\n" +
-
-        "  if (!sh) {\\n" +
-
-        "    try { sh = wb.Worksheets.Add(); } catch (e3) { sh = null }\\n" +
-
-        "    try { if (sh) sh.Name = target; } catch (e4) {}\\n" +
-
-        "  }\\n" +
-
-        "  try { if (sh && sh.Activate) sh.Activate(); } catch (e5) {}\\n" +
-
-        "  try { if (sh && sh.Range) sh.Range('A1').Select(); } catch (e6) {}\\n" +
-
-        "}\\n" +
-
-        "true;"
-
-      )
-
-      try { await jsMacroExecutor.executeJS(script, true) } catch (e) { (globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e) }
-
+      await ensureSheetForBench(name)
       return
-
     }
 
     if (a.type === 'activate_sheet') {
-
       const name = String(a.name || '').trim() || 'Sheet1'
-
-      const lit = JSON.stringify(name)
-
-      const script = (
-
-        "var app = window.Application;\\n" +
-
-        `var target = ${lit};\\n` +
-
-        "var wb = null; try { wb = app.ActiveWorkbook || (app.Workbooks ? app.Workbooks.Item(1) : null); } catch (e) {}\\n" +
-
-        "var sh = null;\\n" +
-
-        "try { if (wb && wb.Worksheets) sh = wb.Worksheets.Item(target); } catch (e2) { sh = null }\\n" +
-
-        "try { if (sh && sh.Activate) sh.Activate(); } catch (e3) {}\\n" +
-
-        "try { if (sh && sh.Range) sh.Range('A1').Select(); } catch (e4) {}\\n" +
-
-        "true;"
-
-      )
-
-      try { await jsMacroExecutor.executeJS(script, true) } catch (e) { (globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e) }
-
+      await activateSheetForBench(name)
       return
-
     }
 
     if (a.type === 'select_range') {
-
       const a1 = String(a.a1 || '').trim() || 'A1'
-
-      const lit = JSON.stringify(a1)
-
-      const script = (
-
-        "var app = window.Application;\\n" +
-
-        `var addr = ${lit};\\n` +
-
-        "try { if (app.ActiveSheet && app.ActiveSheet.Range) { app.ActiveSheet.Range(String(addr)).Select(); } } catch (e) {}\\n" +
-
-        "true;"
-
-      )
-
-      try { await jsMacroExecutor.executeJS(script, true) } catch (e) { (globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e) }
-
+      await selectBenchRange(a1)
       return
-
     }
 
     if (a.type === 'ensure_slide') {
-
       const idx = Math.max(1, Number(a.index || 1) || 1)
-
-      const script = (
-
-        "var app = window.Application;\\n" +
-
-        `var idx = ${idx};\\n` +
-
-        "var p = null; try { p = app.ActivePresentation || (app.Presentations ? app.Presentations.Item(1) : null); } catch (e) { p = null }\\n" +
-
-        "if (!p || !p.Slides) { true; } else {\\n" +
-
-        "  try { while (p.Slides.Count < idx) { p.Slides.Add(p.Slides.Count + 1, 1); } } catch (e2) {}\\n" +
-
-        "  try { p.Slides.Item(idx).Select(); } catch (e3) {}\\n" +
-
-        "}\\n" +
-
-        "true;"
-
-      )
-
-      try { await jsMacroExecutor.executeJS(script, true) } catch (e) { (globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e) }
-
+      await ensureBenchSlide(idx)
       return
-
     }
 
     if (a.type === 'select_slide') {
-
       const idx = Math.max(1, Number(a.index || 1) || 1)
-
-      const script = (
-
-        "var app = window.Application;\\n" +
-
-        `var idx = ${idx};\\n` +
-
-        "var p = null; try { p = app.ActivePresentation || (app.Presentations ? app.Presentations.Item(1) : null); } catch (e) { p = null }\\n" +
-
-        "try { if (p && p.Slides && p.Slides.Count >= idx) { p.Slides.Item(idx).Select(); } } catch (e2) {}\\n" +
-
-        "true;"
-
-      )
-
-      try { await jsMacroExecutor.executeJS(script, true) } catch (e) { (globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e) }
-
+      await selectBenchSlide(idx)
       return
-
     }
 
     if (a.type === 'set_cursor') {
-
       const pos = a.pos
-
-      const script = (() => {
-
-        if (host === 'wps') {
-
-          if (pos === 'end') return "var app = window.Application; try { app.Selection.EndOf(); } catch (e) {} true;"
-
-          return "var app = window.Application; try { app.Selection.StartOf(); } catch (e) {} true;"
-
-        }
-
-        if (host === 'et') {
-
-          if (pos === 'end') {
-
-            return (
-
-              "var app = window.Application;\\n" +
-
-              "try { var sh = app.ActiveSheet; } catch (e) { sh = null }\\n" +
-
-              "try { if (sh && sh.UsedRange) { var r = sh.UsedRange; var rr = r.Row + r.Rows.Count - 1; var cc = r.Column + r.Columns.Count - 1; sh.Cells(rr, cc).Select(); } } catch (e2) {}\\n" +
-
-              "true;"
-
-            )
-
-          }
-
-          return "var app = window.Application; try { app.ActiveSheet.Range('A1').Select(); } catch (e) {} true;"
-
-        }
-
-        return 'true;'
-
-      })()
-
-      try {
-
-        await jsMacroExecutor.executeJS(script, true)
-
-      } catch (e) {
-
-        ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e)
-
-      }
-
+      await setBenchCursor(pos)
       return
-
     }
 
   }
 
 
 
-  const applyActions = async (actions?: ChatBenchAction[]) => {
+  const applyActions = async (actions?: ChatBenchAction[], stagePrefix: string = 'actions', stageExtra?: Record<string, any>) => {
 
     if (!actions || !actions.length) return
 
-    for (const a of actions) {
+    for (let actionIdx = 0; actionIdx < actions.length; actionIdx++) {
+      const a = actions[actionIdx]
 
       if (shouldStopNow()) break
+
+      pushStage(`${stagePrefix}_action`, {
+        actionIdx: actionIdx + 1,
+        actionTotal: actions.length,
+        actionType: String((a as any)?.type || ''),
+        actionTitle: String((a as any)?.title || ''),
+        ...(stageExtra || {}),
+      })
 
       await applyAction(a)
 
@@ -2782,6 +2652,24 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
 
   }
 
+  const initializedChatSessionIds = new Set<string>()
+
+  try {
+
+    for (const rr of results) {
+
+      const sid = String((rr as any)?.chatSessionId || '').trim()
+
+      if (sid) initializedChatSessionIds.add(sid)
+
+    }
+
+  } catch (e) {
+
+    ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e)
+
+  }
+
   const startIdx = Math.max(0, Number(resumed?.nextIdx ?? results.length ?? 0) || 0)
 
 
@@ -2818,6 +2706,8 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
 
     chatTimeoutMs,
 
+    chatSessionIsolation: 'per_story',
+
   }
 
 
@@ -2846,7 +2736,7 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
 
     if (!keepLast) return
 
-    try { await (chatStore as any).switchToSession?.(chatSessionId, { bindToActiveDocument: true }) } catch (e) { (globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e) }
+    try { await switchBenchSessionBucket(false) } catch (e) { (globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e) }
 
     try {
 
@@ -2866,7 +2756,7 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
 
       try {
 
-        ;(chatStore as any).addSystemMessage?.(`[Bench] 历史对话已截断，仅保留最近 ${keepLast} 条（完整结果请复制 JSON 报告）`)
+        ;(chatStore as any).addSystemMessage?.("[Bench] Trimmed old messages and kept the latest " + keepLast + " items for stability.")
 
       } catch (e) {
 
@@ -2892,15 +2782,19 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
 
 
 
-  const waitForChatIdle = async (opts?: { timeoutMs?: number }) => {
+  const waitForChatIdle = async (idleOpts?: { timeoutMs?: number }) => {
 
-    const timeoutMs = Math.max(0, Number(opts?.timeoutMs || 0) || 0) || 8000
+    const timeoutMs = Math.max(0, Number(idleOpts?.timeoutMs || 0) || 0) || 8000
 
     const deadline = Date.now() + timeoutMs
 
-    // `sendMessage()` is a no-op when the chat store is already sending; bench must not silently proceed.
+    // Wait until the chat store is idle before sending the next turn.
 
     while (Boolean((chatStore as any)?.isSending)) {
+      if (shouldStopNow()) {
+        try { (chatStore as any).cancelCurrentRequest?.() } catch (e) { (globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e) }
+        throw makeAbortError()
+      }
 
       if (Date.now() > deadline) {
 
@@ -2910,10 +2804,24 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
 
       }
 
-      await sleep(80)
+      await sleepAbortable(80, opts.signal)
 
       }
 
+  }
+
+  const switchBenchSessionBucket = async (bindToActiveDocument: boolean = false, timeoutMs: number = 1500) => {
+    try {
+      const work = Promise.resolve(
+        (chatStore as any).switchToSession?.(
+          activeChatSessionId,
+          bindToActiveDocument ? { bindToActiveDocument: true } : undefined
+        )
+      )
+      await withTimeout(work, timeoutMs, 'switch_bench_session')
+    } catch (e) {
+      ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e)
+    }
   }
 
 
@@ -2934,6 +2842,8 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
 
       ruleFiles?: string[]
 
+      signal?: AbortSignal
+
     },
 
     retries: number = 2
@@ -2943,6 +2853,7 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
     let lastErr: any = null
 
     for (let i = 0; i <= retries; i++) {
+      if (shouldStopNow()) throw makeAbortError()
 
       try {
 
@@ -2964,7 +2875,9 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
 
         await waitForChatIdle({ timeoutMs: 6000 })
 
-        await sleep(500 + i * 300)
+        if (shouldStopNow()) throw makeAbortError()
+
+        await sleepAbortable(500 + i * 300, opts.signal)
 
       }
 
@@ -2996,15 +2909,15 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
 
     if (maxFailures > 0) {
 
-      // Product decision: in unattended "customer-like" runs we keep going even when some turns fail.
+      // Soft failure budget: keep running and only report the threshold.
 
-      // `maxFailures` is treated as a soft budget (warn only), not a hard stop.
+      // maxFailures is warn-only, not a hard stop.
 
       const fails = results.filter(x => !x.ok).length
 
       if (fails >= maxFailures) {
 
-        try { (chatStore as any).addSystemMessage?.(`[Bench] failure budget reached: ${fails}/${maxFailures} (continue)`) } catch (e) { (globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e) }
+        try { (chatStore as any).addSystemMessage?.("[Bench] failure budget reached: " + fails + "/" + maxFailures + " (continue)") } catch (e) { (globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e) }
 
       }
 
@@ -3017,6 +2930,9 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
     }
 
     const { story, turn } = items[i]
+    activeChatSessionId = getStoryChatSessionId(story)
+    const isFirstTurnOfStory = turn === story.turns[0]
+    const storyAlreadyHasResults = results.some(r => r.story?.id === story.id)
 
     const storyUsesDocAliases = (() => {
       try {
@@ -3046,15 +2962,23 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
 
     // Setup actions run once per story (on its first turn).
 
-    if (turn === story.turns[0] && !results.some(r => r.story?.id === story.id)) {
+    if (isFirstTurnOfStory && !storyAlreadyHasResults) {
 
       try {
 
-        await applyActions(story.setupActions)
+        await applyActions(story.setupActions, 'story_setup', {
+          idx: i + 1,
+          total: items.length,
+          storyId: story.id,
+          storyName: story.name,
+          turnId: turn.id,
+          turnName: turn.name,
+          suiteId: story.suiteId,
+        })
 
       } catch (e: any) {
 
-        const msg = `setup_actions_failed: ${String(e?.message || e)}`
+        const msg = "setup_actions_failed: " + String(e?.message || e)
 
         let appliedSkills: any[] = []
         try {
@@ -3088,9 +3012,9 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
 
           turn,
 
-          chatSessionId,
+          chatSessionId: activeChatSessionId,
 
-          macroSessionId: `bench_chat_${host}_${Date.now()}_${i + 1}`,
+          macroSessionId: "bench_chat_" + host + "_" + Date.now() + "_" + (i + 1),
 
           documentName: getActiveDocName(),
 
@@ -3168,7 +3092,47 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
 
     // Keep the bench doc active across the whole story (unless the story manages doc aliases).
 
-    if (pinBenchDoc) await applyActions([{ type: 'activate_bench_document' }])
+    if (pinBenchDoc) await applyActions([{ type: 'activate_bench_document' }], 'story_activate_bench_doc', {
+      idx: i + 1,
+      total: items.length,
+      storyId: story.id,
+      storyName: story.name,
+      turnId: turn.id,
+      turnName: turn.name,
+      suiteId: story.suiteId,
+    })
+
+    if (!initializedChatSessionIds.has(activeChatSessionId)) {
+
+      pushStage('story_switch_session', {
+        idx: i + 1,
+        total: items.length,
+        storyId: story.id,
+        storyName: story.name,
+        turnId: turn.id,
+        turnName: turn.name,
+        suiteId: story.suiteId,
+        chatSessionId,
+      })
+
+      await switchBenchSessionBucket(true, 2000)
+
+      pushStage('story_clear_messages', {
+        idx: i + 1,
+        total: items.length,
+        storyId: story.id,
+        storyName: story.name,
+        turnId: turn.id,
+        turnName: turn.name,
+        suiteId: story.suiteId,
+        chatSessionId,
+      })
+
+      try { chatStore.clearMessages?.() } catch (e) { (globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e) }
+
+      initializedChatSessionIds.add(activeChatSessionId)
+
+    }
 
   }
 
@@ -3190,11 +3154,19 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
 
       uiClickSendForTurn = !!(applied as any).uiClickSend
 
-      await applyActions(turn.actionsBeforeSend)
+      await applyActions(turn.actionsBeforeSend, 'turn_before_send', {
+        idx: i + 1,
+        total: items.length,
+        storyId: story.id,
+        storyName: story.name,
+        turnId: turn.id,
+        turnName: turn.name,
+        suiteId: story.suiteId,
+      })
 
     } catch (e: any) {
 
-      const msg = `actions_before_send_failed: ${String(e?.message || e)}`
+      const msg = "actions_before_send_failed: " + String(e?.message || e)
 
       let appliedSkills: any[] = []
       try {
@@ -3230,7 +3202,7 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
 
         chatSessionId,
 
-        macroSessionId: `bench_chat_${host}_${Date.now()}_${i + 1}`,
+        macroSessionId: "bench_chat_" + host + "_" + Date.now() + "_" + (i + 1),
 
         documentName: getActiveDocName(),
 
@@ -3306,11 +3278,28 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
 
     }
 
-    if (pinBenchDoc) await applyActions([{ type: 'activate_bench_document' }])
+    if (pinBenchDoc) await applyActions([{ type: 'activate_bench_document' }], 'turn_activate_bench_doc', {
+      idx: i + 1,
+      total: items.length,
+      storyId: story.id,
+      storyName: story.name,
+      turnId: turn.id,
+      turnName: turn.name,
+      suiteId: story.suiteId,
+    })
 
 
 
     opts.onProgress?.({ idx: i + 1, total: items.length, storyName: story.name, turnName: turn.name, host, suiteId: story.suiteId })
+    pushStage('turn_start', {
+      idx: i + 1,
+      total: items.length,
+      storyId: story.id,
+      storyName: story.name,
+      turnId: turn.id,
+      turnName: turn.name,
+      suiteId: story.suiteId,
+    })
 
     const localOnly = !!(turn as any)?.localOnly
     if (localOnly) {
@@ -3339,7 +3328,7 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
         story: { id: story.id, suiteId: story.suiteId, host: story.host, name: story.name },
         turn,
         chatSessionId,
-        macroSessionId: `bench_local_${host}_${Date.now()}_${i + 1}`,
+        macroSessionId: "bench_local_" + host + "_" + Date.now() + "_" + (i + 1),
         documentName: getActiveDocName(),
         ok: ae.ok,
         assertOk: ae.ok,
@@ -3404,8 +3393,36 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
 
     // Ensure we are observing the correct session bucket (doc watcher may switch buckets).
 
-    try { await (chatStore as any).switchToSession?.(chatSessionId, { bindToActiveDocument: true }) } catch (e) { (globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e) }
+    pushStage('turn_switch_session_pre', {
+      idx: i + 1,
+      total: items.length,
+      storyId: story.id,
+      storyName: story.name,
+      turnId: turn.id,
+      turnName: turn.name,
+      suiteId: story.suiteId,
+    })
+    await switchBenchSessionBucket(true)
 
+    pushStage('turn_ensure_seed_document', {
+      idx: i + 1,
+      total: items.length,
+      storyId: story.id,
+      storyName: story.name,
+      turnId: turn.id,
+      turnName: turn.name,
+      suiteId: story.suiteId,
+    })
+    await ensureSeedDocumentForBench()
+    pushStage('turn_wait_chat_idle_pre_send', {
+      idx: i + 1,
+      total: items.length,
+      storyId: story.id,
+      storyName: story.name,
+      turnId: turn.id,
+      turnName: turn.name,
+      suiteId: story.suiteId,
+    })
     await waitForChatIdle()
 
     const beforeLen = Number(((chatStore as any).messages || []).length || 0) || 0
@@ -3436,9 +3453,18 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
       }
 
       if (!hasOverridePlan) {
+        pushStage('turn_send', {
+          idx: i + 1,
+          total: items.length,
+          storyId: story.id,
+          storyName: story.name,
+          turnId: turn.id,
+          turnName: turn.name,
+          suiteId: story.suiteId,
+        })
         await withTimeout(
 
-          sendWithRetry(queryToSend, chatSessionId, {
+          sendWithRetry(queryToSend, activeChatSessionId, {
 
             disableShortcuts: true,
 
@@ -3486,6 +3512,8 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
 
             ruleFiles: ruleFilesForTurn.length ? ruleFilesForTurn : undefined,
 
+            signal: opts.signal,
+
           }),
 
           chatTimeoutMs,
@@ -3495,6 +3523,15 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
         )
 
         chatMs = Math.round(performance.now() - t0)
+        pushStage('turn_sent', {
+          idx: i + 1,
+          total: items.length,
+          storyId: story.id,
+          storyName: story.name,
+          turnId: turn.id,
+          turnName: turn.name,
+          suiteId: story.suiteId,
+        })
 
         try { tokenUsage = (chatStore as any).consumeLastTokenUsage?.() || null } catch (e) { (globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e); tokenUsage = null }
 
@@ -3514,10 +3551,28 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
 
         // Re-select the bench session bucket after the send, in case the UI switched documents mid-stream.
 
-        try { await (chatStore as any).switchToSession?.(chatSessionId, { bindToActiveDocument: true }) } catch (e) { (globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e) }
+        pushStage('turn_switch_session_post', {
+          idx: i + 1,
+          total: items.length,
+          storyId: story.id,
+          storyName: story.name,
+          turnId: turn.id,
+          turnName: turn.name,
+          suiteId: story.suiteId,
+        })
+        await switchBenchSessionBucket(false)
 
 
 
+        pushStage('turn_collect_messages', {
+          idx: i + 1,
+          total: items.length,
+          storyId: story.id,
+          storyName: story.name,
+          turnId: turn.id,
+          turnName: turn.name,
+          suiteId: story.suiteId,
+        })
         const bucketMsgs = (((chatStore as any).messages || []) as any[])
 
         const newMsgs = bucketMsgs.slice(beforeLen)
@@ -3544,7 +3599,7 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
 
       try { (chatStore as any).cancelCurrentRequest?.() } catch (e) { (globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e) }
 
-      const msg = `chat_failed: ${String(e?.message || e)}`
+      const msg = "chat_failed: " + String(e?.message || e)
 
       let appliedSkills: any[] = []
       try {
@@ -3578,9 +3633,9 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
 
         turn,
 
-        chatSessionId,
+        chatSessionId: activeChatSessionId,
 
-        macroSessionId: `bench_chat_${host}_${Date.now()}_${i + 1}`,
+        macroSessionId: "bench_chat_" + host + "_" + Date.now() + "_" + (i + 1),
 
         documentName: getActiveDocName(),
 
@@ -3694,6 +3749,7 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
       } catch (e) {
         selectedSkills = []
       }
+      selectedSkills = applyForcedSkillSelection(turn, selectedSkills)
     }
 
     if (!blocks.length && expectedOutput !== 'plan') {
@@ -3717,8 +3773,8 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
       const r: ChatBenchTurnResult = {
         story: { id: story.id, suiteId: story.suiteId, host: story.host, name: story.name },
         turn,
-        chatSessionId,
-        macroSessionId: `bench_chat_${host}_${Date.now()}_${i + 1}`,
+        chatSessionId: activeChatSessionId,
+        macroSessionId: "bench_chat_" + host + "_" + Date.now() + "_" + (i + 1),
         documentName: getActiveDocName(),
         ok: ae.ok,
         assertOk: ae.ok,
@@ -3774,8 +3830,27 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
     }
 
     if (!blocks.length && expectedOutput === 'plan') {
-
-      const msg = 'chat_ok_but_no_plan_block'
+      const wantWriteback = (() => {
+        try {
+          const v = (assistantMsg as any)?.metadata?.wantWriteback
+          return typeof v === 'boolean' ? v : null
+        } catch (e) {
+          ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e)
+          return null
+        }
+      })()
+      const traceId = (() => {
+        try {
+          return String((assistantMsg as any)?.metadata?.traceId || '').trim()
+        } catch (e) {
+          ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e)
+          return ''
+        }
+      })()
+      const msg =
+        wantWriteback === false
+          ? `chat_ok_but_backend_text_only${traceId ? `:trace_id=${traceId}` : ''}`
+          : 'chat_ok_but_no_plan_block'
 
       const ae = await evalTurnAsserts({
         host,
@@ -3795,9 +3870,9 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
 
         turn,
 
-        chatSessionId,
+        chatSessionId: activeChatSessionId,
 
-        macroSessionId: `bench_chat_${host}_${Date.now()}_${i + 1}`,
+        macroSessionId: "bench_chat_" + host + "_" + Date.now() + "_" + (i + 1),
 
         documentName: getActiveDocName(),
 
@@ -3923,7 +3998,7 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
         story: { id: story.id, suiteId: story.suiteId, host: story.host, name: story.name },
         turn,
         chatSessionId,
-        macroSessionId: `bench_chat_${host}_${Date.now()}_${i + 1}`,
+        macroSessionId: "bench_chat_" + host + "_" + Date.now() + "_" + (i + 1),
         documentName: getActiveDocName(),
         ok: false,
         assertOk: ae.ok,
@@ -3981,7 +4056,7 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
     // 3) execute plan (real host runtime + repair loop)
     const rawPlan = blocks[0] || ""
     const docName = getActiveDocName()
-    const macroSessionId = `bench_ui_${host}_${Date.now()}_${i + 1}`
+    const macroSessionId = "bench_ui_" + host + "_" + Date.now() + "_" + (i + 1)
     planClient.setContext(macroSessionId, docName, host)
 
     const stableId = normalizeBlockId(turn.artifactId || `bench_chat_${host}_${story.suiteId}_${story.id}_${turn.id}`)
@@ -4002,6 +4077,7 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
 
     if (planObj) {
       const useSystemOps = hasOverridePlan
+      const localRepairsUsed = countLocalPlanRepairs(planObj)
       let currentPlan = useSystemOps ? ensurePlanBlockIdForSystemOps(planObj, stableId) : ensurePlanBlockId(planObj, stableId)
       const maxAttempts = 3
       const t1 = performance.now()
@@ -4027,7 +4103,7 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
         }
       }
       execMs = Math.round(performance.now() - t1)
-      repairsUsed = attempts > 0 ? Math.max(0, attempts - 1) : 0
+      repairsUsed = localRepairsUsed + (attempts > 0 ? Math.max(0, attempts - 1) : 0)
     } else {
       message = "invalid_plan_json"
     }
@@ -4065,7 +4141,7 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
     const okFinal = !!ok && !!ae.ok
     if (ok && !ae.ok) {
       const head = String(ae.failures?.[0]?.type || "assert_failed")
-      message = `exec_ok_but_assert_failed:${head}`
+      message = "exec_ok_but_assert_failed:" + head
     }
 
     const r: ChatBenchTurnResult = {

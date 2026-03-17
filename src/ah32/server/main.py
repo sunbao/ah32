@@ -1,213 +1,71 @@
-"""FastAPI entry point for Ah32."""
+﻿"""FastAPI entry point for Ah32."""
 
 from __future__ import annotations
 
 import locale
-# ========== 设置UTF-8编码 ==========
-import sys
-
-# 设置标准输出为UTF-8编码
-if sys.platform.startswith('win'):
-    # Windows下设置控制台编码
-    try:
-        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
-        sys.stderr.reconfigure(encoding='utf-8', errors='replace')
-    except Exception as e:
-        print(f"[boot] stdout/stderr reconfigure failed: {e}", file=sys.stderr)
-
-# 设置locale为UTF-8
-try:
-    locale.setlocale(locale.LC_ALL, 'zh_CN.UTF-8')
-except Exception as e:
-    print(f"[boot] locale zh_CN.UTF-8 not available: {e}", file=sys.stderr)
-    try:
-        locale.setlocale(locale.LC_ALL, 'C.UTF-8')
-    except Exception as e2:
-        print(f"[boot] locale C.UTF-8 not available: {e2}", file=sys.stderr)
-
-# ========== 关键：在所有导入之前加载 .env 并设置环境变量 ==========
-import os
-from pathlib import Path
-
-# 先加载 .env 文件到环境变量
-# Load .env (strict: must exist and include AH32_EMBEDDING_MODEL).
-try:
-    from dotenv import load_dotenv
-    from ah32.runtime_paths import runtime_root
-except ImportError as e:
-    raise RuntimeError("python-dotenv is required to load .env; please install it.") from e
-
-env_file = runtime_root() / ".env"
-if not env_file.exists():
-    raise RuntimeError(f".env file not found: {env_file}. Create it in the repo root.")
-
-load_dotenv(env_file, override=True)
-if not os.environ.get("AH32_EMBEDDING_MODEL"):
-    raise RuntimeError("AH32_EMBEDDING_MODEL is missing in .env; please configure it.")
-
-# Telemetry policy:
-# - Dev/test often wants telemetry (LLM tracing, etc.).
-# - Production can disable telemetry explicitly via env to avoid extra network/latency.
-_disable_langsmith = os.environ.get("AH32_DISABLE_LANGSMITH", "").lower() in ("1", "true", "yes")
-if _disable_langsmith:
-    os.environ["LANGCHAIN_TRACING_V2"] = "false"
-    os.environ["LANGCHAIN_TRACING"] = "false"
-    os.environ["LANGSMITH_TRACING"] = "false"
-
-_disable_chroma_telemetry = os.environ.get("AH32_DISABLE_CHROMA_TELEMETRY", "").lower() in ("1", "true", "yes")
-if _disable_chroma_telemetry:
-    os.environ["ANONYMIZED_TELEMETRY"] = "False"
-
-
-# ============================================================
 import logging
-
-# 配置日志（支持通过环境变量控制级别）
-import os
 import sys
-log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
-log_level_value = getattr(logging, log_level, logging.INFO)
-
-# Inject tenancy context into all log records (trace_id/tenant_id/user_id).
-# This enables remote-backend troubleshooting without requiring every log call
-# to manually include these fields.
-_old_record_factory = logging.getLogRecordFactory()
-
-
-def _tenancy_record_factory(*args, **kwargs):
-    record = _old_record_factory(*args, **kwargs)
-    try:
-        from ah32.tenancy.context import get_tenant_id, get_trace_id, get_user_id
-
-        record.trace_id = (get_trace_id() or "").strip() or "-"
-        record.tenant_id = (get_tenant_id() or "").strip() or "-"
-        record.user_id = (get_user_id() or "").strip() or "-"
-    except Exception:
-        record.trace_id = "-"
-        record.tenant_id = "-"
-        record.user_id = "-"
-    return record
-
-
-logging.setLogRecordFactory(_tenancy_record_factory)
-
-# Ensure UTF-8 output even when launched directly (avoid mojibake in logs).
-_reconfigure_exc_info = None
-try:
-    sys.stdout.reconfigure(encoding="utf-8")
-    sys.stderr.reconfigure(encoding="utf-8")
-except Exception:
-    _reconfigure_exc_info = sys.exc_info()
-
-logging.basicConfig(
-    level=log_level_value,
-    format="%(asctime)s - %(name)s - %(levelname)s - trace=%(trace_id)s tenant=%(tenant_id)s user=%(user_id)s - %(message)s"
-)
-logger = logging.getLogger(__name__)
-if _reconfigure_exc_info:
-    logger.warning("[boot] stdout/stderr reconfigure failed (ignored)", exc_info=_reconfigure_exc_info)
-    _reconfigure_exc_info = None
-
-# 记录日志级别配置（改为DEBUG级别，减少启动噪音）
-logger.debug(f"📊 日志级别配置: {log_level} (环境变量: LOG_LEVEL)")
-
-# 记录热加载配置（改为DEBUG级别，减少启动噪音）
-# 默认禁用，避免长连接/任务执行期间被自动重载打断；需要时可设置 RELOAD=true。
-enable_reload = os.environ.get("RELOAD", "false").lower() in ("true", "1", "yes")
-logger.debug(f"🔥 热加载配置: {'启用' if enable_reload else '禁用'} (环境变量: RELOAD)")
-
-# Reduce third-party HTTP client log noise by default.
-# These libraries can emit extremely verbose DEBUG logs (including full LLM prompts/request payloads)
-# when LOG_LEVEL=DEBUG. Keep them quiet unless explicitly enabled.
-_http_debug = os.environ.get("AH32_HTTP_DEBUG", "").lower() in ("1", "true", "yes")
-if _http_debug:
-    logging.getLogger("httpcore").setLevel(logging.DEBUG)
-    logging.getLogger("httpcore.http11").setLevel(logging.DEBUG)
-    logging.getLogger("httpcore.connection").setLevel(logging.DEBUG)
-    logging.getLogger("httpx").setLevel(logging.DEBUG)
-    logging.getLogger("urllib3.connectionpool").setLevel(logging.DEBUG)
-    logging.getLogger("openai").setLevel(logging.DEBUG)
-    logging.getLogger("openai._base_client").setLevel(logging.DEBUG)
-else:
-    # Keep root/app logs at LOG_LEVEL; only quiet these noisy deps.
-    for _n in (
-        "httpcore",
-        "httpcore.http11",
-        "httpcore.connection",
-        "httpx",
-        "urllib3",
-        "urllib3.connectionpool",
-        "openai",
-        "openai._base_client",
-    ):
-        logging.getLogger(_n).setLevel(logging.WARNING)
-
-# ========== 端口自动清理功能 ==========
+import os
+# ========== Startup Port Cleanup ==========
 def cleanup_port(port: int = 5123):
-    """自动清理被占用的端口"""
+    """Best-effort cleanup for the fixed backend port on Windows."""
+    log = logging.getLogger(__name__)
+    import time
     import socket
     import subprocess
-    import time
 
     def is_port_in_use(port: int) -> bool:
-        """检查端口是否被占用"""
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.settimeout(2)  # 设置超时时间
-                return s.connect_ex(('127.0.0.1', port)) == 0
+                s.settimeout(2)
+                return s.connect_ex(("127.0.0.1", port)) == 0
         except Exception:
-            logger.exception("端口占用检测失败", exc_info=True)
+            log.exception("port availability check failed", exc_info=True)
             return False
 
-    if is_port_in_use(port):
-        logger.info(f"端口 {port} 已被占用，正在清理...")
+    if not is_port_in_use(port):
+        log.info("port %s is available", port)
+        return
 
-        # 仅 Windows 下尝试查找并杀死占用端口的进程（避免在 Linux/macOS 上执行 Windows 命令）
-        if not sys.platform.startswith('win'):
-            logger.warning(f"端口 {port} 已被占用，但当前平台不支持自动清理，请手动释放端口后重试。")
-            return
+    log.info("port %s is in use; trying cleanup", port)
+    if not sys.platform.startswith("win"):
+        log.warning("port %s is busy and automatic cleanup is only supported on Windows", port)
+        return
 
-        # 查找并杀死占用端口的进程
-        try:
-            # Windows下使用 netstat
-            result = subprocess.run(
-                ['netstat', '-ano', '-p', 'tcp'],
-                capture_output=True,
-                text=True,
-                encoding='gbk',  # Windows默认编码
-                errors='ignore'  # 忽略无法解码的字符
-            )
-
-            for line in result.stdout.split('\n'):
-                line = line.strip()
-                if f':{port}' in line and 'LISTENING' in line:
-                    parts = line.split()
-                    if len(parts) >= 5:
-                        pid = parts[-1]
-                        if pid.isdigit():  # 确保PID是数字
-                            try:
-                                logger.info(f"正在杀死进程 PID: {pid}")
-                                subprocess.run(['taskkill', '/F', '/PID', pid], check=False, capture_output=True)
-                                logger.info(f"已尝试杀死进程 {pid}")
-                            except Exception as e:
-                                logger.error(f"杀死进程时出错: {e}")
-                        break
-
-            # 等待端口释放
-            time.sleep(2)
-
-            if is_port_in_use(port):
-                logger.warning(f"警告：端口 {port} 仍然被占用")
-            else:
-                logger.info(f"端口 {port} 已成功释放")
-
-        except Exception as e:
-            logger.error(f"清理端口时出错: {e}")
-    else:
-        logger.info(f"端口 {port} 当前可用")
+    try:
+        result = subprocess.run(
+            ["netstat", "-ano", "-p", "tcp"],
+            capture_output=True,
+            text=True,
+            encoding="gbk",
+            errors="ignore",
+        )
+        for line in result.stdout.splitlines():
+            row = line.strip()
+            if f":{port}" not in row or "LISTENING" not in row:
+                continue
+            parts = row.split()
+            if len(parts) < 5:
+                continue
+            pid = parts[-1]
+            if not pid.isdigit():
+                continue
+            try:
+                log.info("terminating process on port %s pid=%s", port, pid)
+                subprocess.run(["taskkill", "/F", "/PID", pid], check=False, capture_output=True)
+            except Exception as exc:
+                log.error("failed to terminate pid=%s on port %s: %s", pid, port, exc)
+            break
+        time.sleep(2)
+        if is_port_in_use(port):
+            log.warning("port %s is still busy after cleanup", port)
+        else:
+            log.info("port %s released", port)
+    except Exception as exc:
+        log.error("cleanup_port failed for %s: %s", port, exc)
 
 
-# 启动前自动清理端口
+# Run once before app startup.
 cleanup_port(5123)
 # ============================================================
 import uuid
@@ -219,7 +77,7 @@ from fastapi.security import APIKeyHeader
 from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 
-# 修改导入方式为绝对导入
+# Load core settings after environment bootstrap.
 from ah32.config import settings
 from ah32.runtime_paths import runtime_root
 from ah32.knowledge.chroma_utils import make_collection_name
@@ -227,10 +85,10 @@ from ah32.knowledge.embeddings import resolve_embedding, check_embedding_model_r
 from ah32.knowledge.store import LocalVectorStore
 from ah32.services.models import load_llm
 
-from ah32.server.agentic_chat_api import router as agentic_chat_router  # Agentic聊天API（唯一用户入口）
-from ah32.server.document_monitor import router as document_monitor_router  # 文档同步API
-from ah32.server.rag_api import router as rag_router  # RAG知识库API
-from ah32.server.memory_api import router as memory_router  # 记忆写入/读取API
+from ah32.server.agentic_chat_api import router as agentic_chat_router  # Agentic chat API
+from ah32.server.document_monitor import router as document_monitor_router  # Document sync API
+from ah32.server.rag_api import router as rag_router  # RAG鐭ヨ瘑搴揂PI
+from ah32.server.memory_api import router as memory_router  # 璁板繂鍐欏叆/璇诲彇API
 from ah32.server.metrics_api import router as metrics_router  # Metrics export API
 from ah32.server.audit_api import router as audit_router  # Audit API
 from ah32.server.runtime_config_api import router as runtime_config_router  # Frontend-safe runtime flags
@@ -241,7 +99,7 @@ from ah32.server.mm_api import router as mm_router  # Multimodal provider APIs (
 from ah32.server.auth_api import router as auth_router  # JWT token issuance (v1)
 from ah32.server.tenant_user_api import router as tenant_user_router  # Tenant user allowlist (minimal)
 
-from ah32.agents.agentic_coordinator import get_coordinator  # 阿蛤（AH32）协调器
+from ah32.agents.agentic_coordinator import get_coordinator  # 闃胯洡锛圓H32锛夊崗璋冨櫒
 from ah32.services.tasks import ConversationRepository, TaskRepository
 
 # Note: avoid re-configuring logging handlers here.
@@ -255,12 +113,13 @@ logging.getLogger("langsmith").setLevel(_langsmith_level_value)
 logging.getLogger("langsmith.client").setLevel(_langsmith_level_value)
 
 logger = logging.getLogger(__name__)
+log = logger
 
-# ========== Lifespan事件管理 ==========
+# ========== Lifespan浜嬩欢绠＄悊 ==========
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """应用生命周期管理"""
-    logger.info("正在启动Ah32服务...")
+    """搴旂敤鐢熷懡鍛ㄦ湡绠＄悊"""
+    log.info("姝ｅ湪鍚姩Ah32鏈嶅姟...")
     
     try:
         # Telemetry (ah32.telemetry.v1): best-effort, non-blocking.
@@ -273,26 +132,26 @@ async def lifespan(app: FastAPI):
             tsvc.start()
             try:
                 caps = tsvc.capabilities().to_dict()
-                logger.info(f"[telemetry] enabled={caps.get('mode') != 'off'} caps={caps}")
+                log.info(f"[telemetry] enabled={caps.get('mode') != 'off'} caps={caps}")
             except Exception as e:
-                logger.warning(f"[telemetry] caps log failed: {e}", exc_info=True)
+                log.warning(f"[telemetry] caps log failed: {e}", exc_info=True)
         except Exception as e:
-            logger.error(f"[telemetry] init failed: {e}", exc_info=True)
+            log.error(f"[telemetry] init failed: {e}", exc_info=True)
             try:
                 from ah32.telemetry import set_telemetry
 
                 set_telemetry(None)
             except Exception:
-                logger.error("[telemetry] disable failed", exc_info=True)
+                log.error("[telemetry] disable failed", exc_info=True)
 
-        # 验证安全配置
+        # 楠岃瘉瀹夊叏閰嶇疆
         security_report = settings.check_security_config()
         if not security_report["secure"]:
-            logger.warning(f"安全配置检查结果 - 评分: {security_report['security_score']}/100")
+            log.warning(f"瀹夊叏閰嶇疆妫€鏌ョ粨鏋?- 璇勫垎: {security_report['security_score']}/100")
             for warning in security_report["warnings"]:
-                logger.warning(f"安全警告 [{warning['level']}]: {warning['message']}")
+                log.warning(f"瀹夊叏璀﹀憡 [{warning['level']}]: {warning['message']}")
             for error in security_report["errors"]:
-                logger.error(f"安全错误 [{error['level']}]: {error['message']}")
+                log.error(f"瀹夊叏閿欒 [{error['level']}]: {error['message']}")
 
         # Seed demo tenants + users (R&D convenience).
         # This makes the on-disk JSON formats visible and enables quick manual testing.
@@ -367,9 +226,9 @@ async def lifespan(app: FastAPI):
                     keyring_obj["updated_at"] = int(time.time())
                     keyring_obj["tenants"] = tenants_obj
                     keyring_path.write_text(json.dumps(keyring_obj, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-                    logger.info("[seed] ensured tenant keyring: %s tenants=%s", keyring_path, len(tenants_obj))
+                    log.info("[seed] ensured tenant keyring: %s tenants=%s", keyring_path, len(tenants_obj))
             except Exception as e:
-                logger.error("[seed] ensure keyring failed path=%s err=%s", keyring_path, e, exc_info=True)
+                log.error("[seed] ensure keyring failed path=%s err=%s", keyring_path, e, exc_info=True)
 
             # 2) Tenant user allowlist seed (only triggers when policy file exists)
             reg = get_tenant_user_registry()
@@ -385,32 +244,31 @@ async def lifespan(app: FastAPI):
                     for i in range(1, seed_user_count + 1):
                         uid = f"{seed_user_prefix}{i}"
                         reg.upsert_user(tid, uid, enabled=True, note=note)
-                    logger.info("[seed] ensured tenant users policy (enforced): tenant=%s users=%s", tid, seed_user_count)
+                    log.info("[seed] ensured tenant users policy (enforced): tenant=%s users=%s", tid, seed_user_count)
                 except Exception as e:
-                    logger.error("[seed] ensure users policy failed tenant=%s err=%s", tid, e, exc_info=True)
+                    log.error("[seed] ensure users policy failed tenant=%s err=%s", tid, e, exc_info=True)
         except Exception:
-            logger.error("[seed] demo tenant/user seed failed", exc_info=True)
+            log.error("[seed] demo tenant/user seed failed", exc_info=True)
         
-        # 初始化服务
-        # Embedding preflight: fail fast in offline mode if the local cache is incomplete.
+        # 鍒濆鍖栨湇鍔?        # Embedding preflight: fail fast in offline mode if the local cache is incomplete.
         offline = os.environ.get("HF_HUB_OFFLINE") == "1" or os.environ.get("TRANSFORMERS_OFFLINE") == "1"
         ok, msg = check_embedding_model_ready(settings)
         if ok:
-            logger.info(f"[embedding self-check] {msg}")
+            log.info(f"[embedding self-check] {msg}")
         else:
             if offline:
-                logger.error(f"[embedding self-check] {msg}")
+                log.error(f"[embedding self-check] {msg}")
                 raise RuntimeError(msg)
-            logger.warning(f"[embedding self-check] {msg}")
+            log.warning(f"[embedding self-check] {msg}")
 
-        app.state._embedding = resolve_embedding(settings)  # 修复调用参数
+        app.state._embedding = resolve_embedding(settings)  # 淇璋冪敤鍙傛暟
 
         # Allow the service to start even if the LLM key is not configured yet.
         # The client can set DEEPSEEK_API_KEY after installation and restart the backend.
         try:
             app.state._llm = load_llm(settings)
         except ValueError as e:
-            logger.warning(f"[llm] not configured: {e}")
+            log.warning(f"[llm] not configured: {e}")
             app.state._llm = None
 
         embedding_dim = None
@@ -418,7 +276,7 @@ async def lifespan(app: FastAPI):
             # One-time probe; avoids Chroma dimension mismatch when switching models.
             embedding_dim = len(app.state._embedding.embed_query("dimension_probe"))
         except Exception as e:
-            logger.warning(f"[embedding] dimension probe failed (will use model-only collection name): {e}")
+            log.warning(f"[embedding] dimension probe failed (will use model-only collection name): {e}")
 
         # Tenant-scoped vector stores (RAG / skills routing / memory).
         try:
@@ -431,7 +289,7 @@ async def lifespan(app: FastAPI):
                 embedding_dim=embedding_dim,
             )
         except Exception as e:
-            logger.error("[tenant] init TenantVectorStoreRegistry failed: %s", e, exc_info=True)
+            log.error("[tenant] init TenantVectorStoreRegistry failed: %s", e, exc_info=True)
             app.state._tenant_vector_stores = None
 
         # Tenant-scoped skills registries (prompt-only; server-managed).
@@ -447,7 +305,7 @@ async def lifespan(app: FastAPI):
             # Convenience pointer for legacy call-sites (default tenant only).
             app.state._skills_registry = app.state._tenant_skills_registry.get(default_tenant_id)
         except Exception as e:
-            logger.error("[skills] init TenantSkillsRegistryManager failed: %s", e, exc_info=True)
+            log.error("[skills] init TenantSkillsRegistryManager failed: %s", e, exc_info=True)
             app.state._tenant_skills_registry = None
             app.state._skills_registry = None
 
@@ -489,9 +347,9 @@ async def lifespan(app: FastAPI):
                 ):
                     app.state._skills_registry.set_routing_vector_store(app.state._skills_vector_store)
             except Exception as e:
-                logger.warning(f"[skills] attach routing vector store failed (ignored): {e}")
+                log.warning(f"[skills] attach routing vector store failed (ignored): {e}")
         except Exception as e:
-            logger.warning(f"[skills] init routing vector store failed (ignored): {e}")
+            log.warning(f"[skills] init routing vector store failed (ignored): {e}")
 
         if getattr(app.state, "_tenant_vector_stores", None) is not None:
             app.state._vector_store = app.state._tenant_vector_stores.get_rag_store(default_tenant_id)
@@ -507,21 +365,24 @@ async def lifespan(app: FastAPI):
                     },
                 },
             )
-        # 初始化阿蛤（AH32）协调器并传递向量存储
-        from ah32.agents.agentic_coordinator import get_coordinator
-        get_coordinator(app.state._vector_store)
+        # Initialize the coordinator only when an LLM is available.
+        if app.state._llm is not None:
+            from ah32.agents.agentic_coordinator import get_coordinator
+            get_coordinator(app.state._vector_store)
+        else:
+            log.warning('[llm] coordinator init skipped at startup because LLM is not configured')
 
         app.state._tasks = TaskRepository(settings.tasks_store_path)
         app.state._conversations = ConversationRepository(settings.conversation_store_path)
         
-        logger.info("Ah32服务启动完成")
+        log.info("Ah32鏈嶅姟鍚姩瀹屾垚")
         yield
         
     except Exception as e:
-        logger.error(f"Ah32服务启动失败: {e}", exc_info=True)
+        log.error(f"Ah32鏈嶅姟鍚姩澶辫触: {e}", exc_info=True)
         raise
     finally:
-        logger.info("正在关闭Ah32服务...")
+        log.info("姝ｅ湪鍏抽棴Ah32鏈嶅姟...")
         # Stop telemetry last so shutdown events can still be flushed.
         try:
             from ah32.telemetry import get_telemetry, set_telemetry
@@ -531,10 +392,10 @@ async def lifespan(app: FastAPI):
                 tsvc.stop()
             set_telemetry(None)
         except Exception as e:
-            logger.error(f"[telemetry] stop failed: {e}", exc_info=True)
+            log.error(f"[telemetry] stop failed: {e}", exc_info=True)
 
-        # 在这里可以添加清理资源的代码
-        logger.info("Ah32服务已关闭")
+        # 鍦ㄨ繖閲屽彲浠ユ坊鍔犳竻鐞嗚祫婧愮殑浠ｇ爜
+        log.info("Ah32 service stopped")
 
 
 class UTF8JSONResponse(JSONResponse):
@@ -568,10 +429,10 @@ def _resolve_wps_plugin_dir() -> str | None:
                 if p.exists() and p.is_dir() and (p / "manifest.xml").exists():
                     return str(p)
             except Exception:
-                logger.debug("[wps-plugin] probe dir failed (ignored): %s", p, exc_info=True)
+                log.debug("[wps-plugin] probe dir failed (ignored): %s", p, exc_info=True)
                 continue
     except Exception:
-        logger.warning("[wps-plugin] resolve dir failed (ignored)", exc_info=True)
+        log.warning("[wps-plugin] resolve dir failed (ignored)", exc_info=True)
         return None
     return None
 
@@ -580,20 +441,18 @@ def _resolve_wps_plugin_dir() -> str | None:
 _wps_plugin_dir = _resolve_wps_plugin_dir()
 if _wps_plugin_dir:
     app.mount("/wps-plugin", StaticFiles(directory=_wps_plugin_dir, html=True), name="wps-plugin")
-# ========== 启动全局服务 ==========
-# 注意：环境感知功能已移除
+# ========== 鍚姩鍏ㄥ眬鏈嶅姟 ==========
+# 娉ㄦ剰锛氱幆澧冩劅鐭ュ姛鑳藉凡绉婚櫎
 
-# 添加CORS中间件 - 最大权限配置
+# Add permissive CORS for the desktop taskpane/dev environment.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 允许所有来源
-    allow_credentials=True,  # 允许凭据
-    allow_methods=["*"],  # 允许所有方法
-    allow_headers=["*"],  # 允许所有请求头
-    expose_headers=["*"],  # 暴露所有响应头
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["*"],
 )
-
-
 @app.middleware("http")
 async def _trace_and_tenancy(request: Request, call_next):
     """Attach trace_id and enforce tenant/user/auth context for /agentic/* endpoints."""
@@ -627,7 +486,7 @@ async def _trace_and_tenancy(request: Request, call_next):
                 content={"ok": False, "error": getattr(e, "detail", str(e)), "trace_id": trace_id},
             )
         except Exception as e:
-            logger.error("[middleware] agentic request failed: %s", e, exc_info=True)
+            log.error("[middleware] agentic request failed: %s", e, exc_info=True)
             return JSONResponse(status_code=500, content={"ok": False, "error": str(e), "trace_id": trace_id})
     else:
         response = await call_next(request)
@@ -638,12 +497,12 @@ async def _trace_and_tenancy(request: Request, call_next):
         pass
     return response
 
-# 注册路由 - 纯Agentic模式
+# 娉ㄥ唽璺敱 - 绾疉gentic妯″紡
 app.include_router(auth_router)  # JWT token issuance
-app.include_router(agentic_chat_router)  # 唯一用户入口
-app.include_router(document_monitor_router)  # 文档同步API
-app.include_router(rag_router)  # RAG知识库API
-app.include_router(memory_router)  # 用户确认式记忆写入/读取
+app.include_router(agentic_chat_router)  # 鍞竴鐢ㄦ埛鍏ュ彛
+app.include_router(document_monitor_router)  # 鏂囨。鍚屾API
+app.include_router(rag_router)  # RAG鐭ヨ瘑搴揂PI
+app.include_router(memory_router)  # 鐢ㄦ埛纭寮忚蹇嗗啓鍏?璇诲彇
 app.include_router(metrics_router)  # Metrics export
 app.include_router(audit_router)  # Audit export
 app.include_router(runtime_config_router)  # Frontend-safe runtime flags
@@ -664,14 +523,13 @@ if settings.enable_dev_routes:
     app.include_router(skills_dev_router)
 
 
-# 安全配置
+# 瀹夊叏閰嶇疆
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 authorization_header = APIKeyHeader(name="Authorization", auto_error=False)
 
-
 @app.get("/health")
 async def health_check():
-    """健康检查端点"""
+    """Health endpoint."""
     return {
         "status": "healthy",
         "version": "0.1.0",
@@ -684,33 +542,31 @@ async def health_check():
 def run() -> None:
     import uvicorn
 
-    # 🔥 热加载配置：默认禁用（更稳定）；如需开启，设置环境变量 RELOAD=true
     enable_reload = os.environ.get("RELOAD", "false").lower() in ("true", "1", "yes")
-
-    # 🔥 优化：指定热加载监控目录，排除logs目录避免监控噪音
     reload_dirs = None
     if enable_reload:
         from pathlib import Path
-        # 排除logs和storage等目录，减少监控噪音
         current_dir = Path.cwd()
-        reload_dirs = [str(current_dir / "src")]  # 只监控src目录
+        reload_dirs = [str(current_dir / "src")]
 
     uvicorn.run(
         "ah32.server.main:app",
         host=settings.server_host,
         port=settings.server_port,
         reload=enable_reload,
-        reload_dirs=reload_dirs,  # 指定监控目录
-        # 🚀 HTTP超时配置 - 防止客户端断开连接
-        timeout_keep_alive=1800,  # 30分钟keep-alive超时 - 防止断开
-        timeout_graceful_shutdown=60,  # 优雅关闭超时（增加到60秒）
-        timeout_worker_healthcheck=1800,  # Worker健康检查超时（增加到30分钟）
-        lifespan="on",  # 显式启用生命周期管理
+        reload_dirs=reload_dirs,
+        timeout_keep_alive=1800,
+        timeout_graceful_shutdown=60,
+        timeout_worker_healthcheck=1800,
+        lifespan="on",
         loop="auto",
         http="auto",
-        access_log=False  # 禁用访问日志以减少噪音
+        access_log=False,
     )
 
 
 if __name__ == "__main__":
     run()
+
+
+

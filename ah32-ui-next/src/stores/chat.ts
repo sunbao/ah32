@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 聊天状态管理
  */
 import {defineStore} from 'pinia'
@@ -14,6 +14,7 @@ import { chatSessionStore } from '@/services/chat-session-store'
 import {useSessionStore} from '@/stores/session'
 import {logger} from '@/utils/logger'
 import {getRuntimeConfig} from '@/utils/runtime-config'
+import { parseJsonRelaxed } from '@/utils/relaxed-json'
 import { getClientSkillsCatalog } from '@/services/skills-catalog'
 import { routeClientSkillSelection } from '@/services/skill-router'
 
@@ -174,6 +175,7 @@ export const useChatStore = defineStore('chat', () => {
     const isSending = computed(() => getRuntime(currentSessionId.value).isSending)
     const streamPhase = computed(() => getRuntime(currentSessionId.value).streamPhase)
     const streamElapsedMs = computed(() => getRuntime(currentSessionId.value).streamElapsedMs)
+    const turnFirstTokenMs = computed(() => getRuntime(currentSessionId.value).turnFirstTokenMs)
     const lastTokenUsage = computed(() => getRuntime(currentSessionId.value).lastTokenUsage)
     const selectedSkills = computed(() => getRuntime(currentSessionId.value).selectedSkills)
     const selectedSkillsHint = computed(() => getRuntime(currentSessionId.value).selectedSkillsHint)
@@ -775,6 +777,19 @@ export const useChatStore = defineStore('chat', () => {
     // localStorage is small + synchronous in WPS webviews; keep its fallback payload compact.
     const MAX_STORED_MESSAGES_LOCAL = 200
     const MAX_STORED_CHARS_LOCAL = 300_000
+    const MAX_STORED_MESSAGES_BENCH_LIGHT = 36
+    const MAX_STORED_CHARS_BENCH_LIGHT = 60_000
+    const PERSIST_DEBOUNCE_DEFAULT_MS = 350
+    const PERSIST_DEBOUNCE_BENCH_MS = 1800
+    const sessionPersistPolicy = ref<Record<string, 'normal' | 'light'>>({})
+    const getPersistPolicy = (sid?: string | null): 'normal' | 'light' => {
+        const s = normalizeSessionId(sid)
+        return sessionPersistPolicy.value[s] === 'light' ? 'light' : 'normal'
+    }
+    const setPersistPolicy = (sid: string, policy: 'normal' | 'light') => {
+        const s = normalizeSessionId(sid)
+        sessionPersistPolicy.value[s] = policy
+    }
 
     type PersistedMessage = Omit<Message, 'timestamp'> & { timestamp: string }
     type PersistedChatSession = {
@@ -983,8 +998,14 @@ export const useChatStore = defineStore('chat', () => {
         }
     }
 
-    const normalizeMessagesForLocalStorage = (source: Message[]): PersistedMessage[] => {
-        return normalizeMessagesForStorage(source, { maxMessages: MAX_STORED_MESSAGES_LOCAL, maxChars: MAX_STORED_CHARS_LOCAL })
+    const normalizeMessagesForLocalStorage = (
+        source: Message[],
+        opts?: { maxMessages?: number; maxChars?: number }
+    ): PersistedMessage[] => {
+        return normalizeMessagesForStorage(source, {
+            maxMessages: Number(opts?.maxMessages || 0) || MAX_STORED_MESSAGES_LOCAL,
+            maxChars: Number(opts?.maxChars || 0) || MAX_STORED_CHARS_LOCAL
+        })
     }
 
     // Persist a specific session bucket even when it's not the currently displayed one.
@@ -994,6 +1015,9 @@ export const useChatStore = defineStore('chat', () => {
         try {
             const s = normalizeSessionId(sid)
             const active = normalizeSessionId(currentSessionId.value)
+            const isBenchLight = getPersistPolicy(s) === 'light'
+            const maxMessages = isBenchLight ? MAX_STORED_MESSAGES_BENCH_LIGHT : MAX_STORED_MESSAGES_LOCAL
+            const maxChars = isBenchLight ? MAX_STORED_CHARS_BENCH_LIGHT : MAX_STORED_CHARS_LOCAL
 
             const inferredDocKey = (() => {
                 try {
@@ -1015,8 +1039,8 @@ export const useChatStore = defineStore('chat', () => {
                 docKey: inferredDocKey,
                 // This path is hit during streaming; keep it bounded to avoid WPS webviews triggering reloads.
                 messages: normalizeMessagesForStorage(bucketMessages, {
-                    maxMessages: MAX_STORED_MESSAGES_LOCAL,
-                    maxChars: MAX_STORED_CHARS_LOCAL
+                    maxMessages,
+                    maxChars
                 }),
                 lastUserQuery: (s === active ? lastUserQuery.value : undefined),
                 lastMacroBlockId: (s === active ? lastMacroBlockId.value : undefined),
@@ -1031,7 +1055,7 @@ export const useChatStore = defineStore('chat', () => {
                         if (typeof localStorage !== 'undefined') {
                             localStorage.setItem(
                                 sessionStorageKey(s),
-                                JSON.stringify({ ...payload, messages: normalizeMessagesForLocalStorage(bucketMessages) })
+                                JSON.stringify({ ...payload, messages: normalizeMessagesForLocalStorage(bucketMessages, { maxMessages, maxChars }) })
                             )
                         }
                     } catch (e2) {
@@ -1043,7 +1067,7 @@ export const useChatStore = defineStore('chat', () => {
                     if (typeof localStorage !== 'undefined') {
                         localStorage.setItem(
                             sessionStorageKey(s),
-                            JSON.stringify({ ...payload, messages: normalizeMessagesForLocalStorage(bucketMessages) })
+                            JSON.stringify({ ...payload, messages: normalizeMessagesForLocalStorage(bucketMessages, { maxMessages, maxChars }) })
                         )
                     }
                 } catch (e2) {
@@ -1061,10 +1085,11 @@ export const useChatStore = defineStore('chat', () => {
             const s = normalizeSessionId(sid)
             const prev = persistBucketTimers.get(s)
             if (prev) clearTimeout(prev)
+            const delay = getPersistPolicy(s) === 'light' ? PERSIST_DEBOUNCE_BENCH_MS : PERSIST_DEBOUNCE_DEFAULT_MS
             const t = setTimeout(() => {
                 persistBucketTimers.delete(s)
                 persistSessionBucketById(s, bucketMessages)
-            }, 350)
+            }, delay)
             persistBucketTimers.set(s, t)
         } catch (e) {
           ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/stores/chat.ts', e)
@@ -1081,10 +1106,11 @@ export const useChatStore = defineStore('chat', () => {
     let persistTimer: ReturnType<typeof setTimeout> | null = null
     const schedulePersistState = () => {
         if (persistTimer) clearTimeout(persistTimer)
+        const delay = getPersistPolicy(currentSessionId.value) === 'light' ? PERSIST_DEBOUNCE_BENCH_MS : PERSIST_DEBOUNCE_DEFAULT_MS
         persistTimer = setTimeout(() => {
             persistTimer = null
             persistState()
-        }, 350)
+        }, delay)
     }
 
     const restoreSessionBucket = (sid: string) => {
@@ -1381,7 +1407,7 @@ export const useChatStore = defineStore('chat', () => {
     watch(currentDocKey, schedulePersistState)
     watch(isSending, (sending, prevSending) => {
         // If user switched documents while a message was streaming, re-sync buckets after send completes.
-        if (prevSending && !sending) scheduleSyncSessionToActiveDocument()
+        if (prevSending && !sending && !isAutoSessionSyncSuspended()) scheduleSyncSessionToActiveDocument()
     })
 
     const isMacroMessageExecuted = (messageId: string): boolean => {
@@ -2054,9 +2080,30 @@ export const useChatStore = defineStore('chat', () => {
 
     let docSyncTimer: any = null
     let removeDocChangeListener: (() => void) | null = null
+    const autoSessionSyncSuspendCount = ref(0)
+
+    const suspendAutoSessionSync = (holdMs: number = 0) => {
+        autoSessionSyncSuspendCount.value += 1
+        let released = false
+        return () => {
+            if (released) return
+            released = true
+            const release = () => {
+                autoSessionSyncSuspendCount.value = Math.max(0, Number(autoSessionSyncSuspendCount.value || 0) - 1)
+            }
+            if (holdMs > 0) {
+                window.setTimeout(release, holdMs)
+                return
+            }
+            release()
+        }
+    }
+
+    const isAutoSessionSyncSuspended = () => Number(autoSessionSyncSuspendCount.value || 0) > 0
 
     const scheduleSyncSessionToActiveDocument = () => {
         try {
+            if (isAutoSessionSyncSuspended()) return
             if (docSyncTimer) clearTimeout(docSyncTimer)
             docSyncTimer = setTimeout(() => {
                 syncSessionToActiveDocument().catch((e) => { (globalThis as any).__ah32_reportError?.('ah32-ui-next/src/stores/chat.ts', e) })
@@ -2377,6 +2424,14 @@ export const useChatStore = defineStore('chat', () => {
     const switchToSession = async (sessionId: string, opts?: { bindToActiveDocument?: boolean }) => {
         const doc = opts?.bindToActiveDocument ? getActiveDocumentMeta() : null
         await switchToSessionBucket(sessionId, doc)
+        try {
+            if (doc?.docKey) {
+                docKeyToSessionId.value[String(doc.docKey || '').trim()] = normalizeSessionId(sessionId)
+                persistIndex()
+            }
+        } catch (e) {
+            ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/stores/chat.ts', e)
+        }
     }
 
     const syncSessionToActiveDocument = async () => {
@@ -2440,7 +2495,7 @@ export const useChatStore = defineStore('chat', () => {
 
             removeDocChangeListener = wpsBridge.addDocumentChangeListener((docs) => {
                 prewarmSessionsForDocs(docs as any).catch((e) => { (globalThis as any).__ah32_reportError?.('ah32-ui-next/src/stores/chat.ts', e) })
-                scheduleSyncSessionToActiveDocument()
+                if (!isAutoSessionSyncSuspended()) scheduleSyncSessionToActiveDocument()
             })
 
             // First sync after reload so buckets match the real active document.
@@ -2558,8 +2613,14 @@ export const useChatStore = defineStore('chat', () => {
                     ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/stores/chat.ts', e)
                 }
 
-                try {
-                    const parsed = JSON.parse(text)
+                const direct = parseJsonRelaxed(text, { allowRepair: true })
+                if (direct.ok) {
+                    const parsed = direct.value
+                    if (direct.repaired) {
+                        // This is the exact failure mode behind:
+                        // `Bad control character in string literal in JSON at position ...`
+                        logger.debug('[MacroQueue] parsePlanCandidate repaired JSON control chars (direct)', { bytes: text.length })
+                    }
                     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
                         const schemaVersion = String(
                             (parsed as any).schema_version
@@ -2572,16 +2633,21 @@ export const useChatStore = defineStore('chat', () => {
                             return parsed
                         }
                     }
-                } catch (e) {
+                } else {
                     // Expected: most fenced blocks are not plans. Keep it debug-only and do not crash.
-                    logger.debug('[MacroQueue] parsePlanCandidate direct JSON parse failed', e)
+                    logger.debug('[MacroQueue] parsePlanCandidate direct JSON parse failed', direct.error)
                 }
 
                 const firstBrace = text.indexOf('{')
                 const lastBrace = text.lastIndexOf('}')
                 if (firstBrace < 0 || lastBrace <= firstBrace) return null
-                try {
-                    const parsed = JSON.parse(text.slice(firstBrace, lastBrace + 1))
+                const sliced = text.slice(firstBrace, lastBrace + 1)
+                const extracted = parseJsonRelaxed(sliced, { allowRepair: true })
+                if (extracted.ok) {
+                    const parsed = extracted.value
+                    if (extracted.repaired) {
+                        logger.debug('[MacroQueue] parsePlanCandidate repaired JSON control chars (brace-extract)', { bytes: sliced.length })
+                    }
                     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
                         const schemaVersion = String(
                             (parsed as any).schema_version
@@ -2594,8 +2660,8 @@ export const useChatStore = defineStore('chat', () => {
                             return parsed
                         }
                     }
-                } catch (e) {
-                    logger.debug('[MacroQueue] parsePlanCandidate brace-extract parse failed', e)
+                } else {
+                    logger.debug('[MacroQueue] parsePlanCandidate brace-extract parse failed', extracted.error)
                 }
                 return null
             } catch (e) {
@@ -3201,7 +3267,16 @@ export const useChatStore = defineStore('chat', () => {
 
                     try {
                         let plan: any = null
-                        try { plan = JSON.parse(b.code) } catch (e) { (globalThis as any).__ah32_reportError?.('ah32-ui-next/src/stores/chat.ts', e); plan = null }
+                        try {
+                            const parsed = parseJsonRelaxed(String(b.code || ''), { allowRepair: true })
+                            plan = parsed.ok ? parsed.value : null
+                            if (!parsed.ok) {
+                                logger.debug('[MacroQueue] invalid_plan_json parse failed', parsed.error)
+                            }
+                        } catch (e) {
+                            ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/stores/chat.ts', e)
+                            plan = null
+                        }
                         if (!plan) {
                             setMacroBlockRun(b.blockId, { status: 'error', messageId: job.messageId, error: 'invalid_plan_json' })
                             try { logToBackend?.(`[MacroQueue] invalid_plan_json block=${b.blockId} bytes=${String(b.code || '').length}`) } catch (e) { (globalThis as any).__ah32_reportError?.('ah32-ui-next/src/stores/chat.ts', e) }
@@ -3464,6 +3539,10 @@ export const useChatStore = defineStore('chat', () => {
         }
 
         const sid = normalizeSessionId(finalSessionId)
+        const isBenchLightPersist = !!options?.frontendContextPatch?.bench
+        const keepBenchSessionPinned = isBenchLightPersist && !!sessionId
+        const releaseAutoSessionSync = keepBenchSessionPinned ? suspendAutoSessionSync(1200) : () => {}
+        setPersistPolicy(sid, isBenchLightPersist ? 'light' : 'normal')
 
         const rt = getRuntime(sid)
         // Only block the SAME session; other documents can continue chatting concurrently.
@@ -3920,14 +3999,19 @@ export const useChatStore = defineStore('chat', () => {
             const hostAppForRouting = String(docContext?.hostApp || wpsBridge.getHostApp() || '')
             let clientSkillSelection: any = null
             try {
-                const catalog = await getClientSkillsCatalog()
-                const lastPrimary = rt.selectedSkills && rt.selectedSkills.length > 0 ? String(rt.selectedSkills[0]?.id || '') : ''
-                clientSkillSelection = routeClientSkillSelection({
-                    message: backendContent,
-                    hostApp: hostAppForRouting,
-                    catalog,
-                    lastPrimarySkillId: lastPrimary || null,
-                })
+                const patchedSelection = (options?.frontendContextPatch as any)?.client_skill_selection
+                if (patchedSelection && typeof patchedSelection === 'object') {
+                    clientSkillSelection = { ...(patchedSelection as any) }
+                } else {
+                    const catalog = await getClientSkillsCatalog()
+                    const lastPrimary = rt.selectedSkills && rt.selectedSkills.length > 0 ? String(rt.selectedSkills[0]?.id || '') : ''
+                    clientSkillSelection = routeClientSkillSelection({
+                        message: backendContent,
+                        hostApp: hostAppForRouting,
+                        catalog,
+                        lastPrimarySkillId: lastPrimary || null,
+                    })
+                }
             } catch (e) {
               ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/stores/chat.ts', e)
                 clientSkillSelection = null
@@ -4467,6 +4551,18 @@ export const useChatStore = defineStore('chat', () => {
                                         wantWriteback = null
                                     }
 
+                                    try {
+                                        const meta: any = (lastMsg as any)?.metadata || {}
+                                        if (wantWriteback !== null) meta.wantWriteback = wantWriteback
+                                        const traceId = String((data as any)?.trace_id || (data as any)?.traceId || '').trim()
+                                        if (traceId) meta.traceId = traceId
+                                        const tenantId = String((data as any)?.tenant_id || (data as any)?.tenantId || '').trim()
+                                        if (tenantId) meta.tenantId = tenantId
+                                        ;(lastMsg as any).metadata = meta
+                                    } catch (e) {
+                                        ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/stores/chat.ts', e)
+                                    }
+
                                     if (wantWriteback !== false) {
                                         let hasPlanBlocks = false
                                         try {
@@ -4596,6 +4692,21 @@ export const useChatStore = defineStore('chat', () => {
             rt.abortController = null
             // Keep phase/elapsed visible, but stop the live timer marker.
             rt.streamStartedAt = 0
+            try {
+                if (keepBenchSessionPinned) {
+                    currentSessionId.value = sendSid
+                    messages.value = getBucketMessages(sendSid)
+                    syncLastMacroBlockIdForSession(sendSid)
+                }
+            } catch (e) {
+                ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/stores/chat.ts', e)
+            }
+            try {
+                releaseAutoSessionSync()
+            } catch (e) {
+                ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/stores/chat.ts', e)
+            }
+            if (!isBenchLightPersist) setPersistPolicy(sendSid, 'normal')
         }
     }
 
@@ -4656,6 +4767,7 @@ export const useChatStore = defineStore('chat', () => {
         isSending,
         streamPhase,
         streamElapsedMs,
+        turnFirstTokenMs,
         currentSessionId,
         currentDocKey,
         docKeyToSessionId,

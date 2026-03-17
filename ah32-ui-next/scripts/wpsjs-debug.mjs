@@ -58,6 +58,38 @@ function normalizeHost(raw) {
 const target = normalizeHost(process.argv[2]) || 'wps'
 const addonTypeForWpsjs = target === 'all' ? 'wps' : target
 
+function stripOptionalQuotes(raw) {
+  const text = String(raw || '').trim()
+  if (!text) return ''
+  if ((text.startsWith('"') && text.endsWith('"')) || (text.startsWith("'") && text.endsWith("'"))) {
+    return text.slice(1, -1)
+  }
+  return text
+}
+
+function loadLocalEnvFile(filename) {
+  try {
+    const filePath = path.resolve(process.cwd(), filename)
+    if (!fs.existsSync(filePath)) return
+    const lines = fs.readFileSync(filePath, 'utf8').split(/\r?\n/)
+    for (const line of lines) {
+      const text = String(line || '').trim()
+      if (!text || text.startsWith('#')) continue
+      const idx = text.indexOf('=')
+      if (idx <= 0) continue
+      const key = String(text.slice(0, idx) || '').trim()
+      if (!key || process.env[key] !== undefined) continue
+      const value = stripOptionalQuotes(text.slice(idx + 1))
+      process.env[key] = value
+    }
+  } catch (err) {
+    console.warn(`[wpsjs-debug] loadLocalEnvFile failed: ${filename}`, err)
+  }
+}
+
+loadLocalEnvFile('.env')
+loadLocalEnvFile('.env.local')
+
 const pkgPath = path.resolve(process.cwd(), 'package.json')
 const originalText = fs.readFileSync(pkgPath, 'utf8')
 const originalJson = JSON.parse(originalText)
@@ -569,7 +601,7 @@ const manifestName = readManifestName()
 const defaultName = String(manifestName || 'Ah32').trim() || 'Ah32'
 const addinId = String(process.env.BID_WPSJS_ADDIN_ID || process.env.BID_WPSJS_NAME || defaultName).trim() || defaultName
 const devUrl = resolveDevUrl()
-writeRuntimeConfig(devUrl)
+writeRuntimeConfig(String(process.env.BID_WPSJS_URL || devUrl || '').trim() || devUrl)
 
 // Ensure wpsjs uses the correct addin id when it patches publish.xml.
 setAddonType(addonTypeForWpsjs, addinId)
