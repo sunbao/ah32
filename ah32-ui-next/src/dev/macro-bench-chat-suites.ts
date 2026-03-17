@@ -1315,7 +1315,9 @@ const STORIES: ChatBenchStory[] = [
         id: 't1_rules',
         name: '生成排版规范+检查清单块',
         artifactId: 'bench_doc_formatter_delivery',
+        forceSkillId: 'doc-formatter',
         asserts: [
+          { type: 'skills_selected_includes', skillId: 'doc-formatter', points: 2 },
           { type: 'writer_text_contains', text: '排版规范' },
           { type: 'writer_text_contains', text: '检查清单' },
           { type: 'writer_block_backup_exists' },
@@ -1330,7 +1332,7 @@ const STORIES: ChatBenchStory[] = [
         ],
         query:
           '基于本文档内容，生成“排版规范/检查清单/模板段落”块并写回文末（upsert_block）。\n' +
-          '要求：不要尝试全篇改样式，只做块级交付；只输出可执行 Plan JSON（schema_version="ah32.plan.v1", host_app="wps"）。',
+          '要求：不要尝试全篇改样式，只做块级交付；标题至少包含“排版规范”“检查清单”“模板段落”；只输出可执行 Plan JSON（schema_version="ah32.plan.v1", host_app="wps"）。',
       },
     ],
   },

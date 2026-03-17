@@ -43,6 +43,9 @@ def validate_plan_contract(
     if "exam-answering" in skill_ids:
         _validate_exam_answering_contract(plan)
 
+    if "doc-formatter" in skill_ids:
+        _validate_writer_delivery_block_contract(plan, "doc-formatter")
+
 
 def _validate_answer_mode_contract(
     plan: dict[str, Any],
@@ -100,6 +103,35 @@ def _validate_exam_answering_contract(plan: dict[str, Any]) -> None:
         raise SkillPlanContractError(
             "exam-answering",
             "selected skill requires at least one nested insert_text action",
+        )
+
+
+def _validate_writer_delivery_block_contract(plan: dict[str, Any], skill_id: str) -> None:
+    actions = plan.get("actions")
+    if not isinstance(actions, list) or len(actions) != 1:
+        raise SkillPlanContractError(
+            skill_id,
+            "selected skill requires exactly one top-level upsert_block action",
+        )
+
+    action = actions[0]
+    if _op(action) != "upsert_block":
+        raise SkillPlanContractError(
+            skill_id,
+            f"selected skill requires top_level_ops=['upsert_block']; got top_level_ops={_top_level_ops(actions)}",
+        )
+
+    nested = action.get("actions")
+    if not isinstance(nested, list) or not nested:
+        raise SkillPlanContractError(
+            skill_id,
+            "selected skill requires upsert_block.actions to be non-empty",
+        )
+
+    if not any(_op(child) in {"insert_text", "insert_table"} for child in nested):
+        raise SkillPlanContractError(
+            skill_id,
+            "selected skill requires at least one nested insert_text/insert_table action",
         )
 
 

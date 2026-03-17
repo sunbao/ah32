@@ -1615,6 +1615,52 @@ class ReActAgent:
             return []
         return out
 
+    def _selected_skill_plan_guidance(self, *, max_skills: int = 3) -> str:
+        items: list[dict[str, Any]] = []
+        try:
+            for skill in (getattr(self, "_selected_skills", None) or [])[:max_skills]:
+                if isinstance(skill, str):
+                    skill_id = str(skill or "").strip()
+                    if not skill_id:
+                        continue
+                    items.append({"id": skill_id})
+                    continue
+
+                skill_id = str(getattr(skill, "skill_id", "") or getattr(skill, "id", "") or "").strip()
+                if not skill_id:
+                    continue
+                name = str(getattr(skill, "name", "") or skill_id).strip()
+                description = str(getattr(skill, "description", "") or "").strip()
+                default_writeback = str(getattr(skill, "default_writeback", "") or "").strip()
+                output_schema = str(getattr(skill, "output_schema", "") or "").strip()
+                markers = [
+                    str(x or "").strip()
+                    for x in (getattr(skill, "markers", ()) or ())
+                    if str(x or "").strip()
+                ][:8]
+
+                item: dict[str, Any] = {"id": skill_id}
+                if name:
+                    item["name"] = name
+                if description:
+                    item["description"] = description
+                if default_writeback:
+                    item["default_writeback"] = default_writeback
+                if output_schema:
+                    item["output_schema"] = output_schema
+                if markers:
+                    item["markers"] = markers
+                items.append(item)
+        except Exception:
+            return ""
+
+        if not items:
+            return ""
+        try:
+            return json.dumps(items, ensure_ascii=False, indent=2, default=str)
+        except Exception:
+            return ""
+
     def _extract_plan_from_text(self, text: str, host_app: str) -> tuple[Optional[dict], str]:
         payload = _extract_json_payload(text or "")
         if not payload:
@@ -1718,6 +1764,7 @@ class ReActAgent:
 
         delivery_hint = "compare_table" if str(delivery or "").strip().lower() == "compare_table" else ""
         original_text = json.dumps(original_plan or {}, ensure_ascii=False, default=str)
+        selected_skill_guidance = self._selected_skill_plan_guidance()
 
         user_prompt = (
             f"User request:\n{(user_query or '').strip()}\n\n"
@@ -1725,10 +1772,17 @@ class ReActAgent:
             f"Writeback anchor: {anchor}\n"
             f"Delivery: {delivery_hint}\n"
             f"Suggested block_id: {block_id}\n\n"
-            "Original plan:\n"
-            f"{original_text}\n\n"
-            f"Error: {error_type}\n"
-            f"Error message: {error_message}\n"
+            + (
+                "Selected skill guidance (honor these contracts; if only one skill is selected, "
+                "do not blend other scenarios):\n"
+                f"{selected_skill_guidance}\n\n"
+                if selected_skill_guidance
+                else ""
+            )
+            + "Original plan:\n"
+            + f"{original_text}\n\n"
+            + f"Error: {error_type}\n"
+            + f"Error message: {error_message}\n"
         ).strip()
 
         resp = await self.llm.ainvoke([("system", sys_prompt), ("user", user_prompt)])
@@ -1798,6 +1852,7 @@ class ReActAgent:
             block_id = "ah32_writeback"
 
         delivery_hint = "compare_table" if str(delivery or "").strip().lower() == "compare_table" else ""
+        selected_skill_guidance = self._selected_skill_plan_guidance()
 
         try:
             from ah32.services.plan_prompts import get_plan_generation_prompt
@@ -1815,7 +1870,15 @@ class ReActAgent:
             f"writeback_anchor: {anchor}\n"
             f"delivery: {delivery_hint}\n"
             f"suggested_block_id: {block_id}\n\n"
-            f"User request:\n{user_query}\n"
+            + (
+                "selected_skill_guidance:\n"
+                f"{selected_skill_guidance}\n\n"
+                "Honor every selected skill contract. If exactly one skill is selected, "
+                "do not mix in other scenario templates or plain-text explanations.\n\n"
+                if selected_skill_guidance
+                else ""
+            )
+            + f"User request:\n{user_query}\n"
         )
 
         t0 = time.perf_counter()
