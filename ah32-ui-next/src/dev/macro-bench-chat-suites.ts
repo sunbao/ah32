@@ -1,4 +1,4 @@
-import { MACRO_BENCH_SUITES, type MacroBenchHost, type MacroBenchPreset, type MacroBenchSuiteId } from './macro-bench-suites'
+﻿import { MACRO_BENCH_SUITES, type MacroBenchHost, type MacroBenchPreset, type MacroBenchSuiteId } from './macro-bench-suites'
 
 // Chat-driven bench definitions:
 // - Keep this file "data-first": real user-like prompts, deterministic sample data, style requirements.
@@ -482,7 +482,7 @@ const STORIES: ChatBenchStory[] = [
         forceSkillId: 'doc-analyzer',
         asserts: [
           { type: 'skills_selected_includes', skillId: 'doc-analyzer', points: 2 },
-          { type: 'writer_text_contains', text: '结构报告' },
+          { type: 'writer_text_contains', text: '结构大纲' },
           { type: 'writer_text_contains', text: '缺口清单' },
           { type: 'writer_text_contains', text: '自检清单' },
         ],
@@ -1244,14 +1244,14 @@ const STORIES: ChatBenchStory[] = [
       {
         id: 't1_analyze',
         name: '结构报告+问题清单（写回块）',
-        artifactId: 'bench_doc_analyzer_v1',
+        artifactId: 'bench_doc_analyzer_report',
+        forceSkillId: 'doc-analyzer',
         asserts: [
-          { type: 'writer_text_contains', text: '结构报告' },
-          { type: 'writer_text_contains', text: '问题清单' },
+          { type: 'writer_text_contains', text: '结构大纲' },
+          { type: 'writer_text_contains', text: '缺口清单' },
           { type: 'writer_block_backup_exists' },
         ],
         actionsBeforeSend: [
-          { type: 'clear_document' },
           { type: 'insert_text', text: '《项目方案（草案）》' },
           { type: 'insert_text', text: '1 背景' },
           { type: 'insert_text', text: '1.1 现状：目前存在性能瓶颈。' },
@@ -1278,14 +1278,13 @@ const STORIES: ChatBenchStory[] = [
       {
         id: 't1_rewrite',
         name: '改写并写回对照表+修订稿',
-        artifactId: 'bench_doc_editor_v1',
+        artifactId: 'bench_doc_editor_delivery',
         asserts: [
           { type: 'writer_text_contains', text: '对照表' },
           { type: 'writer_text_contains', text: '修订稿' },
           { type: 'writer_block_backup_exists' },
         ],
         actionsBeforeSend: [
-          { type: 'clear_document' },
           { type: 'insert_text', text: '原文：我们公司很厉害，这个项目肯定能做好，尽快上线。' },
           { type: 'insert_text', text: '要求：语气正式，面向客户汇报。' },
         ],
@@ -1307,14 +1306,13 @@ const STORIES: ChatBenchStory[] = [
       {
         id: 't1_rules',
         name: '生成排版规范+检查清单块',
-        artifactId: 'bench_doc_formatter_v1',
+        artifactId: 'bench_doc_formatter_delivery',
         asserts: [
           { type: 'writer_text_contains', text: '排版规范' },
           { type: 'writer_text_contains', text: '检查清单' },
           { type: 'writer_block_backup_exists' },
         ],
         actionsBeforeSend: [
-          { type: 'clear_document' },
           { type: 'insert_text', text: '标题：项目周报' },
           { type: 'insert_text', text: '一、进展' },
           { type: 'insert_text', text: '1) 已完成：接口联调' },
@@ -1340,14 +1338,13 @@ const STORIES: ChatBenchStory[] = [
       {
         id: 't1_answer',
         name: '生成答案与解析（写回文末）',
-        artifactId: 'bench_exam_answering_v1',
+        artifactId: 'bench_exam_answering_delivery',
         asserts: [
           { type: 'writer_text_contains', text: '答案与解析' },
           { type: 'writer_text_contains', text: '1.' },
           { type: 'writer_block_backup_exists' },
         ],
         actionsBeforeSend: [
-          { type: 'clear_document' },
           { type: 'insert_text', text: '试题（示例）' },
           { type: 'insert_text', text: '1. 选择题：地球是圆的。（ ）A.对 B.错' },
           { type: 'insert_text', text: '2. 填空题：我国首都是______。' },
