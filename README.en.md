@@ -6,6 +6,20 @@ AH32 (product name: **Aha**) is an enterprise office assistant for **WPS Office*
 
 Note: due to historical reasons, the backend Python package directory remains `src/ah32/` (import path is still `ah32`).
 
+## Visual Overview
+
+### Product Overview
+
+![AH32 overview](assets/readme/overview.svg)
+
+### Macro Bench Automation Flow
+
+![Macro bench automation flow](assets/readme/macro-bench-flow.svg)
+
+### Host Support
+
+![Host support](assets/readme/hosts.svg)
+
 ## What it’s for (use cases)
 
 - **Bidding / tender docs**: extract requirements, deviations, clarification questions, risks, and write them back into the working document.

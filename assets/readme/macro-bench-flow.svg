@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="540" viewBox="0 0 1200 540" role="img" aria-labelledby="title desc">
+  <title id="title">Macro bench flow</title>
+  <desc id="desc">Macro bench automation flow for AH32.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#fbf3e6"/>
+      <stop offset="100%" stop-color="#efe0ca"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#695843" flood-opacity="0.18"/>
+    </filter>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0,0 L12,6 L0,12 Z" fill="#8e4f1c"/>
+    </marker>
+  </defs>
+  <rect width="1200" height="540" rx="28" fill="url(#bg)"/>
+  <text x="70" y="82" fill="#183440" font-size="38" font-family="Segoe UI, Arial, sans-serif" font-weight="700">Macro Bench Automation</text>
+  <text x="70" y="120" fill="#59676b" font-size="20" font-family="Segoe UI, Arial, sans-serif">The development loop focuses on “launch → open assistant → run suite → inspect result → fix bug”.</text>
+
+  <g filter="url(#shadow)">
+    <rect x="70" y="190" width="210" height="200" rx="24" fill="#fffaf2" stroke="#d9c4a5"/>
+    <rect x="320" y="190" width="210" height="200" rx="24" fill="#fffaf2" stroke="#d9c4a5"/>
+    <rect x="570" y="190" width="210" height="200" rx="24" fill="#fffaf2" stroke="#d9c4a5"/>
+    <rect x="820" y="190" width="210" height="200" rx="24" fill="#fffaf2" stroke="#d9c4a5"/>
+  </g>
+
+  <text x="96" y="244" fill="#183440" font-size="24" font-family="Segoe UI, Arial, sans-serif" font-weight="700">1. Launch host</text>
+  <text x="96" y="284" fill="#5b6668" font-size="18" font-family="Segoe UI, Arial, sans-serif">Start Vite and the WPS debug host for Writer / ET / WPP.</text>
+  <text x="96" y="330" fill="#8e4f1c" font-size="18" font-family="Consolas, monospace">npm run dev</text>
+  <text x="96" y="360" fill="#8e4f1c" font-size="18" font-family="Consolas, monospace">npm run wpsjs:et</text>
+
+  <text x="346" y="244" fill="#183440" font-size="24" font-family="Segoe UI, Arial, sans-serif" font-weight="700">2. Open Aha</text>
+  <text x="346" y="284" fill="#5b6668" font-size="18" font-family="Segoe UI, Arial, sans-serif">Use desktop automation to focus the host and open the assistant pane.</text>
+  <text x="346" y="330" fill="#8e4f1c" font-size="18" font-family="Consolas, monospace">ensure-ah32-assistant-open</text>
+
+  <text x="596" y="244" fill="#183440" font-size="24" font-family="Segoe UI, Arial, sans-serif" font-weight="700">3. Run suite</text>
+  <text x="596" y="284" fill="#5b6668" font-size="18" font-family="Segoe UI, Arial, sans-serif">Trigger macro bench and let the suite drive the plan and writeback loop.</text>
+  <text x="596" y="330" fill="#8e4f1c" font-size="18" font-family="Consolas, monospace">bench-start</text>
+
+  <text x="846" y="244" fill="#183440" font-size="24" font-family="Segoe UI, Arial, sans-serif" font-weight="700">4. Inspect</text>
+  <text x="846" y="284" fill="#5b6668" font-size="18" font-family="Segoe UI, Arial, sans-serif">Read host changes, backend logs, and execution errors. Fix the real blocker, then rerun.</text>
+  <text x="846" y="330" fill="#8e4f1c" font-size="18" font-family="Consolas, monospace">logs + document state</text>
+
+  <path d="M280 290 H320" stroke="#8e4f1c" stroke-width="6" fill="none" marker-end="url(#arrow)"/>
+  <path d="M530 290 H570" stroke="#8e4f1c" stroke-width="6" fill="none" marker-end="url(#arrow)"/>
+  <path d="M780 290 H820" stroke="#8e4f1c" stroke-width="6" fill="none" marker-end="url(#arrow)"/>
+  <path d="M1028 392 C1062 448, 1110 458, 1150 430 C1173 412, 1172 372, 1148 352" stroke="#183440" stroke-width="5" fill="none" marker-end="url(#arrow)"/>
+  <text x="1018" y="470" fill="#59676b" font-size="18" font-family="Segoe UI, Arial, sans-serif">Repeat until the real bug is fixed</text>
+</svg>

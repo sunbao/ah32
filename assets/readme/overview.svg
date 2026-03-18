@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="760" viewBox="0 0 1200 760" role="img" aria-labelledby="title desc">
+  <title id="title">AH32 overview</title>
+  <desc id="desc">Overview of AH32, WPS add-in, backend, and writeback flow.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#f6efe4"/>
+      <stop offset="100%" stop-color="#efe6d3"/>
+    </linearGradient>
+    <linearGradient id="hero" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#143642"/>
+      <stop offset="100%" stop-color="#2e5b66"/>
+    </linearGradient>
+    <linearGradient id="cardA" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#fffcf5"/>
+      <stop offset="100%" stop-color="#f2eadc"/>
+    </linearGradient>
+    <linearGradient id="cardB" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#fff7ec"/>
+      <stop offset="100%" stop-color="#efd7b1"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="10" stdDeviation="14" flood-color="#6f6250" flood-opacity="0.18"/>
+    </filter>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0,0 L12,6 L0,12 Z" fill="#ba6b2d"/>
+    </marker>
+  </defs>
+
+  <rect width="1200" height="760" rx="28" fill="url(#bg)"/>
+  <circle cx="1090" cy="118" r="130" fill="#d9c9a6" opacity="0.35"/>
+  <circle cx="140" cy="655" r="120" fill="#d6a978" opacity="0.25"/>
+
+  <rect x="54" y="54" width="1092" height="168" rx="28" fill="url(#hero)" filter="url(#shadow)"/>
+  <text x="94" y="110" fill="#f8f1e8" font-size="42" font-family="Segoe UI, Arial, sans-serif" font-weight="700">AH32 for WPS Office</text>
+  <text x="94" y="152" fill="#d7e6e8" font-size="23" font-family="Segoe UI, Arial, sans-serif">Chat request → Plan JSON → deterministic writeback inside Writer / ET / WPP</text>
+  <text x="94" y="192" fill="#bfd4d7" font-size="19" font-family="Segoe UI, Arial, sans-serif">Designed for private deployment, internal knowledge base, and document-first execution.</text>
+
+  <rect x="88" y="284" width="292" height="356" rx="26" fill="url(#cardA)" stroke="#d8c7a9" filter="url(#shadow)"/>
+  <text x="116" y="334" fill="#173742" font-size="28" font-family="Segoe UI, Arial, sans-serif" font-weight="700">1. User in WPS</text>
+  <text x="116" y="372" fill="#4d5f61" font-size="20" font-family="Segoe UI, Arial, sans-serif">Describe what to do in natural language.</text>
+  <rect x="116" y="404" width="236" height="170" rx="18" fill="#fbf6ee" stroke="#dcc7a8"/>
+  <text x="136" y="446" fill="#173742" font-size="20" font-family="Consolas, monospace">/taskpane</text>
+  <text x="136" y="486" fill="#4d5f61" font-size="18" font-family="Segoe UI, Arial, sans-serif">- ask a question</text>
+  <text x="136" y="518" fill="#4d5f61" font-size="18" font-family="Segoe UI, Arial, sans-serif">- choose a skill</text>
+  <text x="136" y="550" fill="#4d5f61" font-size="18" font-family="Segoe UI, Arial, sans-serif">- trigger macro bench</text>
+  <text x="116" y="612" fill="#8b5a2b" font-size="18" font-family="Segoe UI, Arial, sans-serif">Writer / ET / WPP all share the same interaction pattern.</text>
+
+  <rect x="454" y="284" width="292" height="356" rx="26" fill="url(#cardB)" stroke="#d3b584" filter="url(#shadow)"/>
+  <text x="482" y="334" fill="#6a3d10" font-size="28" font-family="Segoe UI, Arial, sans-serif" font-weight="700">2. Backend</text>
+  <text x="482" y="372" fill="#6d573a" font-size="20" font-family="Segoe UI, Arial, sans-serif">Planning, skill routing, RAG, and diagnostics.</text>
+  <rect x="482" y="404" width="236" height="170" rx="18" fill="#fffaf2" stroke="#d8b98d"/>
+  <text x="502" y="446" fill="#6a3d10" font-size="20" font-family="Consolas, monospace">src/ah32/server</text>
+  <text x="502" y="486" fill="#6d573a" font-size="18" font-family="Segoe UI, Arial, sans-serif">- plan generate / repair</text>
+  <text x="502" y="518" fill="#6d573a" font-size="18" font-family="Segoe UI, Arial, sans-serif">- tenant scoped skills</text>
+  <text x="502" y="550" fill="#6d573a" font-size="18" font-family="Segoe UI, Arial, sans-serif">- telemetry and doc sync</text>
+  <text x="482" y="612" fill="#8b5a2b" font-size="18" font-family="Segoe UI, Arial, sans-serif">The model returns executable Plan JSON instead of loose prose.</text>
+
+  <rect x="820" y="284" width="292" height="356" rx="26" fill="url(#cardA)" stroke="#d8c7a9" filter="url(#shadow)"/>
+  <text x="848" y="334" fill="#173742" font-size="28" font-family="Segoe UI, Arial, sans-serif" font-weight="700">3. Writeback</text>
+  <text x="848" y="372" fill="#4d5f61" font-size="20" font-family="Segoe UI, Arial, sans-serif">The add-in executes the plan inside the host app.</text>
+  <rect x="848" y="404" width="236" height="170" rx="18" fill="#fbf6ee" stroke="#dcc7a8"/>
+  <text x="868" y="446" fill="#173742" font-size="20" font-family="Consolas, monospace">PlanExecutor</text>
+  <text x="868" y="486" fill="#4d5f61" font-size="18" font-family="Segoe UI, Arial, sans-serif">- insert text / tables</text>
+  <text x="868" y="518" fill="#4d5f61" font-size="18" font-family="Segoe UI, Arial, sans-serif">- update sheets / slides</text>
+  <text x="868" y="550" fill="#4d5f61" font-size="18" font-family="Segoe UI, Arial, sans-serif">- preserve doc context</text>
+  <text x="848" y="612" fill="#8b5a2b" font-size="18" font-family="Segoe UI, Arial, sans-serif">The result lands in the document, not only in chat.</text>
+
+  <path d="M380 462 C418 462, 420 462, 454 462" fill="none" stroke="#ba6b2d" stroke-width="6" marker-end="url(#arrow)"/>
+  <path d="M746 462 C784 462, 786 462, 820 462" fill="none" stroke="#ba6b2d" stroke-width="6" marker-end="url(#arrow)"/>
+
+  <text x="88" y="705" fill="#584c3f" font-size="18" font-family="Segoe UI, Arial, sans-serif">Core idea: keep execution document-centric, observable, and suitable for private enterprise deployment.</text>
+</svg>
