@@ -15,7 +15,7 @@
 
 - **GitHub 仓库地址**（HTTPS 或 SSH 均可），例如：`https://github.com/<org>/<repo>.git`
 - 你希望的**默认分支名**：`main`（推荐）或 `master`
-- 是否要**保留历史提交**（从 CodeUp 同步到 GitHub），还是做一次**“开源干净首发（无历史）”**（更安全，推荐）
+- 是否要**保留历史提交**，还是做一次**“开源干净首发（无历史）”**（更安全，推荐）
 
 > 建议：如果你不 100% 确认历史提交里没有误提交过敏感信息（哪怕后来删掉了），就用“干净首发”，避免把历史一起公开出去。
 
@@ -37,7 +37,7 @@
 ### 0.1 保留历史提交（直接把现有 git 历史推到 GitHub）
 
 ```bash
-# 1) 添加 GitHub 远程（不改你现有的 origin）
+# 1) 添加 GitHub 远程
 git remote add github https://github.com/<org>/<repo>.git
 
 # 2) 把当前分支推到 GitHub 的 main（或 master）
@@ -150,7 +150,7 @@ bash scripts/package-backend.sh --platform macos-arm64 --out-dir dist
 
 ```bash
 git tag v0.1.0
-git push origin v0.1.0
+git push github v0.1.0
 ```
 
 2) GitHub Actions 会自动构建：

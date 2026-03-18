@@ -52,7 +52,7 @@ ppt = [
 ]
 
 [project.urls]
-Repository = "https://codeup.aliyun.com/620a290d9d9cd9dd5cd978e0/agentic/Ah32"
+Repository = "https://github.com/sunbao/ah32"
 
 [project.scripts]
 ah32-server = "ah32.server.main:run"
