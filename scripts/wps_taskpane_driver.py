@@ -69,6 +69,15 @@ def _safe_text(value) -> str:
         return ""
 
 
+def _host_for_target(target: WinInfo | None) -> str:
+    if target is None:
+        return "any"
+    for host in ("wps", "et", "wpp"):
+        if _matches_host(host, target.title, target.class_name):
+            return host
+    return "any"
+
+
 def _matches_host(host: str, title: str, class_name: str) -> bool:
     combined = f"{title} {class_name}".lower()
     is_wps_candidate = (
@@ -406,14 +415,46 @@ def _click_rect_point(rect: Rect, x_ratio: float, y_ratio: float) -> bool:
         return False
 
 
+def _rect_tuple(rect: Rect | None) -> tuple[int, int, int, int] | None:
+    if rect is None:
+        return None
+    return (int(rect.left), int(rect.top), int(rect.right), int(rect.bottom))
+
+
+def _click_rect_ratio(rect: Rect, x_ratio: float, y_ratio: float, label: str) -> bool:
+    width = max(1, rect.right - rect.left)
+    height = max(1, rect.bottom - rect.top)
+    x = rect.left + int(width * x_ratio)
+    y = rect.top + int(height * y_ratio)
+    try:
+        mouse.click(coords=(x, y))
+        print(
+            f"{label}=clicked rect={_rect_tuple(rect)} "
+            f"at=({x},{y}) rel=({x_ratio:.4f},{y_ratio:.4f})"
+        )
+        return True
+    except Exception as exc:
+        print(f"{label}=failed rect={_rect_tuple(rect)} err={exc}")
+        return False
+
+
 def _click_ah32_tab(target: WinInfo) -> bool:
     rect = _find_ribbon_rect(target)
     if rect is None:
         return False
+    host = _host_for_target(target)
+    if host == "et":
+        if _click_rect_ratio(rect, 0.73, 0.05, "assistant_tab_click_et"):
+            time.sleep(0.8)
+            return True
+    if host == "wpp":
+        if _click_rect_ratio(rect, 0.73, 0.05, "assistant_tab_click_wpp"):
+            time.sleep(0.8)
+            return True
     # Empirical ribbon ratios on maximized WPS Writer:
     # - Ah32 tab is near the upper row, around 63% width.
     # Keep a manual pixel fallback for older layouts.
-    if _click_rect_point(rect, 0.63, 0.14):
+    if _click_rect_ratio(rect, 0.63, 0.14, "assistant_tab_click_wps"):
         time.sleep(0.8)
         return True
     return _click_rect_point(Rect(0, 40, 1920, 150), 1207 / 1920, 15 / 110)
@@ -423,9 +464,16 @@ def _click_open_assistant_button(target: WinInfo) -> bool:
     rect = _find_ribbon_rect(target)
     if rect is None:
         return False
+    host = _host_for_target(target)
+    if host == "et":
+        if _click_rect_ratio(rect, 0.53, 0.40, "assistant_button_click_et"):
+            return True
+    if host == "wpp":
+        if _click_rect_ratio(rect, 0.53, 0.40, "assistant_button_click_wpp"):
+            return True
     # Empirically, the left-most large button in the Ah32 ribbon group is "打开助手".
     # On 1920px-wide maximized Writer it sits around x=908, y=110.
-    if _click_rect_point(rect, 0.473, 0.636):
+    if _click_rect_ratio(rect, 0.473, 0.636, "assistant_button_click_wps"):
         return True
     return _click_rect_point(Rect(0, 40, 1920, 150), 908 / 1920, 70 / 110)
 
@@ -437,11 +485,11 @@ def _toggle_open_assistant(target: WinInfo, host: str = "wps") -> bool:
             _activate_window(target.handle)
         except Exception:
             pass
+        try:
+            _dismiss_modified_addin_dialog(target)
+        except Exception:
+            pass
         if host == "wps":
-            try:
-                _dismiss_modified_addin_dialog(target)
-            except Exception:
-                pass
             try:
                 _dismiss_auth_widget(target)
             except Exception:
@@ -578,6 +626,15 @@ def _active_writer_doc_area_right_edge(target: WinInfo | None = None) -> int:
 def _taskpane_layout_visible(target: WinInfo, rect: Rect | None) -> bool:
     if rect is None:
         return False
+    host = _host_for_target(target)
+    if host in {"et", "wpp"}:
+        window_width = max(1, int(target.right) - int(target.left))
+        pane_width = max(0, int(rect.right) - int(rect.left))
+        return (
+            pane_width >= 280
+            and rect.left >= (target.left + int(window_width * 0.45))
+            and rect.right >= (target.right - 80)
+        )
     doc_right = _active_writer_doc_area_right_edge(target)
     if doc_right <= 0:
         window_width = max(1, int(target.right) - int(target.left))
@@ -591,6 +648,7 @@ def _find_taskpane_rect_raw(target: WinInfo) -> Rect | None:
     browser_rect = _find_taskpane_browser_rect_raw(target)
     if browser_rect is not None:
         return browser_rect
+    host = _host_for_target(target)
     browser_candidates: list[Rect] = []
     fallback_candidates: list[Rect] = []
     doc_edges = _writer_doc_area_right_edges(target)
@@ -621,7 +679,7 @@ def _find_taskpane_rect_raw(target: WinInfo) -> Rect | None:
                     is_right_side = left >= max(target.left + 320, doc_right - 24)
                     if is_browser and is_right_side:
                         browser_candidates.append(Rect(left, top, right, bottom))
-                    elif is_right_side and cls in {"Qt5QWindowIcon", "QWidget"}:
+                    elif is_right_side and cls in {"KxJSCTPWidget", "KxJSContentCTPWidget"}:
                         # Some WPS builds expose only a Qt taskpane host and hide the browser child.
                         # Keep this as a fallback so geometry-based taskpane clicks still work.
                         fallback_candidates.append(Rect(left, top, right, bottom))
@@ -633,7 +691,10 @@ def _find_taskpane_rect_raw(target: WinInfo) -> Rect | None:
     candidates = browser_candidates or fallback_candidates
     if not candidates:
         return None
-    candidates.sort(key=lambda r: (r.left, r.top, (r.right - r.left) * (r.bottom - r.top)))
+    if host in {"et", "wpp"}:
+        candidates.sort(key=lambda r: (r.left, (r.right - r.left) * (r.bottom - r.top)), reverse=True)
+        return candidates[0]
+    candidates.sort(key=lambda r: (r.left, (r.right - r.left) * (r.bottom - r.top)), reverse=True)
     return candidates[0]
 
 
@@ -665,7 +726,8 @@ def _find_taskpane_browser_rect(target: WinInfo) -> Rect | None:
 
 
 def _find_taskpane_target_hwnd_raw(target: WinInfo) -> int | None:
-    matches: list[tuple[int, int]] = []
+    matches: list[tuple[int, int, int, int]] = []
+    host = _host_for_target(target)
 
     def _walk(hwnd: int) -> None:
         for child in _iter_child_hwnds(hwnd):
@@ -680,7 +742,7 @@ def _find_taskpane_target_hwnd_raw(target: WinInfo) -> int | None:
                         "Chrome_WidgetWin_0": 2,
                         "CefBrowserWindow": 1,
                     }.get(cls, 0)
-                    matches.append((priority, int(child)))
+                    matches.append((priority, int(left), width * height, int(child)))
                 _walk(child)
             except Exception:
                 continue
@@ -688,8 +750,11 @@ def _find_taskpane_target_hwnd_raw(target: WinInfo) -> int | None:
     _walk(target.handle)
     if not matches:
         return None
-    matches.sort(reverse=True)
-    return matches[0][1]
+    if host in {"et", "wpp"}:
+        matches.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
+    else:
+        matches.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
+    return matches[0][3]
 
 
 def _find_taskpane_target_hwnd(target: WinInfo) -> int | None:
@@ -792,7 +857,17 @@ def _assistant_seems_open(target: WinInfo) -> bool:
 
 
 def _assistant_seems_open_fast(target: WinInfo | None = None) -> bool:
-    return bool(target is not None and _find_taskpane_target_hwnd(target) is not None)
+    if target is None:
+        return False
+    host = _host_for_target(target)
+    if host in {"et", "wpp"}:
+        if _find_taskpane_browser_rect_raw(target) is not None:
+            return True
+        raw = _find_taskpane_rect_raw(target)
+        if raw is None:
+            return False
+        return _taskpane_layout_visible(target, raw)
+    return _find_taskpane_rect(target) is not None
 
 
 def _ensure_writer_document_via_com() -> bool:
@@ -1122,18 +1197,18 @@ def cmd_toggle_ah32_assistant(host: str, index: int | None, title_contains: str 
 def cmd_ensure_ah32_assistant_open(host: str, index: int | None, title_contains: str | None) -> int:
     target = _select_window(host, index, title_contains)
     _activate_window(target.handle)
+    try:
+        _dismiss_modified_addin_dialog(target)
+    except Exception:
+        pass
     if host == "wps":
-        try:
-            _dismiss_modified_addin_dialog(target)
-        except Exception:
-            pass
         try:
             if _dismiss_auth_widget(target):
                 time.sleep(2.0)
         except Exception:
             pass
     before_open = _assistant_seems_open_fast(target)
-    if before_open:
+    if host == "wps" and before_open:
         print("assistant_state=already_open")
         print(f"doc_area_right_edges={_writer_doc_area_right_edges(target)}")
         return 0

@@ -843,12 +843,12 @@ def _normalize_action(action: Any, *, fallback_id: str, host: HostApp) -> dict[s
             if not field:
                 continue
             summary = _norm_summary(v.get("summary") if v.get("summary") is not None else v.get("agg"))
-            title = v.get("title") if isinstance(v.get("title"), str) else None
+            value_title = v.get("title") if isinstance(v.get("title"), str) else None
             values.append(
                 {
                     "field": field,
                     "summary": summary,
-                    "title": title,
+                    "title": value_title,
                 }
             )
 

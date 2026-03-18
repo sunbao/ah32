@@ -456,6 +456,7 @@ app.add_middleware(
 @app.middleware("http")
 async def _trace_and_tenancy(request: Request, call_next):
     """Attach trace_id and enforce tenant/user/auth context for /agentic/* endpoints."""
+    path = str(request.url.path or "")
     trace_id = (
         str(request.headers.get("X-AH32-Trace-Id") or "").strip()
         or str(request.headers.get("X-Trace-Id") or "").strip()
@@ -474,7 +475,14 @@ async def _trace_and_tenancy(request: Request, call_next):
     except Exception:
         pass
 
-    if str(request.url.path or "").startswith("/agentic"):
+    diag_plan_path = path in ("/agentic/plan/generate", "/agentic/plan/repair")
+    if diag_plan_path:
+        try:
+            log.info("[middleware] plan request start path=%s trace_id=%s", path, trace_id)
+        except Exception:
+            pass
+
+    if path.startswith("/agentic"):
         try:
             from ah32.security.request_context import bind_tenancy_for_request
 
@@ -495,6 +503,16 @@ async def _trace_and_tenancy(request: Request, call_next):
         response.headers["X-AH32-Trace-Id"] = trace_id
     except Exception:
         pass
+    if diag_plan_path:
+        try:
+            log.info(
+                "[middleware] plan request end path=%s trace_id=%s status=%s",
+                path,
+                trace_id,
+                getattr(response, "status_code", "unknown"),
+            )
+        except Exception:
+            pass
     return response
 
 # 娉ㄥ唽璺敱 - 绾疉gentic妯″紡

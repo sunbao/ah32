@@ -53,6 +53,25 @@ def _effective_stream_debug_flags(*, query_params, expose_agent_thoughts: bool, 
 router = APIRouter(prefix="/agentic", tags=["agentic"])
 
 
+def _load_plan_llm():
+    """Prefer a faster model for deterministic Plan generate/repair endpoints."""
+    try:
+        plan_model = (os.getenv("AH32_PLAN_MODEL") or "").strip()
+        if not plan_model:
+            base_model = str(getattr(settings, "llm_model", "") or os.getenv("AH32_LLM_MODEL") or "").strip()
+            plan_model = (
+                "deepseek-chat"
+                if "deepseek-reasoner" in base_model.lower()
+                else (base_model or "deepseek-chat")
+            )
+
+        plan_temp_raw = (os.getenv("AH32_PLAN_TEMPERATURE") or "").strip()
+        plan_temp = float(plan_temp_raw) if plan_temp_raw else 0.1
+        return load_llm_custom(settings, model=plan_model, temperature=plan_temp), plan_model, plan_temp
+    except ValueError:
+        raise
+
+
 def _sanitize_frontend_context_for_failure_store(frontend_context: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     """Remove document content from debug retention.
 
@@ -823,7 +842,14 @@ async def plan_repair(
                 return resp
 
         try:
-            llm = load_llm(settings)
+            llm, plan_model, plan_temp = _load_plan_llm()
+            logger.info(
+                "[plan_repair] using plan model=%s temperature=%s host=%s session_id=%s",
+                plan_model,
+                plan_temp,
+                host,
+                request.session_id,
+            )
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
 
@@ -935,9 +961,23 @@ async def plan_generate(
         host = "wps"
     try:
         # Auth is enforced centrally for /agentic/* in server middleware.
+        logger.info(
+            "[plan_generate] entered host=%s session_id=%s doc=%s selected_skills=%s",
+            host,
+            request.session_id,
+            request.document_name,
+            len(request.selected_skill_ids or []),
+        )
 
         try:
-            llm = load_llm(settings)
+            llm, plan_model, plan_temp = _load_plan_llm()
+            logger.info(
+                "[plan_generate] using plan model=%s temperature=%s host=%s session_id=%s",
+                plan_model,
+                plan_temp,
+                host,
+                request.session_id,
+            )
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
 
@@ -986,7 +1026,22 @@ async def plan_generate(
                         f"Original plan:\n{json.dumps(original_plan_obj, ensure_ascii=False, default=str)}\n"
                     )
 
+            logger.info(
+                "[plan_generate] attempt=%s host=%s session_id=%s prompt_chars=%s repair=%s",
+                attempt,
+                host,
+                request.session_id,
+                len(system) + len(user),
+                bool(attempt > 1 and original_plan_obj),
+            )
             response = await llm.ainvoke([("system", system), ("user", user)])
+            logger.info(
+                "[plan_generate] llm_returned attempt=%s host=%s session_id=%s elapsed_ms=%s",
+                attempt,
+                host,
+                request.session_id,
+                int((time.perf_counter() - t0) * 1000),
+            )
             raw = (getattr(response, "content", "") or "").strip()
             payload = _extract_json_payload(raw)
             if not payload:

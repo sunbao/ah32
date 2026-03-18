@@ -1744,9 +1744,18 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
     }
   }
 
+  const hasUsableBenchFilePath = (info: { fullPath?: string } | null | undefined) => {
+    const fullPath = String(info?.fullPath || '').trim().toLowerCase()
+    if (!fullPath) return false
+    if (host === 'wps') return fullPath.endsWith('.docx')
+    if (host === 'et') return fullPath.endsWith('.xlsx')
+    if (host === 'wpp') return fullPath.endsWith('.pptx')
+    return false
+  }
+
   const ensureBenchDoc = async (title?: string) => {
     const active = getActiveBenchDocumentInfo()
-    if (active?.id) {
+    if (active?.id && hasUsableBenchFilePath(active)) {
       benchDocId = active.id
       return
     }
@@ -2784,7 +2793,7 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
 
   const waitForChatIdle = async (idleOpts?: { timeoutMs?: number }) => {
 
-    const timeoutMs = Math.max(0, Number(idleOpts?.timeoutMs || 0) || 0) || 8000
+    const timeoutMs = Math.max(0, Number(idleOpts?.timeoutMs || 0) || 0) || 30000
 
     const deadline = Date.now() + timeoutMs
 
@@ -2797,10 +2806,7 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
       }
 
       if (Date.now() > deadline) {
-
-        try { (chatStore as any).cancelCurrentRequest?.() } catch (e) { (globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e) }
-
-        break
+        throw new Error(`chat_busy_timeout:${timeoutMs}`)
 
       }
 

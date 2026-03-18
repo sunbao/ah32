@@ -291,21 +291,49 @@ export class WPSDocumentBridge {
         const app = this.getApplication()
         if (!app) return 'unknown'
 
+        let hasActiveWorkbook = false
+        let hasWorkbooks = false
+        let hasActivePresentation = false
+        let hasPresentations = false
+        let hasActiveDocument = false
+        let hasDocuments = false
+
         try {
-          if (app.ActiveDocument || app.Documents) return 'wps'
+          hasActiveWorkbook = !!app.ActiveWorkbook
         } catch (e) {
-          this.reportWpsProbeError('getHostApp.ActiveDocument/Documents', e)
+          this.reportWpsProbeError('getHostApp.ActiveWorkbook', e)
         }
         try {
-          if (app.ActiveWorkbook || app.Workbooks) return 'et'
+          hasWorkbooks = !!app.Workbooks
         } catch (e) {
-          this.reportWpsProbeError('getHostApp.ActiveWorkbook/Workbooks', e)
+          this.reportWpsProbeError('getHostApp.Workbooks', e)
         }
         try {
-          if (app.ActivePresentation || app.Presentations) return 'wpp'
+          hasActivePresentation = !!app.ActivePresentation
         } catch (e) {
-          this.reportWpsProbeError('getHostApp.ActivePresentation/Presentations', e)
+          this.reportWpsProbeError('getHostApp.ActivePresentation', e)
         }
+        try {
+          hasPresentations = !!app.Presentations
+        } catch (e) {
+          this.reportWpsProbeError('getHostApp.Presentations', e)
+        }
+        try {
+          hasActiveDocument = !!app.ActiveDocument
+        } catch (e) {
+          this.reportWpsProbeError('getHostApp.ActiveDocument', e)
+        }
+        try {
+          hasDocuments = !!app.Documents
+        } catch (e) {
+          this.reportWpsProbeError('getHostApp.Documents', e)
+        }
+
+        // Host runtimes can expose multiple collection properties at once.
+        // Prefer the currently active object over broad collection existence.
+        if (hasActiveWorkbook || hasWorkbooks) return 'et'
+        if (hasActivePresentation || hasPresentations) return 'wpp'
+        if (hasActiveDocument || hasDocuments) return 'wps'
 
         return 'unknown'
       } catch (e) {

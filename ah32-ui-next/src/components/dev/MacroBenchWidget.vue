@@ -6,6 +6,7 @@
         <div class="macro-bench-heading">宏基准测试</div>
         <div class="macro-bench-description">先选模式和场景，再运行。默认先看结论，需要排查时再展开技术细节。</div>
         <div class="macro-bench-shortcuts">快捷键：`Ctrl+Enter` 开始，`Ctrl+Shift+Enter` 继续跑，`Esc` 停止，`Ctrl+Alt+M/L/P` 聚焦模式/场景/预设，`Ctrl+Alt+R/K/E/T` 切到 Writer/生命周期/ET/PPT 烟测。</div>
+        <div class="macro-bench-debug">当前宿主识别：{{ safeHost() }}</div>
         <div v-if="autoBenchDebugText" class="macro-bench-debug">{{ autoBenchDebugText }}</div>
       </div>
       <div class="macro-bench-state" :class="benchStateClass">{{ benchStateLabel }}</div>
@@ -1047,7 +1048,7 @@ onMounted(() => {
     autoSuiteId: finalCfg.suiteId,
     autoSource: docCfg ? 'doc_var' : 'url',
   })
-  const shouldAutoResume = !!(resumeHint && runMode.value === 'chat' && canResume.value)
+  const shouldAutoResume = !!(!finalCfg.enabled && resumeHint && runMode.value === 'chat' && canResume.value)
   if (shouldAutoResume) {
     autoBenchDebugText.value = `${autoBenchDebugText.value} | trigger=auto_resume`
     nextTick(() => {
@@ -1056,6 +1057,7 @@ onMounted(() => {
       }, 1200)
     })
   } else if (resumeHint) {
+    autoBenchDebugText.value = `${autoBenchDebugText.value} | resume_hint=cleared`
     clearAutoResumeHint()
   }
   if (!shouldAutoResume && finalCfg.enabled) triggerAutoBench(finalCfg, docCfg?.enabled ? 'doc_var' : 'url')
