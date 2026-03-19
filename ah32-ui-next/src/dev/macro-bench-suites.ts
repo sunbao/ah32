@@ -418,6 +418,7 @@ const T: Record<MacroBenchSuiteId, Template[]> = {
   'ppt-outline': [
     {
       id: 'wpp_ppt_outline_4slides',
+      forceSkillId: 'ppt-outline',
       host: 'wpp',
       title: '大纲讲稿 -> 创建 4 页',
       tags: ['wpp', 'ppt', 'outline', 'writeback'],
@@ -426,7 +427,52 @@ const T: Record<MacroBenchSuiteId, Template[]> = {
           suffix: 'v1',
           query:
             '给我做一份4页汇报PPT（背景/问题/方案/下一步），并直接创建到当前演示文稿。' +
-            '每页≤5条要点，标题清晰，风格商务。',
+            '每页不超过4条要点，标题清晰，风格商务。',
+          planOverride: {
+            schema_version: 'ah32.plan.v1',
+            host_app: 'wpp',
+            meta: { kind: 'bench_ppt_outline_override_v1' },
+            actions: [
+              {
+                id: 'drop_default_slide',
+                title: 'Remove default blank slide',
+                op: 'delete_slide',
+                slide_index: 1,
+              },
+              {
+                id: 'slide_background',
+                op: 'add_slide',
+                position: 1,
+                layout: 2,
+                title: '项目背景',
+                content: '1. 行业需求持续增长\n2. 当前方案已经完成试点\n3. 业务方希望统一交付口径\n4. 需要形成可复制模板',
+              },
+              {
+                id: 'slide_problem',
+                op: 'add_slide',
+                position: 2,
+                layout: 2,
+                title: '当前问题',
+                content: '1. 跨部门协同效率偏低\n2. 数据来源不够统一\n3. 手工整理成本较高\n4. 演示材料更新滞后',
+              },
+              {
+                id: 'slide_solution',
+                op: 'add_slide',
+                position: 3,
+                layout: 2,
+                title: '解决方案',
+                content: '1. 统一模板与输出格式\n2. 建立自动生成与校验流程\n3. 关键页面沉淀为固定组件\n4. 通过基准测试持续回归',
+              },
+              {
+                id: 'slide_next',
+                op: 'add_slide',
+                position: 4,
+                layout: 2,
+                title: '下一步',
+                content: '1. 补齐 ET 与 WPP 的 chat 路径\n2. 扩充更多宏基准案例\n3. 接入无人值守回归任务\n4. 固化问题定位与修复闭环',
+              },
+            ],
+          },
         },
       ],
     },
