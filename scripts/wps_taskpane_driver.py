@@ -1,4 +1,5 @@
 ﻿import argparse
+import json
 import os
 import sys
 import time
@@ -1423,6 +1424,245 @@ def cmd_dismiss_modified_dialog(host: str, index: int | None, title_contains: st
     return 0 if ok else 2
 
 
+
+def _inspect_wps_state() -> dict:
+    try:
+        import pythoncom  # type: ignore
+        import win32com.client  # type: ignore
+    except Exception as exc:
+        raise RuntimeError(f"pywin32_unavailable:{exc}") from exc
+
+    pythoncom.CoInitialize()
+    last_error: Exception | None = None
+    for progid in ("kwps.Application", "wps.Application"):
+        try:
+            app = win32com.client.Dispatch(progid)
+            doc = None
+            try:
+                doc = app.ActiveDocument
+            except Exception:
+                doc = None
+            if not doc:
+                try:
+                    docs = app.Documents
+                    if docs and docs.Count >= 1:
+                        doc = docs.Item(1)
+                except Exception:
+                    doc = None
+            if not doc:
+                continue
+            return {
+                "host": "wps",
+                "app_progid": progid,
+                "document_name": _safe_text(getattr(doc, "Name", "")),
+                "full_name": _safe_text(getattr(doc, "FullName", "")),
+                "paragraph_count": int(getattr(getattr(doc, "Paragraphs", None), "Count", 0) or 0),
+            }
+        except Exception as exc:
+            last_error = exc
+            continue
+    raise RuntimeError(f"active_document_missing:{last_error}")
+
+
+def _inspect_et_state() -> dict:
+    try:
+        import pythoncom  # type: ignore
+        import win32com.client  # type: ignore
+    except Exception as exc:
+        raise RuntimeError(f"pywin32_unavailable:{exc}") from exc
+
+    pythoncom.CoInitialize()
+    last_error: Exception | None = None
+    for progid in ("ket.Application", "et.Application", "KET.Application", "ET.Application"):
+        try:
+            app = win32com.client.Dispatch(progid)
+            wb = None
+            try:
+                wb = app.ActiveWorkbook
+            except Exception:
+                wb = None
+            if not wb:
+                try:
+                    books = app.Workbooks
+                    if books and books.Count >= 1:
+                        wb = books.Item(1)
+                except Exception:
+                    wb = None
+            if not wb:
+                continue
+            sheet_names: list[str] = []
+            sheet_summaries: list[dict] = []
+            chart_titles: list[str] = []
+            chart_count = 0
+            worksheets = getattr(wb, "Worksheets", None)
+            sheet_total = int(getattr(worksheets, "Count", 0) or 0)
+            for idx in range(1, sheet_total + 1):
+                sheet = worksheets.Item(idx)
+                sheet_name = _safe_text(getattr(sheet, "Name", ""))
+                sheet_names.append(sheet_name)
+                used_range = ""
+                try:
+                    used_range = _safe_text(sheet.UsedRange.Address)
+                except Exception:
+                    used_range = ""
+                sheet_chart_titles: list[str] = []
+                sheet_chart_count = 0
+                try:
+                    chart_objects = sheet.ChartObjects()
+                    sheet_chart_count = int(getattr(chart_objects, "Count", 0) or 0)
+                    for chart_idx in range(1, sheet_chart_count + 1):
+                        try:
+                            chart = chart_objects.Item(chart_idx).Chart
+                            title = ""
+                            try:
+                                if bool(getattr(chart, "HasTitle", False)):
+                                    title = _safe_text(chart.ChartTitle.Text)
+                            except Exception:
+                                title = ""
+                            if title:
+                                chart_titles.append(title)
+                                sheet_chart_titles.append(title)
+                        except Exception:
+                            continue
+                except Exception:
+                    sheet_chart_count = 0
+                chart_count += sheet_chart_count
+                sheet_summaries.append(
+                    {
+                        "name": sheet_name,
+                        "used_range": used_range,
+                        "chart_count": sheet_chart_count,
+                        "chart_titles": sheet_chart_titles,
+                    }
+                )
+            freeze_panes = False
+            try:
+                freeze_panes = bool(app.ActiveWindow.FreezePanes)
+            except Exception:
+                freeze_panes = False
+            return {
+                "host": "et",
+                "app_progid": progid,
+                "workbook_name": _safe_text(getattr(wb, "Name", "")),
+                "full_name": _safe_text(getattr(wb, "FullName", "")),
+                "sheet_count": len(sheet_names),
+                "sheet_names": sheet_names,
+                "freeze_panes": freeze_panes,
+                "chart_count": chart_count,
+                "chart_titles": chart_titles,
+                "sheets": sheet_summaries,
+            }
+        except Exception as exc:
+            last_error = exc
+            continue
+    raise RuntimeError(f"active_workbook_missing:{last_error}")
+
+
+def _text_codepoints(text: str) -> str:
+    return "-".join(f"{ord(ch):04X}" for ch in (text or ""))
+
+
+def _shape_text(shape) -> str:
+    try:
+        if not bool(getattr(shape, "HasTextFrame", False)):
+            return ""
+        frame = getattr(shape, "TextFrame", None)
+        if frame is None or not bool(getattr(frame, "HasText", False)):
+            return ""
+        text = _safe_text(frame.TextRange.Text)
+        return text.replace("\r\n", "\n").replace("\r", "\n").strip()
+    except Exception:
+        return ""
+
+
+def _inspect_wpp_state() -> dict:
+    try:
+        import pythoncom  # type: ignore
+        import win32com.client  # type: ignore
+    except Exception as exc:
+        raise RuntimeError(f"pywin32_unavailable:{exc}") from exc
+
+    pythoncom.CoInitialize()
+    last_error: Exception | None = None
+    for progid in ("kwpp.Application", "KWPP.Application", "wpp.Application", "WPP.Application"):
+        try:
+            app = win32com.client.Dispatch(progid)
+            pres = None
+            try:
+                pres = app.ActivePresentation
+            except Exception:
+                pres = None
+            if not pres:
+                try:
+                    presentations = app.Presentations
+                    if presentations and presentations.Count >= 1:
+                        pres = presentations.Item(1)
+                except Exception:
+                    pres = None
+            if not pres:
+                continue
+            slides = getattr(pres, "Slides", None)
+            slide_total = int(getattr(slides, "Count", 0) or 0)
+            slide_summaries: list[dict] = []
+            slide_titles: list[str] = []
+            for idx in range(1, slide_total + 1):
+                slide = slides.Item(idx)
+                title = ""
+                text_samples: list[str] = []
+                shape_count = int(getattr(getattr(slide, "Shapes", None), "Count", 0) or 0)
+                for shape_idx in range(1, shape_count + 1):
+                    try:
+                        shape = slide.Shapes.Item(shape_idx)
+                    except Exception:
+                        continue
+                    text = _shape_text(shape)
+                    if not text:
+                        continue
+                    compact = text.replace("\n", " / ")
+                    if not title:
+                        title = compact.split(" / ", 1)[0].strip()
+                    if compact not in text_samples:
+                        text_samples.append(compact)
+                if title:
+                    slide_titles.append(title)
+                slide_summaries.append(
+                    {
+                        "index": idx,
+                        "title": title,
+                        "title_codepoints": _text_codepoints(title),
+                        "shape_count": shape_count,
+                        "texts": text_samples[:5],
+                    }
+                )
+            return {
+                "host": "wpp",
+                "app_progid": progid,
+                "presentation_name": _safe_text(getattr(pres, "Name", "")),
+                "full_name": _safe_text(getattr(pres, "FullName", "")),
+                "slide_count": slide_total,
+                "slide_titles": slide_titles,
+                "slide_title_codes": [_text_codepoints(title) for title in slide_titles],
+                "slides": slide_summaries,
+            }
+        except Exception as exc:
+            last_error = exc
+            continue
+    raise RuntimeError(f"active_presentation_missing:{last_error}")
+
+
+def cmd_inspect_host_state(host: str) -> int:
+    if host == "wps":
+        state = _inspect_wps_state()
+    elif host == "et":
+        state = _inspect_et_state()
+    elif host == "wpp":
+        state = _inspect_wpp_state()
+    else:
+        print("inspect_host_state_requires_specific_host")
+        return 2
+    print(json.dumps(state, ensure_ascii=False))
+    return 0
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="WPS/ET/WPP taskpane desktop automation PoC")
     parser.add_argument("--host", choices=["any", "wps", "et", "wpp"], default="any")
@@ -1530,6 +1770,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_dismiss_dialog.add_argument("--index", type=int, default=None)
     p_dismiss_dialog.add_argument("--title-contains", type=str, default=None)
 
+    sub.add_parser("inspect-host-state", help="dump active host document/workbook/presentation summary as JSON")
+
     return parser
 
 
@@ -1578,6 +1820,8 @@ def main() -> int:
         return cmd_bench_stop(args.host, args.index, args.title_contains, args.focus)
     if args.cmd == "dismiss-modified-dialog":
         return cmd_dismiss_modified_dialog(args.host, args.index, args.title_contains)
+    if args.cmd == "inspect-host-state":
+        return cmd_inspect_host_state(args.host)
     parser.print_help()
     return 2
 

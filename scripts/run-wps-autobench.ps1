@@ -271,6 +271,61 @@ raise SystemExit(1)
   }
 }
 
+function Read-InspectHostState {
+  try {
+    $raw = & python $driver --host $BenchHost inspect-host-state
+    if ($LASTEXITCODE -ne 0) { return $null }
+    $json = (($raw -join "`n").Trim())
+    if (-not $json) { return $null }
+    return ($json | ConvertFrom-Json)
+  } catch {
+    Write-Host ('[autobench] inspect host state failed: ' + $_.Exception.Message)
+    return $null
+  }
+}
+
+function Test-StringCollectionContains {
+  param(
+    [object[]]$Values,
+    [string]$Expected
+  )
+
+  foreach ($value in @($Values)) {
+    if ([string]$value -eq $Expected) { return $true }
+  }
+  return $false
+}
+
+function Test-BenchMutation {
+  param(
+    [string]$SuiteIdValue,
+    $State
+  )
+
+  if (-not $State) { return $false }
+  switch ($SuiteIdValue) {
+    'et-analyzer' {
+      return (([int]$State.sheet_count -ge 2) -and ([int]$State.chart_count -ge 1) -and (Test-StringCollectionContains -Values @($State.sheet_names) -Expected 'Summary'))
+    }
+    'et-visualizer' {
+      return (([int]$State.chart_count -ge 2) -and (Test-StringCollectionContains -Values @($State.chart_titles) -Expected 'Expense Structure') -and (Test-StringCollectionContains -Values @($State.chart_titles) -Expected 'Sales Trend'))
+    }
+    'ppt-creator' {
+      return (([int]$State.slide_count -eq 3) -and (Test-StringCollectionContains -Values @($State.slide_title_codes) -Expected '9879-76EE-6C47-62A5') -and (Test-StringCollectionContains -Values @($State.slide_title_codes) -Expected '76EE-5F55') -and (Test-StringCollectionContains -Values @($State.slide_title_codes) -Expected '7ED3-8BBA-4E0E-4E0B-4E00-6B65'))
+    }
+    'ppt-outline' {
+      return (([int]$State.slide_count -eq 4) -and (Test-StringCollectionContains -Values @($State.slide_title_codes) -Expected '9879-76EE-80CC-666F') -and (Test-StringCollectionContains -Values @($State.slide_title_codes) -Expected '5F53-524D-95EE-9898') -and (Test-StringCollectionContains -Values @($State.slide_title_codes) -Expected '89E3-51B3-65B9-6848') -and (Test-StringCollectionContains -Values @($State.slide_title_codes) -Expected '4E0B-4E00-6B65'))
+    }
+    'wpp-outline' {
+      return (([int]$State.slide_count -eq 2) -and (Test-StringCollectionContains -Values @($State.slide_title_codes) -Expected '7248-5F0F-6D4B-8BD5') -and (Test-StringCollectionContains -Values @($State.slide_title_codes) -Expected '8981-70B9'))
+    }
+    default {
+      return $false
+    }
+  }
+}
+
+
 $benchUrl = 'http://127.0.0.1:3890/?ah32_force_dev=1'
 $benchUrl += '&ah32_dev_bench=1'
 $benchUrl += '&ah32_dev_kiosk=bench'
@@ -429,3 +484,19 @@ if ((-not $benchStatus) -or (($benchStatus -notmatch '"running":true') -and ($be
     Write-Host ('[autobench] bench status unavailable for host=' + $BenchHost + '; skip fallback hotkey to avoid duplicate execution.')
   }
 }
+
+Start-Sleep -Seconds 3
+$inspectState = Read-InspectHostState
+if ($inspectState) {
+  $inspectJson = $inspectState | ConvertTo-Json -Depth 8 -Compress
+  Write-Host ('[autobench] inspect host state=' + $inspectJson)
+  if (Test-BenchMutation -SuiteIdValue $SuiteId -State $inspectState) {
+    Write-Host ('[autobench] mutation verification passed for suite=' + $SuiteId)
+    exit 0
+  }
+  Write-Host ('[autobench] mutation verification did not match expected signature for suite=' + $SuiteId)
+  exit 3
+}
+
+Write-Host ('[autobench] inspect host state unavailable for host=' + $BenchHost)
+exit 4
