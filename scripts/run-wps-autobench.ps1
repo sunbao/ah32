@@ -157,6 +157,79 @@ function Start-WpsHostViaCom {
   }
 }
 
+function Ensure-EtWorkbookSavedForBench {
+  try {
+    if ($BenchHost -ne 'et') { return $true }
+    $targetPath = Join-Path 'C:\Users\Public\Documents' ('Bench-ETMacro-' + (Get-Date -Format 'yyyyMMdd_HHmmss_fff') + '.xlsx')
+    $py = @'
+import os
+import pythoncom
+import win32com.client
+
+pythoncom.CoInitialize()
+target_path = os.environ.get("AH32_ET_BENCH_XLSX_PATH", "").strip()
+if not target_path:
+    raise SystemExit("missing_target_path")
+
+last_error = None
+for progid in ("ket.Application", "et.Application", "KET.Application", "ET.Application"):
+    try:
+        app = win32com.client.Dispatch(progid)
+        wb = None
+        try:
+            wb = app.ActiveWorkbook
+        except Exception:
+            wb = None
+        if not wb:
+            try:
+                books = app.Workbooks
+                if books and books.Count >= 1:
+                    wb = books.Item(1)
+                elif books and hasattr(books, "Add"):
+                    wb = books.Add()
+            except Exception:
+                wb = None
+        if not wb:
+            continue
+        full_name = ""
+        try:
+            full_name = str(getattr(wb, "FullName", "") or "").strip()
+        except Exception:
+            full_name = ""
+        if full_name and full_name.lower().endswith(".xlsx") and os.path.exists(full_name):
+            print(full_name)
+            raise SystemExit(0)
+        try:
+            app.DisplayAlerts = False
+        except Exception:
+            pass
+        try:
+            wb.SaveAs(target_path)
+        except Exception:
+            wb.SaveAs(target_path, 51)
+        print(target_path)
+        raise SystemExit(0)
+    except Exception as exc:
+        last_error = exc
+
+raise SystemExit("save_active_workbook_failed:" + str(last_error))
+'@
+    $env:AH32_ET_BENCH_XLSX_PATH = $targetPath
+    $pyResult = $py | python -
+    if ($LASTEXITCODE -ne 0) {
+      throw ($pyResult -join "`n")
+    }
+    $savedPath = (($pyResult | Select-Object -Last 1) -join '').Trim()
+    Write-Host ('[autobench] ensured ET workbook saved: ' + $savedPath)
+    return $true
+  } catch {
+    Write-Host ('[autobench] ensure ET workbook saved failed: ' + $_.Exception.Message)
+    return $false
+  } finally {
+    Remove-Item Env:AH32_ET_BENCH_XLSX_PATH -ErrorAction SilentlyContinue
+  }
+}
+
 function Set-DevBenchRequestInHost {
   param(
     [string]$RunModeValue,
@@ -410,6 +483,10 @@ try {
 Write-Host ('[autobench] ensure ' + $BenchHost + ' editor...')
 & python $driver --host $BenchHost ensure-host-editor
 if ($LASTEXITCODE -ne 0) { throw 'ensure_host_editor_failed' }
+
+if (-not (Ensure-EtWorkbookSavedForBench)) {
+  throw 'ensure_et_workbook_saved_failed'
+}
 
 if (-not (Set-DevBenchRequestInHost -RunModeValue $RunMode -SuiteIdValue $SuiteId -PresetValue $Preset -ActionValue $Action -OnceKeyValue $onceKey)) {
   Write-Host ('[autobench] request variable unavailable for host=' + $BenchHost + ', continue with taskpane URL/hotkey fallback.')

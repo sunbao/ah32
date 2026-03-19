@@ -231,19 +231,20 @@ const T: Record<MacroBenchSuiteId, Template[]> = {
                 select_a1: true,
               },
               {
-                id: 'pivot',
-                title: 'Create pivot table',
-                op: 'create_pivot_table',
-                source_range: 'Sheet1!A1:D11',
-                destination: 'Summary!A1',
-                table_name: 'ah32_et_summary',
-                rows: ['Department'],
-                values: [
-                  {
-                    field: 'Amount',
-                    summary: 'sum',
-                    title: 'Total Amount',
-                  },
+                id: 'summary_table',
+                title: 'Insert summary table',
+                op: 'insert_table',
+                rows: 5,
+                cols: 2,
+                header: true,
+                borders: true,
+                auto_fit: 1,
+                data: [
+                  ['Department', 'Total Amount'],
+                  ['North', 4190],
+                  ['South', 3510],
+                  ['East', 1940],
+                  ['West', 2560],
                 ],
               },
               {
