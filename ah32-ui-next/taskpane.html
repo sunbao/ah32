@@ -655,6 +655,33 @@
   <script>
     console.log('[taskpane v3.5] bootstrap check')
 
+
+    function normalizeBaseUrl(raw) {
+      try {
+        var text = String(raw || '').trim()
+        if (!text) return ''
+        return text.replace(/\/+$/, '')
+      } catch (e) {
+        return ''
+      }
+    }
+
+    function resolveTaskpaneBaseUrl() {
+      try {
+        var configured = normalizeBaseUrl((window.__AH32_CONFIG__ || {}).taskpaneBaseUrl)
+        if (/^https?:\/\//i.test(configured)) return configured
+      } catch (e0) {}
+      try {
+        var current = normalizeBaseUrl(GetUrlPath())
+        if (/^https?:\/\//i.test(current)) return current
+      } catch (e1) {}
+      try {
+        var origin = normalizeBaseUrl(location.origin)
+        if (/^https?:\/\//i.test(origin)) return origin
+      } catch (e2) {}
+      return 'http://127.0.0.1:3889'
+    }
+
     function createTaskpaneCompat(url, title) {
       var app = (typeof window !== 'undefined' && window.Application) ? window.Application : null
       var taskpane = null
@@ -682,13 +709,20 @@
             window.Application.Enum = window.WPS_Enum || {}
           }
           window.Application.PluginStorage.setItem("ah32_taskpane_id", "")
-          try { window.Application.PluginStorage.setItem("ah32_taskpane_query", ((typeof location !== 'undefined' && location.search) ? String(location.search) : "")) } catch (e) {}
+          try {
+            var initQuery = (typeof getQueryString === 'function') ? String(getQueryString() || '') : ((typeof location !== 'undefined' && location.search) ? String(location.search) : "")
+            window.Application.PluginStorage.setItem("ah32_taskpane_query", initQuery)
+          } catch (e) {}
           return true
         },
         OnAction: function(control) {
           if (control.Id === "btnOpenPanel") {
-            try { window.Application.PluginStorage.setItem("ah32_taskpane_query", ((typeof location !== 'undefined' && location.search) ? String(location.search) : "")) } catch (e) {}
-            const taskpane = createTaskpaneCompat(GetUrlPath() + "/taskpane.html" + ((typeof location !== 'undefined' && location.search) ? String(location.search) : ""), "闃胯洡鏅鸿兘鍔╂墜")
+            var panelQuery = ""
+            try {
+              panelQuery = (typeof getQueryString === 'function') ? String(getQueryString() || '') : ((typeof location !== 'undefined' && location.search) ? String(location.search) : "")
+              window.Application.PluginStorage.setItem("ah32_taskpane_query", panelQuery)
+            } catch (e) {}
+            const taskpane = createTaskpaneCompat(resolveTaskpaneBaseUrl() + "/taskpane.html" + panelQuery, "闃胯洡鏅鸿兘鍔╂墜")
           }
           return true
         },
@@ -729,6 +763,8 @@
   -->
   <script>
     (function () {
+      var BOOTSTRAP_PROBE_KEY = 'ah32_taskpane_bootstrap_probe_v1'
+
       function safeReport(scope, error, level) {
         try {
           var g = (typeof globalThis !== 'undefined') ? globalThis : (typeof window !== 'undefined' ? window : null)
@@ -761,38 +797,155 @@
         return ''
       }
 
+      function recordBootstrapProbe(fields) {
+        var next = {}
+        try {
+          var raw = localStorage.getItem(BOOTSTRAP_PROBE_KEY) || '{}'
+          var prev = JSON.parse(raw)
+          if (!prev || typeof prev !== 'object') prev = {}
+          next = prev
+        } catch (e) {
+          next = {}
+        }
+        try {
+          for (var k in fields) next[k] = fields[k]
+          next.updatedAt = new Date().toISOString()
+          localStorage.setItem(BOOTSTRAP_PROBE_KEY, JSON.stringify(next))
+        } catch (e2) {
+          safeReport('bootstrap.probe.local_storage', e2, 'warning')
+        }
+        try {
+          var storage = window.Application && window.Application.PluginStorage
+          if (storage && typeof storage.setItem === 'function') {
+            storage.setItem('ah32_taskpane_bootstrap_probe', JSON.stringify(next).slice(0, 3500))
+          }
+        } catch (e3) {
+          safeReport('bootstrap.probe.plugin_storage', e3, 'warning')
+        }
+        return next
+      }
+
       function loadScript(src, type) {
         return new Promise(function (resolve, reject) {
           var el = document.createElement('script')
+          var timer = null
           if (type) {
             el.type = type
           }
+          recordBootstrapProbe({
+            lastPhase: 'script_loading',
+            lastScriptSrc: src,
+            lastScriptType: type || 'classic',
+            lastScriptStartedAt: new Date().toISOString()
+          })
           el.src = src
-          el.onload = function () { resolve(true) }
-          el.onerror = function () { reject(new Error('Failed to load: ' + src)) }
+          el.onload = function () {
+            try {
+              if (timer) clearTimeout(timer)
+            } catch (e0) {}
+            recordBootstrapProbe({
+              lastPhase: 'script_loaded',
+              lastScriptSrc: src,
+              lastScriptType: type || 'classic',
+              lastScriptLoadedAt: new Date().toISOString(),
+              lastError: ''
+            })
+            resolve(true)
+          }
+          el.onerror = function () {
+            try {
+              if (timer) clearTimeout(timer)
+            } catch (e0) {}
+            var err = new Error('Failed to load: ' + src)
+            recordBootstrapProbe({
+              lastPhase: 'script_error',
+              lastScriptSrc: src,
+              lastScriptType: type || 'classic',
+              lastScriptErroredAt: new Date().toISOString(),
+              lastError: err.message
+            })
+            reject(err)
+          }
+          timer = setTimeout(function () {
+            var err = new Error('Timed out loading: ' + src)
+            try { el.onerror = null } catch (e1) {}
+            recordBootstrapProbe({
+              lastPhase: 'script_timeout',
+              lastScriptSrc: src,
+              lastScriptType: type || 'classic',
+              lastScriptTimedOutAt: new Date().toISOString(),
+              lastError: err.message
+            })
+            reject(err)
+          }, 12000)
           document.head.appendChild(el)
         })
       }
 
       function loadProd() {
         // Vite build outputs to `./assets/main.js` (IIFE). This has no hot-reload and is more stable in WPS.
+        recordBootstrapProbe({ lastPhase: 'prod_attempt', lastBase: './assets/main.js' })
         return loadScript('./assets/main.js')
       }
 
-      function loadDev() {
-        // Prefer the same host (some WPS debug servers use localhost instead of 127.0.0.1).
-        // Note: when taskpane is loaded via file://, fall back to the loopback host.
-        var host = (location && location.hostname) ? String(location.hostname) : '127.0.0.1'
-        var proto = (location && /^https?:$/.test(String(location.protocol))) ? String(location.protocol) : 'http:'
-        var base = proto + '//' + host + ':3889'
+      function buildDevBaseCandidates() {
+        var out = []
+        function push(raw) {
+          try {
+            var text = String(raw || '').trim().replace(/\/+$/, '')
+            if (!/^https?:\/\//i.test(text)) return
+            if (out.indexOf(text) >= 0) return
+            out.push(text)
+          } catch (e) {}
+        }
+
+        try { push(resolveTaskpaneBaseUrl()) } catch (e0) { safeReport('bootstrap.dev_base.resolve_taskpane', e0, 'warning') }
+        try {
+          var host = (location && location.hostname) ? String(location.hostname) : '127.0.0.1'
+          var proto = (location && /^https?:$/.test(String(location.protocol))) ? String(location.protocol) : 'http:'
+          push(proto + '//' + host + ':3889')
+        } catch (e1) { safeReport('bootstrap.dev_base.current_host', e1, 'warning') }
+        push('http://127.0.0.1:3889')
+        push('http://localhost:3889')
+        return out
+      }
+
+      function loadDevFromBase(base) {
         var hmrFlag = String('%VITE_ENABLE_HMR%').trim().toLowerCase()
         var wantsHmr = (hmrFlag === '1' || hmrFlag === 'true' || hmrFlag === 'yes')
+        recordBootstrapProbe({
+          lastPhase: 'dev_attempt',
+          lastBase: base,
+          lastHmrEnabled: wantsHmr,
+          lastAttemptedAt: new Date().toISOString()
+        })
         var tasks = []
         if (wantsHmr) {
           tasks.push(loadScript(base + '/@vite/client', 'module'))
         }
         tasks.push(loadScript(base + '/src/main.ts', 'module'))
         return Promise.all(tasks)
+      }
+
+      function loadDev() {
+        var bases = buildDevBaseCandidates()
+        var idx = 0
+        function next(lastError) {
+          if (idx >= bases.length) {
+            throw lastError || new Error('No dev base candidates available')
+          }
+          var base = bases[idx++]
+          return loadDevFromBase(base).catch(function (err) {
+            recordBootstrapProbe({
+              lastPhase: 'dev_attempt_failed',
+              lastBase: base,
+              lastError: (err && err.message) ? err.message : String(err || ''),
+              lastAttemptFailedAt: new Date().toISOString()
+            })
+            return next(err)
+          })
+        }
+        return next(null)
       }
 
       function truthy(v) {
@@ -816,15 +969,31 @@
         }
       }
 
+      recordBootstrapProbe({
+        lastPhase: 'bootstrap_start',
+        preferDev: shouldPreferDev(),
+        href: String(location && location.href ? location.href : '')
+      })
+
       var bootstrapFlow = shouldPreferDev()
         ? loadDev().catch(function () { return loadProd() })
         : loadProd().catch(function () { return loadDev() })
 
       bootstrapFlow
+        .then(function () {
+          recordBootstrapProbe({
+            lastPhase: 'bootstrap_loaded',
+            lastError: ''
+          })
+        })
         .catch(function (err) {
           try {
             var msg = (err && err.message) ? err.message : String(err)
             console.error('[taskpane] frontend bootstrap failed:', msg)
+            recordBootstrapProbe({
+              lastPhase: 'bootstrap_failed',
+              lastError: msg
+            })
             var boot = document.getElementById('boot-status')
             if (boot) {
               boot.textContent = [

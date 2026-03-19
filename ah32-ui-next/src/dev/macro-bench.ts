@@ -123,7 +123,14 @@ const checkBackendHealth = async (): Promise<boolean> => {
   }
 }
 
-const callGeneratePlan = async (args: { query: string; sessionId: string; documentName: string; host: MacroBenchHost; signal?: AbortSignal }) => {
+const callGeneratePlan = async (args: {
+  query: string
+  sessionId: string
+  documentName: string
+  host: MacroBenchHost
+  forceSkillId?: string
+  signal?: AbortSignal
+}) => {
   const cfg = getRuntimeConfig()
   const caps = wpsBridge.getCapabilities(false)
   const url = `${cfg.apiBase}/agentic/plan/generate`
@@ -142,6 +149,30 @@ const callGeneratePlan = async (args: { query: string; sessionId: string; docume
       document_name: args.documentName,
       host_app: args.host,
       capabilities: caps,
+      frontend_context: {
+        host_app: args.host,
+        bench: true,
+        run_context: {
+          bench: true,
+          mode: 'macro',
+        },
+        ...(String(args.forceSkillId || '').trim()
+          ? {
+              client_skill_selection: {
+                explicit: true,
+                primary_skill_id: String(args.forceSkillId || '').trim(),
+                primary_score: 1.0,
+                accept_threshold: 0.0,
+                candidates: [
+                  {
+                    id: String(args.forceSkillId || '').trim(),
+                    score: 1.0,
+                  },
+                ],
+              },
+            }
+          : {}),
+      },
     }),
   })
   if (!resp.ok) {
@@ -166,6 +197,7 @@ const callGeneratePlanWithRetry = async (args: {
   sessionId: string
   documentName: string
   host: MacroBenchHost
+  forceSkillId?: string
   signal?: AbortSignal
 }) => {
   const cfg = getRuntimeConfig()
@@ -462,21 +494,35 @@ export const runMacroBenchCurrentHost = async (opts?: RunBenchOptions): Promise<
         ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench.ts', e)
       }
 
-      // 1) generate (single call)
+      // 1) generate (single call) or use deterministic override
       const t0 = performance.now()
       let plan: any = null
       let genMs = 0
+      const hasPlanOverride =
+        c.planOverride && typeof c.planOverride === 'object' && !Array.isArray(c.planOverride)
       try {
         if (shouldStopNow()) break
-        const gen = await callGeneratePlanWithRetry({ query: c.query, sessionId, documentName: docName, host, signal: opts?.signal })
-        genMs = gen.durationMs || Math.round(performance.now() - t0)
-        if (!gen.success || !gen.plan) {
-          throw new Error(gen.error || "generate_empty_or_failed")
+        if (hasPlanOverride) {
+          plan = c.planOverride
+          genMs = 0
+        } else {
+          const gen = await callGeneratePlanWithRetry({
+            query: c.query,
+            sessionId,
+            documentName: docName,
+            host,
+            forceSkillId: String(c.forceSkillId || '').trim() || undefined,
+            signal: opts?.signal,
+          })
+          genMs = gen.durationMs || Math.round(performance.now() - t0)
+          if (!gen.success || !gen.plan) {
+            throw new Error(gen.error || "generate_empty_or_failed")
+          }
+          plan = gen.plan
         }
-        plan = gen.plan
       } catch (e: any) {
         if (shouldStopNow() || isAbortError(e)) break
-        const msg = `generate_failed: ${String(e?.message || e)}`
+        const msg = `${hasPlanOverride ? 'plan_override_failed' : 'generate_failed'}: ${String(e?.message || e)}`
         const r: MacroBenchCaseResult = {
           case: c,
           sessionId,
@@ -497,13 +543,13 @@ export const runMacroBenchCurrentHost = async (opts?: RunBenchOptions): Promise<
           host_app: host,
           mode: "plan",
           success: false,
-          error_type: "bench_generate_failed",
+          error_type: hasPlanOverride ? "bench_override_failed" : "bench_generate_failed",
           error_message: msg,
-          extra: { bench: true, case: c.id, suite: c.suiteId, phase: "generate" },
+          extra: { bench: true, case: c.id, suite: c.suiteId, phase: hasPlanOverride ? "override" : "generate" },
         })
 
         // If the backend is down, stop the bench early (otherwise we just spam failures).
-        if (/Failed to fetch/i.test(msg)) {
+        if (!hasPlanOverride && /Failed to fetch/i.test(msg)) {
           const healthy = await checkBackendHealth()
           if (!healthy) break
         }

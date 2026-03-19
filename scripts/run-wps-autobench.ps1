@@ -12,7 +12,9 @@ param(
   [ValidateSet('start', 'resume')]
   [string]$Action = 'start',
 
-  [string]$FixtureDocx = 'C:\Users\Public\Documents\ah32_bench_fixture.docx'
+  [string]$FixtureDocx = 'C:\Users\Public\Documents\ah32_bench_fixture.docx',
+
+  [string]$ApiBase = ''
 )
 
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -21,6 +23,7 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $tmpDir = Join-Path $repoRoot '.codex-tmp'
 $driver = Join-Path $repoRoot 'scripts\wps_taskpane_driver.py'
+$resolvedApiBase = [string]$(if ($ApiBase) { $ApiBase } elseif ($env:VITE_API_BASE) { $env:VITE_API_BASE } else { 'http://127.0.0.1:5123' })
 
 New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
 
@@ -41,6 +44,23 @@ function Stop-ProcessListeningOnPort([int]$Port) {
         Write-Host ("[autobench] stopped process on port " + $Port + ": pid=" + $pid)
       } catch {
         Write-Host ("[autobench] stop process on port " + $Port + " failed: pid=" + $pid + " " + $_.Exception.Message)
+      }
+    }
+  } catch {}
+}
+
+function Stop-WpsJsProcesses {
+  try {
+    $items = @(Get-CimInstance Win32_Process -Filter "name = 'node.exe'" | Where-Object {
+      $cmd = [string]$_.CommandLine
+      $cmd -like '*scripts/wpsjs-debug.mjs*' -or $cmd -like '*node_modules\wpsjs\src\index.js debug*'
+    })
+    foreach ($item in $items) {
+      try {
+        Stop-Process -Id $item.ProcessId -Force -ErrorAction Stop
+        Write-Host ("[autobench] stopped wpsjs process pid=" + $item.ProcessId)
+      } catch {
+        Write-Host ("[autobench] stop wpsjs process failed pid=" + $item.ProcessId + ' ' + $_.Exception.Message)
       }
     }
   } catch {}
@@ -271,6 +291,7 @@ Set-Content -Path (Join-Path $tmpDir 'auto-wpsjs.url.txt') -Value $benchUrl -Enc
 $viteCommand = @(
   '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8'
   '$ErrorActionPreference = ''Stop'''
+  '$env:VITE_API_BASE = ' + (Quote-Ps $resolvedApiBase)
   'Set-Location ' + (Quote-Ps $repoRoot)
   'npm -C ah32-ui-next run dev 1> ' + (Quote-Ps $viteOut) + ' 2> ' + (Quote-Ps $viteErr)
 ) -join '; '
@@ -280,15 +301,18 @@ $wpsjsCommand = @(
   '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8'
   '$ErrorActionPreference = ''Stop'''
   '$env:BID_WPSJS_URL = ' + (Quote-Ps $benchUrl)
+  '$env:VITE_API_BASE = ' + (Quote-Ps $resolvedApiBase)
   'Set-Location ' + (Quote-Ps $repoRoot)
   'npm -C ah32-ui-next run ' + $wpsjsScript + ' 1> ' + (Quote-Ps $wpsjsOut) + ' 2> ' + (Quote-Ps $wpsjsErr)
 ) -join '; '
 
 Write-Host ("[autobench] target host=" + $BenchHost + " mode=" + $RunMode + " suite=" + $SuiteId + " preset=" + $Preset + " action=" + $Action)
+Write-Host ("[autobench] apiBase=" + $resolvedApiBase)
 Write-Host ("[autobench] dev taskpane url=" + $benchUrl)
 
 Write-Host '[autobench] stopping existing WPS host processes for a clean automation session...'
 Stop-WpsHostProcesses
+Stop-WpsJsProcesses
 Start-Sleep -Seconds 2
 
 if (-not (Test-PortListening 3889)) {
@@ -300,11 +324,12 @@ if (-not (Test-PortListening 3889)) {
 
 Wait-Until -TimeoutSeconds 45 -Label 'port_3889' -Condition { Test-PortListening 3889 } | Out-Null
 
-if (Test-PortListening 3890) {
-  Write-Host ('[autobench] restarting ' + $wpsjsScript + ' chain so the current bench URL is definitely registered...')
-  Stop-ProcessListeningOnPort -Port 3890
-  Start-Sleep -Seconds 2
+foreach ($port in @(3890, 3891, 3892)) {
+  if (Test-PortListening $port) {
+    Stop-ProcessListeningOnPort -Port $port
+  }
 }
+Start-Sleep -Seconds 2
 Write-Host ('[autobench] starting ' + $wpsjsScript + ' chain...')
 Start-BackgroundPowerShell -Command $wpsjsCommand
 
@@ -347,6 +372,29 @@ Start-Sleep -Seconds 2
 
 $assistantState = & python $driver --host $BenchHost assistant-state
 if ($LASTEXITCODE -ne 0) { throw 'assistant_state_probe_failed' }
+if (-not (($assistantState | Out-String) -match 'assistant_open=True')) {
+  Write-Host '[autobench] assistant not visible yet, retry state probe...'
+  $assistantReady = $false
+  for ($i = 0; $i -lt 15; $i++) {
+    Start-Sleep -Seconds 2
+    $assistantState = & python $driver --host $BenchHost assistant-state
+    if ($LASTEXITCODE -eq 0 -and (($assistantState | Out-String) -match 'assistant_open=True')) {
+      $assistantReady = $true
+      break
+    }
+  }
+  if (-not $assistantReady) {
+    Write-Host '[autobench] retry ensure assistant open once more...'
+    & python $driver --host $BenchHost ensure-ah32-assistant-open
+    for ($i = 0; $i -lt 8; $i++) {
+      Start-Sleep -Seconds 2
+      $assistantState = & python $driver --host $BenchHost assistant-state
+      if ($LASTEXITCODE -eq 0 -and (($assistantState | Out-String) -match 'assistant_open=True')) {
+        break
+      }
+    }
+  }
+}
 Write-Host ($assistantState | Out-String)
 if (-not (($assistantState | Out-String) -match 'assistant_open=True')) {
   throw 'ensure_assistant_open_failed'
@@ -366,14 +414,18 @@ Start-Sleep -Seconds 5
 $benchStatus = Read-DevBenchStatusFromHost
 Write-Host ('[autobench] bench status probe=' + $(if ($benchStatus) { $benchStatus } else { '<empty>' }))
 if ((-not $benchStatus) -or (($benchStatus -notmatch '"running":true') -and ($benchStatus -notmatch '"stage":"done"'))) {
-  Write-Host ('[autobench] bench not running yet, send fallback hotkey action=' + $Action)
-  if ($Action -eq 'resume') {
-    & python $driver --host $BenchHost bench-resume --focus
+  if ($BenchHost -eq 'wps') {
+    Write-Host ('[autobench] bench not running yet, send fallback hotkey action=' + $Action)
+    if ($Action -eq 'resume') {
+      & python $driver --host $BenchHost bench-resume --focus
+    } else {
+      & python $driver --host $BenchHost bench-start --focus
+    }
+    if ($LASTEXITCODE -ne 0) { throw 'bench_fallback_action_failed' }
+    Start-Sleep -Seconds 4
+    $benchStatus = Read-DevBenchStatusFromHost
+    Write-Host ('[autobench] bench status after fallback=' + $(if ($benchStatus) { $benchStatus } else { '<empty>' }))
   } else {
-    & python $driver --host $BenchHost bench-start --focus
+    Write-Host ('[autobench] bench status unavailable for host=' + $BenchHost + '; skip fallback hotkey to avoid duplicate execution.')
   }
-  if ($LASTEXITCODE -ne 0) { throw 'bench_fallback_action_failed' }
-  Start-Sleep -Seconds 4
-  $benchStatus = Read-DevBenchStatusFromHost
-  Write-Host ('[autobench] bench status after fallback=' + $(if ($benchStatus) { $benchStatus } else { '<empty>' }))
 }

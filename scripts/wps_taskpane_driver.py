@@ -72,7 +72,11 @@ def _safe_text(value) -> str:
 def _host_for_target(target: WinInfo | None) -> str:
     if target is None:
         return "any"
-    for host in ("wps", "et", "wpp"):
+    # Check structured hosts before the generic Writer fallback.
+    # WPP top frames often look like "WPS Office - WPS Office", which also matches
+    # Writer's loose title fallback. If we check Writer first, WPP gets misrouted
+    # to Writer ribbon coordinates and the assistant never opens.
+    for host in ("et", "wpp", "wps"):
         if _matches_host(host, target.title, target.class_name):
             return host
     return "any"
@@ -628,13 +632,12 @@ def _taskpane_layout_visible(target: WinInfo, rect: Rect | None) -> bool:
         return False
     host = _host_for_target(target)
     if host in {"et", "wpp"}:
-        window_width = max(1, int(target.right) - int(target.left))
         pane_width = max(0, int(rect.right) - int(rect.left))
-        return (
-            pane_width >= 280
-            and rect.left >= (target.left + int(window_width * 0.45))
-            and rect.right >= (target.right - 80)
-        )
+        pane_height = max(0, int(rect.bottom) - int(rect.top))
+        # ET/WPP host window hierarchies differ a lot across builds:
+        # some expose the taskpane against the full outer frame, others against a smaller inner frame.
+        # If we already found a browser-sized pane, treat it as visible without insisting on a global-right-edge ratio.
+        return pane_width >= 240 and pane_height >= 300
     doc_right = _active_writer_doc_area_right_edge(target)
     if doc_right <= 0:
         window_width = max(1, int(target.right) - int(target.left))
@@ -674,7 +677,7 @@ def _find_taskpane_rect_raw(target: WinInfo) -> Rect | None:
                 left, top, right, bottom = win32gui.GetWindowRect(child)
                 width = max(0, right - left)
                 height = max(0, bottom - top)
-                if width >= 280 and height >= 320:
+                if width >= 240 and height >= 300:
                     is_browser = cls in TASKPANE_BROWSER_CLASSES
                     is_right_side = left >= max(target.left + 320, doc_right - 24)
                     if is_browser and is_right_side:
@@ -736,7 +739,7 @@ def _find_taskpane_target_hwnd_raw(target: WinInfo) -> int | None:
                 left, top, right, bottom = win32gui.GetWindowRect(child)
                 width = max(0, right - left)
                 height = max(0, bottom - top)
-                if width >= 280 and height >= 320 and cls in TASKPANE_BROWSER_CLASSES:
+                if width >= 240 and height >= 300 and cls in TASKPANE_BROWSER_CLASSES:
                     priority = {
                         "Chrome_RenderWidgetHostHWND": 3,
                         "Chrome_WidgetWin_0": 2,

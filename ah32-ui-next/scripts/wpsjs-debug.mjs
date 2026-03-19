@@ -119,8 +119,49 @@ function extractQueryString(rawUrl) {
   }
 }
 
-function buildRuntimeConfigText(taskpaneUrl) {
-  const taskpaneQuery = extractQueryString(taskpaneUrl)
+function normalizeQueryString(raw) {
+  const text = String(raw || '').trim()
+  if (!text) return ''
+  return text.startsWith('?') ? text : `?${text}`
+}
+
+function resolveDefaultTaskpaneQuery(host) {
+  const override = normalizeQueryString(process.env.BID_WPSJS_TASKPANE_QUERY || '')
+  if (override) return override
+
+  const suiteByHost = {
+    wps: 'doc-analyzer',
+    et: 'et-analyzer',
+    wpp: 'ppt-creator',
+  }
+  const modeByHost = {
+    wps: 'chat',
+    et: 'macro',
+    wpp: 'macro',
+  }
+  const suiteId = suiteByHost[host] || ''
+  const runMode = modeByHost[host] || 'chat'
+  if (!suiteId) return ''
+
+  const params = new URLSearchParams()
+  params.set('ah32_force_dev', '1')
+  params.set('ah32_dev_bench', '1')
+  params.set('ah32_dev_kiosk', 'bench')
+  params.set('ah32_dev_bench_mode', runMode)
+  params.set('ah32_dev_bench_suite', suiteId)
+  params.set('ah32_dev_bench_preset', 'standard')
+  return `?${params.toString()}`
+}
+
+function buildRuntimeConfigText(taskpaneUrl, taskpaneQueryOverride = '') {
+  const taskpaneQuery = normalizeQueryString(taskpaneQueryOverride || extractQueryString(taskpaneUrl))
+  let taskpaneBaseUrl = ''
+  try {
+    const u = new URL(String(taskpaneUrl || '').trim())
+    taskpaneBaseUrl = `${u.protocol}//${u.host}${u.pathname}`.replace(/\/+$/, '')
+  } catch {
+    taskpaneBaseUrl = String(taskpaneUrl || '').trim().replace(/[?#].*$/, '').replace(/\/+$/, '')
+  }
   const apiBase = String(process.env.VITE_API_BASE || 'http://127.0.0.1:5123').trim() || 'http://127.0.0.1:5123'
   const apiKey = String(process.env.VITE_API_KEY || '').trim()
   return (
@@ -130,12 +171,13 @@ function buildRuntimeConfigText(taskpaneUrl) {
       apiBase,
       apiKey,
       taskpaneQuery,
+      taskpaneBaseUrl,
     }) +
     ');\n'
   )
 }
 
-function writeRuntimeConfig(taskpaneUrl) {
+function writeRuntimeConfig(taskpaneUrl, taskpaneQueryOverride = '') {
   try {
     const configPath = path.resolve(process.cwd(), 'config.js')
     if (!runtimeConfigRestore) {
@@ -143,7 +185,7 @@ function writeRuntimeConfig(taskpaneUrl) {
       const originalText = existed ? fs.readFileSync(configPath, 'utf8') : null
       runtimeConfigRestore = { configPath, existed, originalText }
     }
-    fs.writeFileSync(configPath, buildRuntimeConfigText(taskpaneUrl), 'utf8')
+    fs.writeFileSync(configPath, buildRuntimeConfigText(taskpaneUrl, taskpaneQueryOverride), 'utf8')
   } catch (err) {
     console.warn('[wpsjs-debug] writeRuntimeConfig failed:', err)
   }
@@ -601,7 +643,10 @@ const manifestName = readManifestName()
 const defaultName = String(manifestName || 'Ah32').trim() || 'Ah32'
 const addinId = String(process.env.BID_WPSJS_ADDIN_ID || process.env.BID_WPSJS_NAME || defaultName).trim() || defaultName
 const devUrl = resolveDevUrl()
-writeRuntimeConfig(String(process.env.BID_WPSJS_URL || devUrl || '').trim() || devUrl)
+const defaultTaskpaneQuery = resolveDefaultTaskpaneQuery(target)
+const requestedTaskpaneUrl = String(process.env.BID_WPSJS_URL || devUrl || '').trim() || devUrl
+const requestedTaskpaneQuery = normalizeQueryString(extractQueryString(requestedTaskpaneUrl) || defaultTaskpaneQuery)
+writeRuntimeConfig(requestedTaskpaneUrl, requestedTaskpaneQuery)
 
 // Ensure wpsjs uses the correct addin id when it patches publish.xml.
 setAddonType(addonTypeForWpsjs, addinId)

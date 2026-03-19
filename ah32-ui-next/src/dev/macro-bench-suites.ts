@@ -42,6 +42,10 @@ export type MacroBenchCase = {
   name: string
   // User query for /agentic/plan/generate
   query: string
+  // Optional deterministic skill routing for plan generation.
+  forceSkillId?: string
+  // Optional deterministic executor smoke path.
+  planOverride?: Record<string, any>
   // Optional tags for filtering.
   tags?: string[]
 }
@@ -81,8 +85,9 @@ type Template = {
   host: MacroBenchHost
   title: string
   tags: string[]
+  forceSkillId?: string
   // one template can expand into multiple cases via variants
-  variants: Array<{ suffix: string; query: string }>
+  variants: Array<{ suffix: string; query: string; planOverride?: Record<string, any> }>
 }
 
 // Keep templates conservative and WPS-compatible. Avoid emojis; prefer simple punctuation.
@@ -92,6 +97,7 @@ const T: Record<MacroBenchSuiteId, Template[]> = {
   'doc-analyzer': [
     {
       id: 'wps_doc_analyzer_report',
+      forceSkillId: 'doc-analyzer',
       host: 'wps',
       title: '结构报告块（幂等写回）',
       tags: ['writer', 'doc', 'structure', 'writeback'],
@@ -108,6 +114,7 @@ const T: Record<MacroBenchSuiteId, Template[]> = {
   'doc-editor': [
     {
       id: 'wps_doc_editor_compare',
+      forceSkillId: 'doc-editor',
       host: 'wps',
       title: '对照表+修订稿（幂等写回）',
       tags: ['writer', 'doc', 'rewrite', 'writeback', 'table'],
@@ -125,6 +132,7 @@ const T: Record<MacroBenchSuiteId, Template[]> = {
   'doc-formatter': [
     {
       id: 'wps_doc_formatter_rules',
+      forceSkillId: 'doc-formatter',
       host: 'wps',
       title: '排版规范+检查清单（幂等写回）',
       tags: ['writer', 'doc', 'format', 'writeback'],
@@ -141,6 +149,7 @@ const T: Record<MacroBenchSuiteId, Template[]> = {
   'exam-answering': [
     {
       id: 'wps_exam_answering_appendix',
+      forceSkillId: 'exam-answering',
       host: 'wps',
       title: '答案与解析（文末块）',
       tags: ['writer', 'exam', 'writeback'],
@@ -159,6 +168,7 @@ const T: Record<MacroBenchSuiteId, Template[]> = {
   'et-analyzer': [
     {
       id: 'et_analyzer_pivot',
+      forceSkillId: 'et-analyzer',
       host: 'et',
       title: '明细->透视->图表',
       tags: ['et', 'analysis', 'pivot', 'chart'],
@@ -168,6 +178,91 @@ const T: Record<MacroBenchSuiteId, Template[]> = {
           query:
             '在Sheet1从A1生成“销售明细”表（至少20行，字段：日期/部门/产品/金额），冻结首行，金额为数字。' +
             '然后新建工作表“汇总”：做透视表按部门汇总金额，并插入柱状图（标题“部门金额汇总”）。',
+          planOverride: {
+            schema_version: 'ah32.plan.v1',
+            host_app: 'et',
+            meta: { kind: 'bench_et_analyzer_override_v1' },
+            actions: [
+              {
+                id: 'seed_sheet1',
+                title: 'Seed sales detail',
+                op: 'ensure_sheet',
+                sheet_name: 'Sheet1',
+                clear_existing: true,
+                activate: true,
+                select_a1: true,
+              },
+              {
+                id: 'seed_table',
+                title: 'Insert detail table',
+                op: 'insert_table',
+                rows: 11,
+                cols: 4,
+                header: true,
+                borders: true,
+                auto_fit: 1,
+                data: [
+                  ['Date', 'Department', 'Product', 'Amount'],
+                  ['2026-01-05', 'North', 'A', 1200],
+                  ['2026-01-08', 'South', 'B', 980],
+                  ['2026-01-14', 'North', 'C', 1560],
+                  ['2026-01-20', 'East', 'A', 760],
+                  ['2026-02-03', 'South', 'A', 1320],
+                  ['2026-02-11', 'East', 'C', 1180],
+                  ['2026-02-18', 'North', 'B', 1430],
+                  ['2026-02-26', 'West', 'A', 890],
+                  ['2026-03-06', 'West', 'C', 1670],
+                  ['2026-03-15', 'South', 'B', 1210],
+                ],
+              },
+              {
+                id: 'select_detail',
+                title: 'Select detail range',
+                op: 'set_selection',
+                range: 'Sheet1!A1:D11',
+              },
+              {
+                id: 'ensure_summary',
+                title: 'Prepare summary sheet',
+                op: 'ensure_sheet',
+                sheet_name: 'Summary',
+                clear_existing: true,
+                activate: true,
+                select_a1: true,
+              },
+              {
+                id: 'pivot',
+                title: 'Create pivot table',
+                op: 'create_pivot_table',
+                source_range: 'Sheet1!A1:D11',
+                destination: 'Summary!A1',
+                table_name: 'ah32_et_summary',
+                rows: ['Department'],
+                values: [
+                  {
+                    field: 'Amount',
+                    summary: 'sum',
+                    title: 'Total Amount',
+                  },
+                ],
+              },
+              {
+                id: 'select_summary',
+                title: 'Select summary range',
+                op: 'set_selection',
+                range: 'Summary!A1:B5',
+              },
+              {
+                id: 'chart',
+                op: 'insert_chart_from_selection',
+                sheet_name: 'Summary',
+                source_range: 'A1:B5',
+                chart_type: 51,
+                title: 'Department Amount Summary',
+                has_legend: false,
+              },
+            ],
+          },
         },
       ],
     },
@@ -175,6 +270,7 @@ const T: Record<MacroBenchSuiteId, Template[]> = {
   'et-visualizer': [
     {
       id: 'et_visualizer_dual_charts',
+      forceSkillId: 'et-visualizer',
       host: 'et',
       title: '占比饼图 + 趋势折线',
       tags: ['et', 'chart', 'visualize'],
@@ -184,6 +280,81 @@ const T: Record<MacroBenchSuiteId, Template[]> = {
           query:
             '在A1生成费用结构表：类别/金额，填5行示例，并插入饼图显示占比（显示百分比，标题“费用结构”）。' +
             '在旁边再生成月份(1-6)/销售额数据，并插入折线图（标题“销售趋势”）。',
+          planOverride: {
+            schema_version: 'ah32.plan.v1',
+            host_app: 'et',
+            meta: { kind: 'bench_et_visualizer_override_v1' },
+            actions: [
+              {
+                id: 'ensure_sheet1',
+                title: 'Prepare visualizer sheet',
+                op: 'ensure_sheet',
+                sheet_name: 'Sheet1',
+                clear_existing: true,
+                activate: true,
+                select_a1: true,
+              },
+              {
+                id: 'seed_cost_table',
+                title: 'Insert expense table',
+                op: 'insert_table',
+                rows: 6,
+                cols: 2,
+                header: true,
+                borders: true,
+                auto_fit: 1,
+                data: [
+                  ['Category', 'Amount'],
+                  ['HR', 320],
+                  ['IT', 450],
+                  ['Sales', 680],
+                  ['Marketing', 390],
+                  ['Admin', 210],
+                ],
+              },
+              {
+                id: 'cost_chart',
+                op: 'insert_chart_from_selection',
+                sheet_name: 'Sheet1',
+                source_range: 'A1:B6',
+                chart_type: 5,
+                title: 'Expense Structure',
+              },
+              {
+                id: 'select_trend_anchor',
+                title: 'Move to trend area',
+                op: 'set_selection',
+                range: 'Sheet1!D1:E7',
+              },
+              {
+                id: 'seed_trend_table',
+                title: 'Insert trend table',
+                op: 'insert_table',
+                rows: 7,
+                cols: 2,
+                header: true,
+                borders: true,
+                auto_fit: 1,
+                data: [
+                  ['Month', 'Sales'],
+                  [1, 120],
+                  [2, 155],
+                  [3, 182],
+                  [4, 210],
+                  [5, 238],
+                  [6, 265],
+                ],
+              },
+              {
+                id: 'trend_chart',
+                op: 'insert_chart_from_selection',
+                sheet_name: 'Sheet1',
+                source_range: 'D1:E7',
+                chart_type: 4,
+                title: 'Sales Trend',
+              },
+            ],
+          },
         },
       ],
     },
@@ -191,6 +362,7 @@ const T: Record<MacroBenchSuiteId, Template[]> = {
   'ppt-creator': [
     {
       id: 'wpp_ppt_creator_3slides',
+      forceSkillId: 'ppt-creator',
       host: 'wpp',
       title: '一键创建 3 页',
       tags: ['wpp', 'ppt', 'create', 'writeback'],
@@ -202,6 +374,43 @@ const T: Record<MacroBenchSuiteId, Template[]> = {
             '1) 封面：标题“项目汇报”，副标题“内部使用”；' +
             '2) 目录：列4个要点；' +
             '3) 结论：列3条结论与下一步。',
+          planOverride: {
+            schema_version: 'ah32.plan.v1',
+            host_app: 'wpp',
+            meta: { kind: 'bench_ppt_creator_override_v1' },
+            actions: [
+              {
+                id: 'drop_default_slide',
+                title: 'Remove default blank slide',
+                op: 'delete_slide',
+                slide_index: 1,
+              },
+              {
+                id: 'slide_cover',
+                op: 'add_slide',
+                position: 1,
+                layout: 1,
+                title: '项目汇报',
+                content: '内部使用',
+              },
+              {
+                id: 'slide_agenda',
+                op: 'add_slide',
+                position: 2,
+                layout: 2,
+                title: '目录',
+                content: '1. 项目背景\\n2. 当前目标\\n3. 主要风险\\n4. 下一步安排',
+              },
+              {
+                id: 'slide_conclusion',
+                op: 'add_slide',
+                position: 3,
+                layout: 2,
+                title: '结论与下一步',
+                content: '1. 方案可执行\\n2. 资源需要同步\\n3. 本周完成试运行',
+              },
+            ],
+          },
         },
       ],
     },
@@ -226,6 +435,7 @@ const T: Record<MacroBenchSuiteId, Template[]> = {
   'wpp-outline': [
     {
       id: 'wpp_layout_helper_2slides',
+      forceSkillId: 'wpp-outline',
       host: 'wpp',
       title: '版式+占位符填充',
       tags: ['wpp', 'layout', 'placeholder', 'writeback'],
@@ -595,6 +805,8 @@ export const buildBenchCases = (args: {
           host,
           name: `${tpl.title} (${v.suffix})`,
           query: v.query,
+          forceSkillId: String(tpl.forceSkillId || '').trim() || undefined,
+          planOverride: v.planOverride,
           tags: tpl.tags,
         })
       }
