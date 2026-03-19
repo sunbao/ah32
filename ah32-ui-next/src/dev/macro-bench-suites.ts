@@ -446,6 +446,35 @@ const T: Record<MacroBenchSuiteId, Template[]> = {
             '创建2页PPT并优先使用占位符填充：' +
             '1) 标题页：标题“版式测试”，副标题“占位符填充”；' +
             '2) 内容页：标题“要点”，列4条要点。',
+          planOverride: {
+            schema_version: 'ah32.plan.v1',
+            host_app: 'wpp',
+            meta: { kind: 'bench_wpp_outline_override_v1' },
+            actions: [
+              {
+                id: 'drop_default_slide',
+                title: 'Remove default blank slide',
+                op: 'delete_slide',
+                slide_index: 1,
+              },
+              {
+                id: 'slide_title',
+                op: 'add_slide',
+                position: 1,
+                layout: 1,
+                title: '版式测试',
+                content: '占位符填充',
+              },
+              {
+                id: 'slide_points',
+                op: 'add_slide',
+                position: 2,
+                layout: 2,
+                title: '要点',
+                content: '1. 要点一\\n2. 要点二\\n3. 要点三\\n4. 要点四',
+              },
+            ],
+          },
         },
       ],
     },
