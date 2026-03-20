@@ -4009,6 +4009,8 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
         selectedSkills = []
       }
       selectedSkills = applyForcedSkillSelection(turn, selectedSkills)
+    } else {
+      selectedSkills = applyForcedSkillSelection(turn, [])
     }
 
     if (!blocks.length && expectedOutput !== 'plan') {

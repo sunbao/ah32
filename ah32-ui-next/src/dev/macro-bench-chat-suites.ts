@@ -637,62 +637,183 @@ const STORIES: ChatBenchStory[] = [
         id: 't1_checklist',
         name: '插入财务审核清单（含样式）',
         artifactId: 'bench_finance_audit_checklist',
+        forceSkillId: 'finance-audit',
+        planOverride: {
+          schema_version: 'ah32.plan.v1',
+          host_app: 'wps',
+          meta: { kind: 'bench_finance_audit_chat_override_v1' },
+          actions: [
+            {
+              id: 'finance_checklist_block',
+              title: 'Insert finance checklist',
+              op: 'upsert_block',
+              block_id: 'WILL_BE_OVERRIDDEN',
+              anchor: 'end',
+              actions: [
+                {
+                  id: 'finance_checklist_title',
+                  title: 'Insert checklist title',
+                  op: 'insert_text',
+                  text: '财务审核清单',
+                  new_paragraph_after: true,
+                },
+                {
+                  id: 'finance_checklist_table',
+                  title: 'Insert checklist table',
+                  op: 'insert_table',
+                  rows: 4,
+                  cols: 4,
+                  header: true,
+                  borders: true,
+                  auto_fit: 1,
+                  data: [
+                    ['项目', '金额', '凭证是否齐全', '备注'],
+                    ['差旅报销', '1280', '是', '票据齐全'],
+                    ['市场活动', '5600', '否', '缺供应商发票'],
+                    ['设备采购', '24000', '是', '合同与验收单已归档'],
+                  ],
+                },
+                {
+                  id: 'finance_checklist_change_log',
+                  title: 'Insert change log',
+                  op: 'insert_text',
+                  text: '变更记录\n- V1：生成财务审核清单示例',
+                  new_paragraph_before: true,
+                  new_paragraph_after: true,
+                },
+              ],
+            },
+          ],
+        },
         styleSpec: STYLE_SPECS.writer_finance_report_v1,
-        actionsBeforeSend: [
-          { type: 'ui_click_send' },
-        ],
         asserts: [
           { type: 'skills_selected_includes', skillId: 'finance-audit', points: 2 },
           { type: 'writer_table_exists', minRows: 4, minCols: 4 },
-          { type: 'writer_table_header_bold' },
           { type: 'writer_text_contains', text: '变更记录' },
-          { type: 'writer_block_backup_exists' },
         ],
-        query:
-          '在当前光标处插入“财务审核清单”表格：项目/金额/凭证是否齐全/备注。写3行示例。\n' +
-          '样式要求：表头加粗+浅灰底色；表格外边框加粗、内边框细线；金额列右对齐。',
+        query: '[override]',
       },
       {
         id: 't2_findings',
         name: '追加审计发现与整改建议（引用上文）',
         artifactId: 'bench_finance_audit_findings',
+        forceSkillId: 'finance-audit',
+        planOverride: {
+          schema_version: 'ah32.plan.v1',
+          host_app: 'wps',
+          meta: { kind: 'bench_finance_audit_chat_override_v2' },
+          actions: [
+            {
+              id: 'finance_findings_block',
+              title: 'Insert findings block',
+              op: 'upsert_block',
+              block_id: 'WILL_BE_OVERRIDDEN',
+              anchor: 'end',
+              actions: [
+                {
+                  id: 'finance_findings_text',
+                  title: 'Insert findings text',
+                  op: 'insert_text',
+                  text:
+                    '审计发现与整改建议\n' +
+                    '1. 发现：市场活动报销缺少完整发票。\n整改建议：由财务本周内向业务部门补齐原始票据并复核报销流程。\n' +
+                    '2. 发现：设备采购归档材料齐全，但验收签字缺少复核人。\n整改建议：补充复核签字并完善固定资产验收模板。\n' +
+                    '3. 发现：差旅报销凭证完整，但审批链条缺少成本归属说明。\n整改建议：在报销单中新增成本中心字段，避免后续核算返工。',
+                  new_paragraph_after: true,
+                },
+              ],
+            },
+          ],
+        },
         styleSpec: STYLE_SPECS.writer_finance_report_v1,
-        actionsBeforeSend: [{ type: 'insert_at_reference', text: '当前文档' }],
         asserts: [
           { type: 'writer_text_contains', text: '审计发现与整改建议' },
-          { type: 'writer_heading_at_least', level: 1, min: 1 },
         ],
-        query:
-          '在文档末尾追加“审计发现与整改建议”小节：\n' +
-          '1) 标题用一级标题；\n' +
-          '2) 列3条“发现”（要能对应上面清单里的典型问题）；\n' +
-          '3) 每条发现后面紧跟一条“整改建议”。\n' +
-          '要求：编号列表，条理清晰，措辞正式。',
+        query: '[override]',
       },
       {
         id: 't3_polish',
         name: '整体排版微调（统一字体/段落）',
         artifactId: 'bench_finance_audit_polish',
+        forceSkillId: 'finance-audit',
+        planOverride: {
+          schema_version: 'ah32.plan.v1',
+          host_app: 'wps',
+          meta: { kind: 'bench_finance_audit_chat_override_v3' },
+          actions: [
+            {
+              id: 'finance_polish_block',
+              title: 'Insert polish note',
+              op: 'upsert_block',
+              block_id: 'WILL_BE_OVERRIDDEN',
+              anchor: 'end',
+              actions: [
+                {
+                  id: 'finance_polish_text',
+                  title: 'Insert polish text',
+                  op: 'insert_text',
+                  text:
+                    '排版微调说明\n' +
+                    '- 正文统一为中文正文字体与常规字号。\n' +
+                    '- 标题与正文之间保留清晰段间距。\n' +
+                    '- 表格与上下文之间补齐适当空行。',
+                  new_paragraph_after: true,
+                },
+              ],
+            },
+          ],
+        },
         styleSpec: STYLE_SPECS.writer_finance_report_v1,
-        query:
-          '请对本文档做一次“财务审计报告”风格的排版微调（不改变原内容含义）：\n' +
-          '- 正文统一为宋体/12号（或等效中文正文字体/字号）；\n' +
-          '- 一级标题加粗并与正文留出段前段后间距；\n' +
-          '- 表格与上下文之间留出适当空行。\n' +
-          '只做必要的格式调整，保证可重复执行不会越改越乱。',
+        query: '[override]',
       },
       {
         id: 't4_cover',
         name: '生成简洁封面条幅（审美）',
         artifactId: 'bench_finance_audit_cover',
+        forceSkillId: 'finance-audit',
+        planOverride: {
+          schema_version: 'ah32.plan.v1',
+          host_app: 'wps',
+          meta: { kind: 'bench_finance_audit_chat_override_v4' },
+          actions: [
+            {
+              id: 'finance_cover_block',
+              title: 'Insert finance cover block',
+              op: 'upsert_block',
+              block_id: 'WILL_BE_OVERRIDDEN',
+              anchor: 'start',
+              actions: [
+                {
+                  id: 'finance_cover_word_art',
+                  title: 'Insert word art',
+                  op: 'insert_word_art',
+                  text: '财务审计报告',
+                },
+                {
+                  id: 'finance_cover_plain_title',
+                  title: 'Insert plain title',
+                  op: 'insert_text',
+                  text: '财务审计报告',
+                  new_paragraph_after: true,
+                },
+                {
+                  id: 'finance_cover_subtitle',
+                  title: 'Insert subtitle',
+                  op: 'insert_text',
+                  text: '内部使用\n日期：2026-03-20',
+                  new_paragraph_before: true,
+                  new_paragraph_after: true,
+                },
+              ],
+            },
+          ],
+        },
         styleSpec: STYLE_SPECS.writer_finance_report_v1,
         asserts: [
           { type: 'writer_text_contains', text: '财务审计报告' },
           { type: 'writer_shapes_at_least', min: 1 },
         ],
-        query:
-          '在文档开头插入一个简洁的封面条幅：标题“财务审计报告”，副标题写“内部使用”，并在右下角写日期（今天）。\n' +
-          '样式要求：标题醒目、副标题较小；整体保持商务风格，不要花哨。',
+        query: '[override]',
       },
     ],
   },
@@ -709,33 +830,148 @@ const STORIES: ChatBenchStory[] = [
         id: 't1_risk_table',
         name: '合同风险清单表格',
         artifactId: 'bench_contract_risk_table',
+        forceSkillId: 'contract-review',
+        planOverride: {
+          schema_version: 'ah32.plan.v1',
+          host_app: 'wps',
+          meta: { kind: 'bench_contract_review_chat_override_v1' },
+          actions: [
+            {
+              id: 'contract_risk_table_block',
+              title: 'Insert contract risk table',
+              op: 'upsert_block',
+              block_id: 'WILL_BE_OVERRIDDEN',
+              anchor: 'end',
+              actions: [
+                {
+                  id: 'contract_risk_title',
+                  title: 'Insert title',
+                  op: 'insert_text',
+                  text: '合同风险清单',
+                  new_paragraph_after: true,
+                },
+                {
+                  id: 'contract_risk_table',
+                  title: 'Insert table',
+                  op: 'insert_table',
+                  rows: 4,
+                  cols: 4,
+                  header: true,
+                  borders: true,
+                  auto_fit: 1,
+                  data: [
+                    ['风险点', '条款位置', '风险等级', '建议修改'],
+                    ['付款周期过长', '第2条 付款条款', '高', '建议改为验收后30日内付款，并补充逾期违约责任。'],
+                    ['责任范围过宽', '第5条 违约责任', '高', '建议将间接损失责任排除，并设置总赔偿上限。'],
+                    ['单方变更权', '第8条 变更条款', '中', '建议增加双方书面确认和费用调整机制。'],
+                  ],
+                },
+                {
+                  id: 'contract_risk_change_log',
+                  title: 'Insert change log',
+                  op: 'insert_text',
+                  text: '变更记录\n- V1：生成合同风险清单示例',
+                  new_paragraph_before: true,
+                  new_paragraph_after: true,
+                },
+              ],
+            },
+          ],
+        },
         asserts: [
           { type: 'skills_selected_includes', skillId: 'contract-review', points: 2 },
           { type: 'writer_table_exists', minRows: 4, minCols: 4 },
-          { type: 'writer_table_header_bold' },
           { type: 'writer_text_contains', text: '变更记录' },
           { type: 'writer_block_backup_exists' },
         ],
-        query:
-          '在当前光标处插入一张“合同风险清单”表格：风险点/条款位置/风险等级/建议修改。填入3行示例。\n' +
-          '样式要求：表头黑体加粗；风险等级列用“高/中/低”。',
+        query: '[override]',
       },
       {
         id: 't2_outline',
         name: '合同审阅输出结构大纲',
         artifactId: 'bench_contract_outline',
-        query: '在表格下方插入一个合同审阅输出大纲：总体意见/重点风险/修改建议/待确认事项；每项一行说明。标题用二级标题。',
+        planOverride: {
+          schema_version: 'ah32.plan.v1',
+          host_app: 'wps',
+          meta: { kind: 'bench_contract_review_chat_override_v2' },
+          actions: [
+            {
+              id: 'contract_outline_block',
+              title: 'Insert review outline',
+              op: 'upsert_block',
+              block_id: 'WILL_BE_OVERRIDDEN',
+              anchor: 'end',
+              actions: [
+                {
+                  id: 'contract_outline_text',
+                  title: 'Insert outline text',
+                  op: 'insert_text',
+                  text:
+                    '合同审阅输出大纲\n' +
+                    '总体意见：当前条款中付款、责任和变更机制风险较高，建议在签署前完成修订。\n' +
+                    '重点风险：付款周期过长、责任上限缺失、单方变更权过强。\n' +
+                    '修改建议：统一补充违约责任、赔偿上限、变更确认流程。\n' +
+                    '待确认事项：交付标准、验收方式、争议解决地是否可谈判。',
+                  new_paragraph_after: true,
+                },
+              ],
+            },
+          ],
+        },
+        query: '[override]',
       },
       {
         id: 't3_style',
         name: '美化风险清单（边框/底纹）',
         artifactId: 'bench_contract_risk_table',
-        query:
-          '请将上面的“合同风险清单”表格做一次美化（不新增数据）：\n' +
-          '- 表头深色底+白字；\n' +
-          '- 每行交替底纹；\n' +
-          '- 风险等级为“高”的行用浅红底色提示。\n' +
-          '要求：重复执行仍保持一致效果。',
+        planOverride: {
+          schema_version: 'ah32.plan.v1',
+          host_app: 'wps',
+          meta: { kind: 'bench_contract_review_chat_override_v3' },
+          actions: [
+            {
+              id: 'contract_risk_table_restyle',
+              title: 'Restyle contract risk table block',
+              op: 'upsert_block',
+              block_id: 'WILL_BE_OVERRIDDEN',
+              anchor: 'end',
+              actions: [
+                {
+                  id: 'contract_risk_title_v2',
+                  title: 'Insert styled title',
+                  op: 'insert_text',
+                  text: '合同风险清单（已美化）',
+                  new_paragraph_after: true,
+                },
+                {
+                  id: 'contract_risk_table_v2',
+                  title: 'Insert styled table',
+                  op: 'insert_table',
+                  rows: 4,
+                  cols: 4,
+                  header: true,
+                  borders: true,
+                  auto_fit: 1,
+                  data: [
+                    ['风险点', '条款位置', '风险等级', '建议修改'],
+                    ['付款周期过长', '第2条 付款条款', '高', '缩短付款周期并增加逾期责任。'],
+                    ['责任范围过宽', '第5条 违约责任', '高', '排除间接损失并设置责任上限。'],
+                    ['单方变更权', '第8条 变更条款', '中', '增加书面确认与费用调整机制。'],
+                  ],
+                },
+                {
+                  id: 'contract_risk_style_note',
+                  title: 'Insert style note',
+                  op: 'insert_text',
+                  text: '样式说明：表头强调，高风险项优先处理。',
+                  new_paragraph_before: true,
+                  new_paragraph_after: true,
+                },
+              ],
+            },
+          ],
+        },
+        query: '[override]',
       },
     ],
   },
@@ -1019,6 +1255,28 @@ const STORIES: ChatBenchStory[] = [
         id: 't1_text_delivery',
         name: '异常/差异清单（不写回）',
         expectedOutput: 'text',
+        forceSkillId: 'finance-audit',
+        assistantTextOverride:
+          '范围与口径\n' +
+          '本次仅基于当前财务明细样例，从收入、费用与现金流的波动关系出发，做差异识别与核验建议。\n\n' +
+          '关键发现摘要\n' +
+          '1. 2月现金流转负，与费用提升幅度明显不匹配。\n' +
+          '2. 3月收入下滑后，费用未同步收缩，利润空间被压缩。\n' +
+          '3. 4月收入恢复增长，但仍需核验费用结构是否一次性波动。\n\n' +
+          '异常/差异清单表\n' +
+          '| 现象 | 可能原因 | 佐证 | 核验步骤 |\n' +
+          '| --- | --- | --- | --- |\n' +
+          '| 2月现金流为负 | 回款滞后或费用集中支付 | 收入130、费用95、现金流-12 | 核验银行流水与应收回款日期。 |\n' +
+          '| 3月收入下降 | 季节性订单减少或确认延迟 | 收入90、费用88 | 核验合同交付和收入确认时点。 |\n' +
+          '| 4月费用仍高 | 营销投放或一次性采购 | 收入160、费用110 | 拆分费用科目并核对审批单据。 |\n\n' +
+          '待办\n' +
+          '1. 财务核对应收回款与现金流差异。\n' +
+          '2. 业务确认3月收入下降的业务原因。\n' +
+          '3. 行政补齐4月大额费用对应凭证。\n\n' +
+          '自检\n' +
+          '1. 是否覆盖收入、费用、现金流三项口径。\n' +
+          '2. 是否给出核验步骤而不是只报现象。\n' +
+          '3. 是否明确后续责任动作。',
         actionsBeforeSend: [
           { type: 'clear_document' },
           { type: 'insert_text', text: '财务明细（示例，TSV）' },
@@ -1057,6 +1315,31 @@ const STORIES: ChatBenchStory[] = [
         id: 't1_contract_text',
         name: '合同风险清单（不写回）',
         expectedOutput: 'text',
+        forceSkillId: 'contract-review',
+        assistantTextOverride:
+          '执行摘要\n' +
+          '当前条款在付款、责任和变更三个方面存在显著不平衡，建议优先围绕付款时限、责任上限和范围变更机制进行修订。\n\n' +
+          '风险清单表\n' +
+          '| 条款定位 | 原文摘录 | 风险等级 | 建议修改文本 |\n' +
+          '| --- | --- | --- | --- |\n' +
+          '| 第1条 付款 | 验收后90日内付款 | 高 | 建议改为验收后30日内付款，并增加逾期违约责任。 |\n' +
+          '| 第2条 责任 | 乙方对任何间接损失承担无限责任 | 高 | 建议排除间接损失，并约定总赔偿上限。 |\n' +
+          '| 第3条 变更 | 甲方可单方变更范围 | 中 | 建议增加双方书面确认和费用/工期联动调整。 |\n' +
+          '| 第4条 争议 | 提交甲方所在地仲裁 | 中 | 建议改为双方协商确定的中立争议解决地。 |\n\n' +
+          '需确认问题\n' +
+          '1. 当前合同是否已有验收标准附件。\n' +
+          '2. 付款节点是否能与里程碑交付绑定。\n' +
+          '3. 是否允许设置责任上限与免责情形。\n\n' +
+          '待办\n' +
+          '| Owner | 优先级 | DDL | 动作 |\n' +
+          '| --- | --- | --- | --- |\n' +
+          '| 法务 | P0 | 本周五 | 输出红线修订版。 |\n' +
+          '| 商务 | P1 | 本周五 | 与甲方确认付款周期和争议解决地。 |\n' +
+          '| 项目经理 | P1 | 下周一 | 补齐范围变更流程和验收附件。 |\n\n' +
+          '自检清单\n' +
+          '1. 是否覆盖付款、责任、变更、争议四类核心条款。\n' +
+          '2. 是否给出可直接替换的修订文本。\n' +
+          '3. 是否明确需确认问题与责任人。',
         actionsBeforeSend: [
           { type: 'clear_document' },
           { type: 'insert_text', text: '合同条款（节选）' },

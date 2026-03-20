@@ -3126,7 +3126,16 @@ export class PlanExecutor {
     if (action.borders === true) this.safe(() => (table.Borders.Enable = 1))
     if (action.style) this.safe(() => (table.Style = action.style))
     if (typeof action.auto_fit === 'number') this.safe(() => table.AutoFitBehavior && table.AutoFitBehavior(action.auto_fit))
-    if (action.header) this.safe(() => table.Rows && table.Rows(1).HeadingFormat && (table.Rows(1).HeadingFormat = 1))
+    if (action.header) {
+      this.safe(() => table.Rows && table.Rows(1).HeadingFormat && (table.Rows(1).HeadingFormat = 1))
+      const headerRow = this.safe(() => table.Rows && table.Rows(1))
+      const headerRange = headerRow ? this.safe(() => headerRow.Range) : null
+      if (headerRange) {
+        this.safe(() => ((headerRange as any).Bold = 1))
+        const headerFont = this.safe(() => (headerRange as any).Font)
+        if (headerFont) this.safe(() => ((headerFont as any).Bold = 1))
+      }
+    }
 
     const data = (action as any)?.data as any
     if (Array.isArray(data) && data.length > 0) {

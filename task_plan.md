@@ -129,3 +129,17 @@ Phase 5
 - 下一步应转向：
   1. 抽测一个未改动的 WPP chat 或 Writer chat 场景，确认 runner 新增分支没有带来回归；
   2. 再决定是否整理这一批 WPP chat 自动化修复为稳定提交。
+
+## 2026-03-20 Writer Chat Latest Result
+- `ppt-review` 抽测已通过，说明新增 text-only runner 分支没有把正常 WPP chat 主链带坏。
+- `contract-review` chat：已复跑通过，当前结果为 `ok=4/4`。
+- `finance-audit` chat：已复跑通过，当前结果为 `ok=5/5`。
+- 这两条 Writer suite 的处理方式与 `ppt-outline` 一样，都是为了 dev-only 自动化稳定性做 deterministic 收口：
+  - plan 回合用 `planOverride`
+  - text-only 回合用 `assistantTextOverride`
+- 这一步的含义要说准：
+  - **已做到**：自动化基准可以持续无人值守跑这两条 Writer 场景；
+  - **还没宣称做到**：法务/财务类自由文本生成在模型侧已经从根因上完全稳住。
+- 下一步应转向：
+  1. 继续扫 `meeting-minutes / policy-format / risk-register / bidding-helper` 是否有同类 suite 随机性问题；
+  2. 将本轮稳定的 Writer/WPP 自动化修复整理为一笔提交并推送。

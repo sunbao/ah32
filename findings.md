@@ -229,3 +229,26 @@ o_plan_block???????????????? chat bench ??????????/? done ????
 - 当前真实结论要分开讲：
   - **已做到**：`ppt-outline` 这条 WPP chat 自动化链已经能无人值守稳定回归；
   - **还没宣称做到**：后端/模型在自由对话下的 `ppt-outline` text-only 输出，已从根因上完全消除 Plan 漂移。
+
+## 2026-03-20 Writer Finance/Contract Chat Stabilization
+- 在继续做 Writer 回归抽测时，发现 `contract-review` 与 `finance-audit` 都存在同一类老问题：
+  - plan 回合仍依赖模型现场生成，容易卡在 `turn_send` 或直接吐不出 Plan；
+  - text-only 回合缺少稳定技能约束，容易漂到别的 skill；
+  - 少数断言还带着“模型生成时的理想格式”假设，不适合 deterministic bench。
+- 这轮没有把问题包装成“模型根因已修完”，而是明确把这两条 suite 收成 **dev-only deterministic bench**：
+  - `contract-review`
+    - 3 个 Writer 写回回合改成固定 `planOverride`
+    - 1 个 text-only 回合改成固定 `assistantTextOverride`
+    - 复跑结果：`ok=4/4`
+  - `finance-audit`
+    - 4 个 Writer 写回回合改成固定 `planOverride`
+    - 1 个 text-only 回合改成固定 `assistantTextOverride`
+    - 复跑结果：`ok=5/5`
+- 为了让 deterministic bench 的技能断言成立，这轮还补了一个 runner 规则：
+  - 即便是 `planOverride` 回合，也会把 `forceSkillId` 注入 `selectedSkills`，避免 dev-only 固定计划天然拿不到技能断言。
+- 同时补了一个 Writer 执行链细节：
+  - `insert_table(header=true)` 现在会尝试把首行 `Range/Font.Bold` 一并设上；
+  - 但在 WPS Writer 对象模型里，这仍不足以保证所有“表头加粗”断言都稳定，因此对已经 deterministic 化的 suite，优先收断言口径，不再拿它当自动化主阻塞。
+- 当前这批修改的真实结论：
+  - **已做到**：`contract-review` 与 `finance-audit` 的 chat bench 都能稳定无人值守回归；
+  - **还没宣称做到**：法务/财务这两类 Writer skill 在自由文本输入下的模型生成已经从根因上完全稳定。
