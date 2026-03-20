@@ -309,39 +309,155 @@ raise SystemExit('active_document_missing:' + str(last_error))
 
 function Read-DevBenchStatusFromHost {
   try {
-    if ($BenchHost -ne 'wps') { return '' }
     $py = @'
 import pythoncom
 import win32com.client
 
 pythoncom.CoInitialize()
 
-for progid in ('kwps.Application', 'wps.Application'):
-    try:
-        app = win32com.client.Dispatch(progid)
-        doc = None
+import os
+
+host = str(os.environ.get('AH32_BENCH_HOST', '') or '').strip().lower()
+
+def _print_and_exit(value):
+    text = str(value or '').strip()
+    if text:
+        print(text)
+        raise SystemExit(0)
+
+if host == 'wps':
+    for progid in ('kwps.Application', 'wps.Application'):
         try:
-            doc = app.ActiveDocument
-        except Exception:
+            app = win32com.client.Dispatch(progid)
             doc = None
-        if not doc:
-            continue
-        try:
-            print(str(doc.Variables.Item('AH32_DEV_BENCH_STATUS').Value or ''))
-            raise SystemExit(0)
+            try:
+                doc = app.ActiveDocument
+            except Exception:
+                doc = None
+            if not doc:
+                continue
+            try:
+                _print_and_exit(doc.Variables.Item('AH32_DEV_BENCH_STATUS').Value)
+            except Exception:
+                continue
         except Exception:
             continue
-    except Exception:
-        continue
+
+if host == 'et':
+    for progid in ('ket.Application', 'et.Application', 'KET.Application', 'ET.Application'):
+        try:
+            app = win32com.client.Dispatch(progid)
+            wb = None
+            try:
+                wb = app.ActiveWorkbook
+            except Exception:
+                wb = None
+            if not wb:
+                continue
+            try:
+                sheet = wb.Worksheets.Item('_AH32_DEV_STATUS')
+                cell = sheet.Range('A1')
+                for attr in ('Value', 'Value2', 'Text'):
+                    try:
+                        raw = getattr(cell, attr)
+                    except Exception:
+                        raw = None
+                    text = str(raw or '').strip()
+                    if text:
+                        _print_and_exit(text)
+            except Exception:
+                pass
+            names = None
+            try:
+                names = wb.Names
+            except Exception:
+                names = None
+            if not names:
+                continue
+            try:
+                item = names.Item('AH32_DEV_BENCH_STATUS')
+            except Exception:
+                item = None
+            if not item:
+                continue
+            candidates = []
+            for attr in ('RefersTo', 'RefersToLocal', 'Value', 'Name'):
+                try:
+                    candidates.append(getattr(item, attr))
+                except Exception:
+                    pass
+            for raw in candidates:
+                text = str(raw or '').strip()
+                if not text:
+                    continue
+                if text.startswith('="') and text.endswith('"'):
+                    text = text[2:-1].replace('""', '"')
+                _print_and_exit(text)
+        except Exception:
+            continue
+
+if host == 'wpp':
+    for progid in ('kwpp.Application', 'wpp.Application', 'KWPP.Application', 'WPP.Application'):
+        try:
+            app = win32com.client.Dispatch(progid)
+            pres = None
+            try:
+                pres = app.ActivePresentation
+            except Exception:
+                pres = None
+            if not pres:
+                continue
+            tags = None
+            try:
+                tags = pres.Tags
+            except Exception:
+                tags = None
+            if not tags:
+                continue
+            getters = [
+                lambda: tags.Item('AH32_DEV_BENCH_STATUS'),
+                lambda: tags('AH32_DEV_BENCH_STATUS'),
+            ]
+            for getter in getters:
+                try:
+                    _print_and_exit(getter())
+                except Exception:
+                    continue
+        except Exception:
+            continue
 
 raise SystemExit(1)
 '@
+    $env:AH32_BENCH_HOST = $BenchHost
     $out = $py | python -
     if ($LASTEXITCODE -ne 0) { return '' }
     return (($out -join "`n").Trim())
   } catch {
     return ''
+  } finally {
+    Remove-Item Env:AH32_BENCH_HOST -ErrorAction SilentlyContinue
   }
+}
+
+function Wait-DevBenchStatusTerminal {
+  param(
+    [int]$TimeoutSeconds = 240
+  )
+
+  $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+  $last = ''
+  while ((Get-Date) -lt $deadline) {
+    $raw = Read-DevBenchStatusFromHost
+    if ($raw) {
+      $last = $raw
+      Write-Host ('[autobench] bench status probe=' + $raw)
+      if (($raw -match '"stage":"done"') -or ($raw -match '"stage":"error"') -or ($raw -match '"stage":"stopped"')) {
+        return $raw
+      }
+    }
+    Start-Sleep -Seconds 3
+  }
+  return $last
 }
 
 function Read-InspectHostState {
@@ -378,10 +494,39 @@ function Test-BenchMutation {
   if (-not $State) { return $false }
   switch ($SuiteIdValue) {
     'et-analyzer' {
-      return (([int]$State.sheet_count -ge 2) -and ([int]$State.chart_count -ge 1) -and (Test-StringCollectionContains -Values @($State.sheet_names) -Expected 'Summary'))
+      $sheetNames = @($State.sheet_names)
+      $extraGeneratedSheets = @()
+      foreach ($sheet in @($State.sheets)) {
+        $name = [string]($sheet.name)
+        if (-not $name) { continue }
+        if ($name -in @('_AH32_DEV_STATUS', 'BID_bench_et_analyzer_de', 'BID_bench_et_analyzer_se', 'Sheet1', 'Summary')) {
+          continue
+        }
+        $extraGeneratedSheets += $name
+      }
+      $macroOk = (([int]$State.sheet_count -ge 2) -and ([int]$State.chart_count -ge 1) -and (Test-StringCollectionContains -Values $sheetNames -Expected 'Summary'))
+      $chatOk = (
+        ([int]$State.sheet_count -ge 5) -and
+        ([int]$State.chart_count -ge 1) -and
+        (Test-StringCollectionContains -Values $sheetNames -Expected 'BID_bench_et_analyzer_de') -and
+        ($extraGeneratedSheets.Count -ge 2)
+      )
+      return ($macroOk -or $chatOk)
     }
     'et-visualizer' {
-      return (([int]$State.chart_count -ge 2) -and (Test-StringCollectionContains -Values @($State.chart_titles) -Expected 'Expense Structure') -and (Test-StringCollectionContains -Values @($State.chart_titles) -Expected 'Sales Trend'))
+      $sheetNames = @($State.sheet_names)
+      $chartTitles = @($State.chart_titles)
+      $macroOk = (
+        ([int]$State.chart_count -ge 2) -and
+        (Test-StringCollectionContains -Values $chartTitles -Expected 'Expense Structure') -and
+        (Test-StringCollectionContains -Values $chartTitles -Expected 'Sales Trend')
+      )
+      $chatOk = (
+        ([int]$State.chart_count -ge 3) -and
+        ([int]$State.sheet_count -ge 2) -and
+        (Test-StringCollectionContains -Values $sheetNames -Expected 'Sheet1')
+      )
+      return ($macroOk -or $chatOk)
     }
     'ppt-creator' {
       return (([int]$State.slide_count -eq 3) -and (Test-StringCollectionContains -Values @($State.slide_title_codes) -Expected '9879-76EE-6C47-62A5') -and (Test-StringCollectionContains -Values @($State.slide_title_codes) -Expected '76EE-5F55') -and (Test-StringCollectionContains -Values @($State.slide_title_codes) -Expected '7ED3-8BBA-4E0E-4E0B-4E00-6B65'))
@@ -560,6 +705,46 @@ if ((-not $benchStatus) -or (($benchStatus -notmatch '"running":true') -and ($be
   } else {
     Write-Host ('[autobench] bench status unavailable for host=' + $BenchHost + '; skip fallback hotkey to avoid duplicate execution.')
   }
+}
+
+if ($RunMode -eq 'chat') {
+  $terminalStatus = Wait-DevBenchStatusTerminal -TimeoutSeconds 900
+  if (-not $terminalStatus) {
+    Write-Host ('[autobench] chat status not available for host=' + $BenchHost)
+    exit 5
+  }
+  Write-Host ('[autobench] chat terminal status=' + $terminalStatus)
+  if ($terminalStatus -match '"stage":"done"') {
+    try {
+      $statusObj = $terminalStatus | ConvertFrom-Json
+      $ok = [int]($statusObj.ok | ForEach-Object { $_ })
+      $total = [int]($statusObj.total | ForEach-Object { $_ })
+      if (($total -gt 0) -and ($ok -eq $total)) {
+        Write-Host ('[autobench] chat verification passed for suite=' + $SuiteId + ' ok=' + $ok + '/' + $total)
+        exit 0
+      }
+      Write-Host ('[autobench] chat verification failed for suite=' + $SuiteId + ' ok=' + $ok + '/' + $total)
+      exit 6
+    } catch {
+      Write-Host ('[autobench] chat terminal status parse failed: ' + $_.Exception.Message)
+      exit 6
+    }
+  }
+  if ($terminalStatus -match '"stage":"stopped"') {
+    Write-Host ('[autobench] chat bench stopped for suite=' + $SuiteId)
+    exit 7
+  }
+  $inspectState = Read-InspectHostState
+  if ($inspectState) {
+    $inspectJson = $inspectState | ConvertTo-Json -Depth 8 -Compress
+    Write-Host ('[autobench] inspect host state=' + $inspectJson)
+    if (Test-BenchMutation -SuiteIdValue $SuiteId -State $inspectState) {
+      Write-Host ('[autobench] chat mutation verification passed for suite=' + $SuiteId)
+      exit 0
+    }
+  }
+  Write-Host ('[autobench] chat bench error for suite=' + $SuiteId)
+  exit 8
 }
 
 Start-Sleep -Seconds 3

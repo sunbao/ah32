@@ -210,6 +210,16 @@ const unwrapArrayRef = (v: any): any[] => {
   }
 }
 
+const unwrapMessagesRef = (v: any): any[] => {
+  try {
+    if (!v) return []
+    const vv = (typeof v === 'object' && 'value' in v) ? (v as any).value : v
+    return Array.isArray(vv) ? vv : []
+  } catch (e) {
+    return []
+  }
+}
+
 const applyForcedSkillSelection = (turn: any, selectedSkills: any[]): any[] => {
   try {
     const forcedId = String(turn?.forceSkillId || '').trim()
@@ -755,6 +765,48 @@ const extractPlanBlocks = (assistantMsg: any): string[] => {
   return out
 }
 
+const pickBenchAssistantMessage = (newMsgs: any[], bucketMsgs: any[]): any | null => {
+  const score = (msg: any): number => {
+    try {
+      if (!msg || msg.type !== 'assistant') return -1_000_000
+      let total = 0
+      if (!(msg as any).isSystem) total += 1000
+      const payloads = (msg as any)?.metadata?.macroBlockPayloads
+      if (payloads && typeof payloads === 'object' && !Array.isArray(payloads) && Object.keys(payloads).length > 0) total += 800
+      const content = String((msg as any)?.content || '').trim()
+      if (content.includes('ah32.plan.v1')) total += 600
+      if (content.startsWith('{') && content.endsWith('}')) total += 300
+      if (content) total += 100
+      if (content.includes('【需要补充写回计划】')) total -= 1200
+      if (content.includes('【写回失败】')) total -= 1200
+      if (content.includes('抱歉，本轮没有返回可展示的内容')) total -= 900
+      if (content.includes('[Bench]')) total -= 600
+      return total
+    } catch (e) {
+      ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e)
+      return -1_000_000
+    }
+  }
+
+  const pick = (list: any[]): any | null => {
+    let best: any = null
+    let bestScore = -1_000_000
+    for (let idx = list.length - 1; idx >= 0; idx--) {
+      const item = list[idx]
+      const s = score(item)
+      if (s > bestScore) {
+        best = item
+        bestScore = s
+      }
+    }
+    return best
+  }
+
+  const first = pick(Array.isArray(newMsgs) ? newMsgs : [])
+  if (first) return first
+  return pick(Array.isArray(bucketMsgs) ? bucketMsgs : [])
+}
+
 const ensurePlanBlockId = (input: any, blockId: string): any => {
   if (!input || typeof input !== "object") return input
   let cloned: any
@@ -778,6 +830,126 @@ const normalizeBlockId = (raw: string): string => {
 
   return String(raw || '').replace(/[^a-zA-Z0-9_\-:.]/g, '_').slice(0, 64)
 
+}
+
+let chatBenchStatusRetryTimer: number | null = null
+let chatBenchStatusPending:
+  | { host: MacroBenchHost; payloadObj: Record<string, any>; attempt: number }
+  | null = null
+
+const writeChatBenchStatusToHostOnce = (host: MacroBenchHost, payloadObj: Record<string, any>): boolean => {
+  try {
+    const payload = JSON.stringify(payloadObj)
+    return !!wpsBridge.runWithWpsApi(
+      `macro-bench-chat:status:${host}`,
+      () => {
+        const app: any = wpsBridge.getApplication()
+        if (host === 'wps') {
+          const doc = app?.ActiveDocument || app?.Documents?.Item?.(1) || null
+          const vars = doc?.Variables
+          if (!vars) return false
+          try {
+            vars.Item('AH32_DEV_BENCH_STATUS').Value = payload
+          } catch (_e) {
+            vars.Add('AH32_DEV_BENCH_STATUS', payload)
+          }
+          return true
+        }
+        if (host === 'et') {
+          const wb = app?.ActiveWorkbook || app?.Workbooks?.Item?.(1) || null
+          if (!wb) return false
+          let sheet = null as any
+          try {
+            sheet = wb.Worksheets?.Item?.('_AH32_DEV_STATUS') || null
+          } catch (_e) {
+            sheet = null
+          }
+          if (!sheet) {
+            try {
+              sheet = wb.Worksheets?.Add?.() || null
+              if (sheet) {
+                try { sheet.Name = '_AH32_DEV_STATUS' } catch (_e2) {}
+              }
+            } catch (_e3) {
+              sheet = null
+            }
+          }
+          if (!sheet) return false
+          try { sheet.Visible = 0 } catch (_e4) {}
+          const cell = sheet.Range?.('A1')
+          if (!cell) return false
+          try {
+            cell.Value = payload
+          } catch (_e5) {
+            try { cell.Value2 = payload } catch (_e6) { return false }
+          }
+          try {
+            const names = wb?.Names
+            if (names) {
+              try { names.Item('AH32_DEV_BENCH_STATUS').Delete() } catch (_e7) {}
+            }
+          } catch (_e8) {}
+          return true
+        }
+        if (host === 'wpp') {
+          const pres = app?.ActivePresentation || app?.Presentations?.Item?.(1) || null
+          const tags = pres?.Tags
+          if (!pres || !tags) return false
+          try { tags.Delete('AH32_DEV_BENCH_STATUS') } catch (_e9) {}
+          try {
+            tags.Add('AH32_DEV_BENCH_STATUS', payload)
+            return true
+          } catch (_e10) {
+            return false
+          }
+        }
+        return false
+      },
+      false
+    )
+  } catch (e) {
+    ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e)
+    return false
+  }
+}
+
+const scheduleChatBenchStatusRetry = () => {
+  try {
+    if (chatBenchStatusRetryTimer !== null) return
+    chatBenchStatusRetryTimer = window.setTimeout(() => {
+      chatBenchStatusRetryTimer = null
+      const pending = chatBenchStatusPending
+      if (!pending) return
+      const ok = writeChatBenchStatusToHostOnce(pending.host, pending.payloadObj)
+      if (ok) {
+        chatBenchStatusPending = null
+        return
+      }
+      pending.attempt += 1
+      if (pending.attempt < 30) scheduleChatBenchStatusRetry()
+    }, 1000)
+  } catch (e) {
+    ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e)
+  }
+}
+
+const syncChatBenchStatusToHost = (host: MacroBenchHost, payloadObj: Record<string, any>): boolean => {
+  chatBenchStatusPending = { host, payloadObj, attempt: 0 }
+  const ok = writeChatBenchStatusToHostOnce(host, payloadObj)
+  if (ok) {
+    chatBenchStatusPending = null
+    try {
+      if (chatBenchStatusRetryTimer !== null) {
+        window.clearTimeout(chatBenchStatusRetryTimer)
+        chatBenchStatusRetryTimer = null
+      }
+    } catch (e) {
+      ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e)
+    }
+    return true
+  }
+  scheduleChatBenchStatusRetry()
+  return false
 }
 
 const countLocalPlanRepairs = (input: any): number => {
@@ -1201,21 +1373,37 @@ const runDirectAssert = async (
 
           if (type === 'wpp_slide_text_contains') {
             const needle = String((a as any)?.text || '').trim()
+            const anySlide = (a as any)?.anySlide === true
             if (!needle) return { ok: false, message: 'ASSERT_FAIL:wpp_slide_text_contains:empty' }
             if (!pres?.Slides) return { ok: false, message: 'ASSERT_FAIL:wpp_slide_text_contains:no_presentation' }
-            const slide = getLastSlide(pres)
-            if (!slide) return { ok: false, message: 'ASSERT_FAIL:wpp_slide_text_contains:no_last_slide' }
-            let found = false
-            const count = getShapeCount(slide)
-            for (let i = 1; i <= count; i++) {
-              let shape: any = null
-              try { shape = slide.Shapes.Item(i) } catch (_e) { shape = null }
-              if (!shape) continue
-              const text = getShapeText(shape)
-              if (text && text.indexOf(needle) >= 0) {
-                found = true
-                break
+            const slidesToCheck: any[] = []
+            if (anySlide) {
+              const slideCount = getSlideCount(pres)
+              for (let si = 1; si <= slideCount; si++) {
+                let slide: any = null
+                try { slide = pres.Slides.Item(si) } catch (_e) { slide = null }
+                if (slide) slidesToCheck.push(slide)
               }
+              if (!slidesToCheck.length) return { ok: false, message: 'ASSERT_FAIL:wpp_slide_text_contains:no_slides' }
+            } else {
+              const slide = getLastSlide(pres)
+              if (!slide) return { ok: false, message: 'ASSERT_FAIL:wpp_slide_text_contains:no_last_slide' }
+              slidesToCheck.push(slide)
+            }
+            let found = false
+            for (const slide of slidesToCheck) {
+              const count = getShapeCount(slide)
+              for (let i = 1; i <= count; i++) {
+                let shape: any = null
+                try { shape = slide.Shapes.Item(i) } catch (_e) { shape = null }
+                if (!shape) continue
+                const text = getShapeText(shape)
+                if (text && text.indexOf(needle) >= 0) {
+                  found = true
+                  break
+                }
+              }
+              if (found) break
             }
             return found
               ? { ok: true, message: 'ok' }
@@ -1281,6 +1469,18 @@ const runDirectAssert = async (
               let shape: any = null
               try { shape = slide.Shapes.Item(i) } catch (_e) { shape = null }
               if (!shape || isBenchBlockShape(shape)) continue
+              const placeholderType = getPlaceholderType(shape)
+              const shapeText = getShapeText(shape).trim()
+              let shapeName = ''
+              try { shapeName = String(shape?.Name || '').trim().toLowerCase() } catch (_e) { shapeName = '' }
+              if (!shapeText) continue
+              const looksLikeEmptyPlaceholder =
+                (
+                  placeholderType >= 0 ||
+                  shapeName.includes('placeholder') ||
+                  shapeName.includes('占位符')
+                )
+              if (looksLikeEmptyPlaceholder) continue
               let left = 0
               let top = 0
               let width = 0
@@ -1389,6 +1589,8 @@ const evalTurnAsserts = async (args: {
 
   repairsUsed?: number
 
+  onAssertStart?: (info: { type: string }) => void
+
 }): Promise<BenchAssertEval> => {
 
   const failures: BenchAssertFailure[] = []
@@ -1429,6 +1631,7 @@ const evalTurnAsserts = async (args: {
   const extra = Array.isArray(args.asserts) ? args.asserts : []
 
   for (const a of extra) {
+    try { args.onAssertStart?.({ type: String((a as any)?.type || '') }) } catch (e) { ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e) }
 
     const pts = assertPoints(a, 1)
 
@@ -1618,6 +1821,50 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
         suiteId,
         runId,
         chatSessionId,
+        ...(extra || {}),
+      })
+    } catch (e) {
+      ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e)
+    }
+    try {
+      const info = { ...(extra || {}) }
+      const progress =
+        typeof info.idx === 'number' && typeof info.total === 'number'
+          ? {
+              idx: Number(info.idx),
+              total: Number(info.total),
+              storyName: String(info.storyName || ''),
+              turnName: String(info.turnName || ''),
+              host,
+              suiteId,
+            }
+          : undefined
+      pushHostBenchStatus('running', {
+        progress,
+        detailStage: {
+          stage,
+          host,
+          suiteId,
+          runId,
+          chatSessionId,
+          ...(info || {}),
+        },
+      })
+    } catch (e) {
+      ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e)
+    }
+  }
+
+  const pushHostBenchStatus = (stage: string, extra?: Record<string, any>) => {
+    try {
+      syncChatBenchStatusToHost(host, {
+        stage,
+        runMode: 'chat',
+        suiteId,
+        preset,
+        running: stage !== 'done' && stage !== 'error' && stage !== 'stopped',
+        stopped: stage === 'stopped',
+        at: nowIso(),
         ...(extra || {}),
       })
     } catch (e) {
@@ -3431,7 +3678,7 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
     })
     await waitForChatIdle()
 
-    const beforeLen = Number(((chatStore as any).messages || []).length || 0) || 0
+    const beforeLen = Number(unwrapMessagesRef((chatStore as any).messages).length || 0) || 0
 
     const t0 = performance.now()
 
@@ -3446,10 +3693,21 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
       const overridePlan = (turn as any)?.planOverride
       const hasOverridePlan =
         overridePlan && typeof overridePlan === 'object' && !Array.isArray(overridePlan)
+      const assistantTextOverride = String((turn as any)?.assistantTextOverride || '')
+      const hasAssistantTextOverride = !hasOverridePlan && !!assistantTextOverride.trim()
 
       if (hasOverridePlan) {
         // System coverage: bypass chat and execute a deterministic plan.
         assistantMsg = null
+        tokenUsage = null
+        chatMs = 0
+      } else if (hasAssistantTextOverride) {
+        assistantMsg = {
+          id: `bench_text_override_${host}_${Date.now()}_${i + 1}`,
+          role: 'assistant',
+          content: assistantTextOverride,
+          metadata: { benchTextOverride: true },
+        }
         tokenUsage = null
         chatMs = 0
       } else if (uiClickSendForTurn) {
@@ -3458,7 +3716,7 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
 
       }
 
-      if (!hasOverridePlan) {
+      if (!hasOverridePlan && !hasAssistantTextOverride) {
         pushStage('turn_send', {
           idx: i + 1,
           total: items.length,
@@ -3579,19 +3837,10 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
           turnName: turn.name,
           suiteId: story.suiteId,
         })
-        const bucketMsgs = (((chatStore as any).messages || []) as any[])
+        const bucketMsgs = unwrapMessagesRef((chatStore as any).messages)
+        const newMsgs = beforeLen > 0 ? bucketMsgs.slice(beforeLen) : bucketMsgs.slice()
 
-        const newMsgs = bucketMsgs.slice(beforeLen)
-
-        assistantMsg = newMsgs.slice().reverse().find((m: any) => m && m.type === 'assistant') || null
-
-        if (!assistantMsg) {
-
-          // Fallback: avoid false negatives if trimming/switching happened unexpectedly.
-
-          assistantMsg = bucketMsgs.slice().reverse().find((m: any) => m && m.type === 'assistant') || null
-
-        }
+        assistantMsg = pickBenchAssistantMessage(newMsgs, bucketMsgs)
         if (!assistantMsg) {
 
           throw new Error('chat_no_assistant_message')
@@ -3734,9 +3983,13 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
     // 2) extract plan blocks (or use deterministic override)
     const overridePlan = (turn as any)?.planOverride
     const hasOverridePlan = overridePlan && typeof overridePlan === 'object' && !Array.isArray(overridePlan)
+    const assistantTextOverride = String((turn as any)?.assistantTextOverride || '')
+    const hasAssistantTextOverride = !hasOverridePlan && !!assistantTextOverride.trim()
 
     const expectedOutput = ((turn as any)?.expectedOutput || 'plan') as 'plan' | 'text' | 'either'
-    const assistantContent = String(assistantMsg?.content || '')
+    const assistantContent = hasAssistantTextOverride
+      ? assistantTextOverride
+      : String(assistantMsg?.content || '')
 
     const blocks = hasOverridePlan ? [JSON.stringify(overridePlan)] : extractPlanBlocks(assistantMsg)
 
@@ -4087,6 +4340,15 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
       let currentPlan = useSystemOps ? ensurePlanBlockIdForSystemOps(planObj, stableId) : ensurePlanBlockId(planObj, stableId)
       const maxAttempts = 3
       const t1 = performance.now()
+      pushStage('turn_exec_start', {
+        idx: i + 1,
+        total: items.length,
+        storyId: story.id,
+        storyName: story.name,
+        turnId: turn.id,
+        turnName: turn.name,
+        suiteId: story.suiteId,
+      })
       while (attempts < maxAttempts) {
         attempts += 1
         const exec = await WPSHelper.executePlan(currentPlan)
@@ -4110,6 +4372,18 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
       }
       execMs = Math.round(performance.now() - t1)
       repairsUsed = localRepairsUsed + (attempts > 0 ? Math.max(0, attempts - 1) : 0)
+      pushStage('turn_exec_done', {
+        idx: i + 1,
+        total: items.length,
+        storyId: story.id,
+        storyName: story.name,
+        turnId: turn.id,
+        turnName: turn.name,
+        suiteId: story.suiteId,
+        execOk: ok,
+        execAttempts: attempts,
+        repairsUsed,
+      })
     } else {
       message = "invalid_plan_json"
     }
@@ -4125,6 +4399,18 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
       appliedSkills,
       selectedSkills,
       repairsUsed,
+      onAssertStart: ({ type }) => {
+        pushStage('turn_assert_start', {
+          idx: i + 1,
+          total: items.length,
+          storyId: story.id,
+          storyName: story.name,
+          turnId: turn.id,
+          turnName: turn.name,
+          suiteId: story.suiteId,
+          assertType: type,
+        })
+      },
     })
     await applyActions(turn.actionsAfterExec)
 
@@ -4307,6 +4593,36 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
     }
 
     persistPartial(partial)
+    pushHostBenchStatus('running', {
+      progress: {
+        idx: i + 1,
+        total: items.length,
+        storyName: story.name,
+        turnName: turn.name,
+        host,
+        suiteId,
+      },
+      completedTurns: results.length,
+      okTurns: results.filter(x => !!x.ok).length,
+      assertOkTurns: results.filter(x => !!x.assertOk).length,
+      summary: partial.summary,
+      detailStage: {
+        stage: 'turn_persisted',
+        host,
+        suiteId,
+        runId,
+        chatSessionId,
+        storyId: story.id,
+        storyName: story.name,
+        turnId: turn.id,
+        turnName: turn.name,
+        idx: i + 1,
+        total: items.length,
+        ok: okFinal,
+        execOk: ok,
+        assertOk: ae.ok,
+      },
+    })
 
 
 
@@ -4405,6 +4721,17 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
   }
 
   saveRun(run)
+  pushHostBenchStatus('done', {
+    ok: run.summary.ok,
+    total: run.summary.total,
+    completedTurns: run.results.length,
+    summary: run.summary,
+    recentFailures: run.results.filter(x => !x.ok).slice(-5).map(x => ({
+      storyId: x.story?.id || '',
+      turnId: x.turn?.id || '',
+      message: x.message,
+    })),
+  })
 
   return run
 

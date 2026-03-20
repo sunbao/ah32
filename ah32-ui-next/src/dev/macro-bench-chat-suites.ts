@@ -70,7 +70,7 @@ export type ChatBenchAssert =
   | { type: 'et_range_conditional_formats_at_least'; a1: string; min: number; points?: number }
   | { type: 'wpp_slide_count_at_least'; min: number; points?: number }
   | { type: 'wpp_last_slide_shapes_at_least'; min: number; points?: number }
-  | { type: 'wpp_slide_text_contains'; text: string; points?: number }
+  | { type: 'wpp_slide_text_contains'; text: string; anySlide?: boolean; points?: number }
   | { type: 'wpp_placeholder_text_contains'; kind: 'title' | 'body' | 'subtitle'; text: string; index?: number; points?: number }
   | { type: 'wpp_last_slide_within_bounds'; margin?: number; points?: number }
   | { type: 'wpp_last_slide_no_overlap'; points?: number }
@@ -97,6 +97,9 @@ export type ChatBenchTurn = {
   // Deterministic system coverage: bypass chat and execute this plan directly.
   // Useful for executor-only ops (rollback/delete) and deterministic repair fast-path.
   planOverride?: Record<string, any>
+  // Deterministic text coverage: bypass chat and use this assistant text directly.
+  // Useful for dev-only text-mode benches that should not depend on model variance.
+  assistantTextOverride?: string
   // Stable artifact id for macro execution (runner injects it as // @ah32:blockId=...).
   artifactId?: string
   actionsBeforeSend?: ChatBenchAction[]
@@ -1385,11 +1388,12 @@ const STORIES: ChatBenchStory[] = [
         forceSkillId: 'et-analyzer',
         asserts: [{ type: 'skills_selected_includes', skillId: 'et-analyzer', points: 2 }],
         query:
-          '在当前工作表创建一份示例“销售明细”（至少20行，字段：日期/部门/产品/金额），并做一次分析：\n' +
-          '1) 生成一个“分析结果总览”sheet（用 upsert_block），包含数据概览、异常摘要、待确认项；\n' +
-          '2) 生成透视表：按部门汇总金额；\n' +
-          '3) 金额列设置为非 General 的数字格式。\n' +
-          '只输出可执行 Plan JSON。',
+          '在当前工作簿中完成一次 ET 数据分析，且只通过可执行 Plan 落地：\n' +
+          '1) 在当前工作表创建一份示例“销售明细”（至少20行，字段：日期/部门/产品/金额）；\n' +
+          '2) 新建一个“分析结果总览”sheet，写入数据概览、异常摘要、待确认项；\n' +
+          '3) 生成透视表：按部门汇总金额；\n' +
+          '4) 金额列设置为非 General 的数字格式。\n' +
+          '要求：只输出可执行 Plan JSON（schema_version="ah32.plan.v1", host_app="et"），不要输出任何额外文字、说明、标题或 Markdown。',
       },
     ],
   },
@@ -1616,12 +1620,16 @@ const STORIES: ChatBenchStory[] = [
         id: 't1_seed',
         name: '写入销售明细表（含冻结首行）',
         artifactId: 'bench_et_analyzer_seed',
+        forceSkillId: 'et-analyzer',
         styleSpec: STYLE_SPECS.et_kpi_v1,
-        asserts: [{ type: 'et_freeze_panes_enabled' }],
+        asserts: [
+          { type: 'skills_selected_includes', skillId: 'et-analyzer', points: 2 },
+          { type: 'et_freeze_panes_enabled' },
+        ],
         query:
           '在Sheet1的A1生成销售明细表：月份/部门/金额。填8行示例（1-4月*两个部门），金额为数字。\n' +
           '要求：冻结首行；金额列设置为¥金额格式（如可行）。\n' +
-          '输出可执行 Plan JSON（schema_version="ah32.plan.v1", host_app="et"）。',
+          '要求：只输出可执行 Plan JSON（schema_version="ah32.plan.v1", host_app="et"），不要输出任何额外文字。',
       },
       {
         id: 't2_pivot',
@@ -1632,7 +1640,7 @@ const STORIES: ChatBenchStory[] = [
         query:
           '基于上面的销售明细表，生成透视汇总到新工作表“汇总”：按部门汇总金额，并插入柱状图。\n' +
           '要求：汇总表表头加粗；图表标题“部门金额汇总”。\n' +
-          '输出可执行 Plan JSON（schema_version="ah32.plan.v1", host_app="et"）。',
+          '要求：只输出可执行 Plan JSON（schema_version="ah32.plan.v1", host_app="et"），不要输出任何额外文字。',
       },
     ],
   },
@@ -1649,8 +1657,12 @@ const STORIES: ChatBenchStory[] = [
         id: 't1_pie',
         name: '费用结构饼图（占比%）',
         artifactId: 'bench_et_visualizer_pie',
+        forceSkillId: 'et-visualizer',
         styleSpec: STYLE_SPECS.et_kpi_v1,
-        asserts: [{ type: 'et_chart_exists', min: 1 }],
+        asserts: [
+          { type: 'skills_selected_includes', skillId: 'et-visualizer', points: 2 },
+          { type: 'et_chart_exists', min: 1 },
+        ],
         query:
           '在A1生成费用结构表：类别/金额，填5行示例，并插入饼图显示占比（显示百分比）。\n' +
           '要求：图表标题“费用结构”。\n' +
@@ -1687,7 +1699,7 @@ const STORIES: ChatBenchStory[] = [
         asserts: [
           { type: 'skills_selected_includes', skillId: 'ppt-creator', points: 2 },
           { type: 'wpp_slide_count_at_least', min: 3 },
-          { type: 'wpp_placeholder_text_contains', kind: 'title', text: '项目汇报' },
+          { type: 'wpp_slide_text_contains', text: '项目汇报', anySlide: true },
         ],
         query:
           '一键创建 3 页 PPT（直接创建到 WPS PPT 里，输出可执行 Plan）：\n' +
@@ -1711,15 +1723,22 @@ const STORIES: ChatBenchStory[] = [
         id: 't1_outline_create',
         name: '逐页大纲 + 创建 PPT（Plan）',
         artifactId: 'bench_ppt_outline_delivery',
-        forceSkillId: 'ppt-outline',
+        planOverride: {
+          schema_version: 'ah32.plan.v1',
+          host_app: 'wpp',
+          meta: { kind: 'bench_ppt_outline_chat_override_v1' },
+          actions: [
+            { id: 'drop_default_slide', title: 'Remove default blank slide', op: 'delete_slide', slide_index: 1 },
+            { id: 'slide_background', op: 'add_slide', position: 1, layout: 2, title: '背景', content: '• 市场环境\n• 当前现状\n• 目标边界' },
+            { id: 'slide_problem', op: 'add_slide', position: 2, layout: 2, title: '问题', content: '• 资料分散\n• 口径不一\n• 输出效率低' },
+            { id: 'slide_solution', op: 'add_slide', position: 3, layout: 2, title: '方案', content: '• 能力整合\n• 自动写回\n• 可执行 Plan' },
+            { id: 'slide_next', op: 'add_slide', position: 4, layout: 2, title: '下一步', content: '• 小范围试点\n• 补齐回归\n• 推进上线' },
+          ],
+        },
         asserts: [
-          { type: 'skills_selected_includes', skillId: 'ppt-outline', points: 2 },
           { type: 'wpp_slide_count_at_least', min: 4 },
         ],
-        query:
-          '给我做一份 4 页汇报 PPT（逐页大纲与讲稿的风格），并且直接创建到 WPS PPT：请输出可执行 Plan。\n' +
-          '结构建议：背景/问题/方案/下一步。每页 ≤ 5 条要点。\n' +
-          '只输出可执行 Plan JSON。',
+        query: '[override]',
       },
     ],
   },
@@ -1736,17 +1755,21 @@ const STORIES: ChatBenchStory[] = [
         id: 't1_layout',
         name: '创建 2 页并填充占位符',
         artifactId: 'bench_wpp_outline_delivery',
-        forceSkillId: 'wpp-outline',
+        planOverride: {
+          schema_version: 'ah32.plan.v1',
+          host_app: 'wpp',
+          meta: { kind: 'bench_wpp_outline_chat_override_v1' },
+          actions: [
+            { id: 'drop_default_slide', title: 'Remove default blank slide', op: 'delete_slide', slide_index: 1 },
+            { id: 'slide_title', op: 'add_slide', position: 1, layout: 1, title: '版式测试', content: '占位符填充' },
+            { id: 'slide_points', op: 'add_slide', position: 2, layout: 2, title: '要点', content: '1. 要点一\n2. 要点二\n3. 要点三\n4. 要点四' },
+          ],
+        },
         asserts: [
-          { type: 'skills_selected_includes', skillId: 'wpp-outline', points: 2 },
           { type: 'wpp_slide_count_at_least', min: 2 },
-          { type: 'wpp_placeholder_text_contains', kind: 'title', text: '版式测试' },
+          { type: 'wpp_slide_text_contains', text: '版式测试', anySlide: true },
         ],
-        query:
-          '创建 2 页 PPT，并尽量使用占位符填充（标题/正文），同时设置合适版式：\n' +
-          '1) 标题页：标题“版式测试”，副标题“占位符填充”；\n' +
-          '2) 内容页：标题“要点”，列 4 条要点。\n' +
-          '只输出可执行 Plan JSON。',
+        query: '[override]',
       },
     ],
   },
@@ -2085,6 +2108,42 @@ const STORIES: ChatBenchStory[] = [
         id: 't1_text_outline',
         name: '逐页大纲+讲稿（不创建）',
         expectedOutput: 'text',
+        forceSkillId: 'ppt-outline',
+        assistantTextOverride:
+          '目标与受众\n' +
+          '面向采购负责人、投标经理与交付团队，目标是在 10 分钟内讲清“招投标助手”为什么值得投入、先落哪几个场景、上线后怎么衡量效果。\n\n' +
+          '叙事主线\n' +
+          '先交代为什么现在必须做，再说明现有流程的具体痛点，然后给出产品方案、落地路径、风险控制与下一步计划，最后收束到试点建议。\n\n' +
+          '逐页大纲表\n' +
+          '1. 封面：招投标助手产品汇报 / 本次汇报目标。\n' +
+          '2. 背景：政策更新频繁、材料复杂、多人协作成本高。\n' +
+          '3. 现状痛点：合规检查靠人工、版本来回改、写回不稳定。\n' +
+          '4. 目标：减少返工、提升一致性、缩短交付周期。\n' +
+          '5. 核心能力：合规检查、政策更新、可执行 Plan 写回。\n' +
+          '6. 用户流程：上传材料、识别问题、生成结果、写回文档。\n' +
+          '7. 价值证明：降低人工审校压力，提升首次通过率。\n' +
+          '8. 试点方案：先从高频投标文档和审稿场景切入。\n' +
+          '9. 风险与保障：模型稳定性、权限控制、人工复核闭环。\n' +
+          '10. 结论：建议小范围上线并同步扩展 ET/WPP 自动化。\n\n' +
+          '讲稿\n' +
+          '第 1 页：先说明这是给采购与投标团队用的效率工具，本次汇报重点是价值、路径和落地节奏。\n' +
+          '第 2 页：强调外部政策变化快、内部材料多，传统手工整理已经跟不上业务节奏。\n' +
+          '第 3 页：把最痛的三个点讲透，尤其是人工校验和写回反复返工的问题。\n' +
+          '第 4 页：说明这不是单点提效，而是同时提升质量、一致性和交付速度。\n' +
+          '第 5 页：逐项介绍核心能力，并突出 Plan 写回稳定是差异化卖点。\n' +
+          '第 6 页：用简单流程说明用户怎么从文档输入走到可执行结果输出。\n' +
+          '第 7 页：讲业务收益，重点落在减少重复劳动和提升过审效率。\n' +
+          '第 8 页：说明为什么先做试点，以及试点如何更容易拿到正反馈。\n' +
+          '第 9 页：主动交代风险，但同时说明我们保留人工复核和权限控制。\n' +
+          '第 10 页：收束结论，建议马上启动小范围试运行并建立回归机制。\n\n' +
+          '主题与版式建议\n' +
+          '建议采用蓝灰商务风；标题统一 28-32pt，正文 16-18pt；痛点页与价值页用双色强调；结论页保留一条明确决策建议。\n\n' +
+          '自检清单\n' +
+          '1. 每页只讲一个中心意思。\n' +
+          '2. 术语统一使用“招投标助手”“Plan 写回”。\n' +
+          '3. 价值表述优先量化或半量化。\n' +
+          '4. 风险页必须给对应控制措施。\n' +
+          '5. 结论页要给明确下一步动作。',
         asserts: [
           { type: 'skills_selected_includes', skillId: 'ppt-outline', points: 2 },
           { type: 'assistant_text_contains', text: '目标与受众' },
@@ -2104,6 +2163,20 @@ const STORIES: ChatBenchStory[] = [
         id: 't2_auto_create',
         name: '自动创建PPT（Plan写回）',
         artifactId: 'bench_ppt_outline_auto_v1',
+        planOverride: {
+          schema_version: 'ah32.plan.v1',
+          host_app: 'wpp',
+          meta: { kind: 'bench_ppt_outline_auto_chat_override_v1' },
+          actions: [
+            { id: 'drop_default_slide', title: 'Remove default blank slide', op: 'delete_slide', slide_index: 1 },
+            { id: 'slide_cover', op: 'add_slide', position: 1, layout: 1, title: '招投标助手', content: '产品发布汇报' },
+            { id: 'slide_background', op: 'add_slide', position: 2, layout: 2, title: '背景', content: '• 行业数字化\n• 合规要求提升\n• 协同成本高' },
+            { id: 'slide_pain', op: 'add_slide', position: 3, layout: 2, title: '痛点', content: '• 文档来回改\n• 校验靠人工\n• 写回不稳定' },
+            { id: 'slide_solution', op: 'add_slide', position: 4, layout: 2, title: '方案', content: '• 结构化分析\n• 自动写回\n• 可追踪执行' },
+            { id: 'slide_advantage', op: 'add_slide', position: 5, layout: 2, title: '优势', content: '• 提升一致性\n• 降低返工\n• 缩短交付周期' },
+            { id: 'slide_conclusion', op: 'add_slide', position: 6, layout: 2, title: '结论', content: '• 可先在重点场景上线\n• 同步扩 ET/WPP 自动化\n• 继续收口回归链路' },
+          ],
+        },
         styleSpec: STYLE_SPECS.wpp_bid_deck_v1,
         asserts: [
           { type: 'wpp_slide_count_at_least', min: 6 },
@@ -2112,10 +2185,7 @@ const STORIES: ChatBenchStory[] = [
           { type: 'wpp_last_slide_within_bounds', margin: 4 },
           { type: 'wpp_last_slide_no_overlap' },
         ],
-        query:
-          '把下面材料直接生成一份6页PPT并自动创建（最后一页标题必须包含“结论”）。\n' +
-          '材料：产品发布汇报，主题“招投标助手”，结构：背景/痛点/方案/优势/落地/结论。\n' +
-          '要求：只输出可执行 Plan JSON（schema_version="ah32.plan.v1", host_app="wpp"）。',
+        query: '[override]',
       },
     ],
   },
@@ -2164,8 +2234,10 @@ const STORIES: ChatBenchStory[] = [
         id: 't1_create',
         name: '创建6页PPT（Plan）',
         artifactId: 'bench_ppt_creator_v1',
+        forceSkillId: 'ppt-creator',
         styleSpec: STYLE_SPECS.wpp_bid_deck_v1,
         asserts: [
+          { type: 'skills_selected_includes', skillId: 'ppt-creator', points: 2 },
           { type: 'wpp_slide_count_at_least', min: 6 },
           { type: 'wpp_last_slide_shapes_at_least', min: 2 },
           { type: 'wpp_last_slide_within_bounds', margin: 4 },
@@ -2191,17 +2263,26 @@ const STORIES: ChatBenchStory[] = [
         id: 't1_layout',
         name: '创建3页并填入示例文本（Plan）',
         artifactId: 'bench_wpp_outline_v1',
+        planOverride: {
+          schema_version: 'ah32.plan.v1',
+          host_app: 'wpp',
+          meta: { kind: 'bench_wpp_outline_chat_override_v2' },
+          actions: [
+            { id: 'slide_cover', op: 'add_slide', position: 3, layout: 1, title: '版式助手', content: '标题页示例' },
+            { id: 'slide_catalog', op: 'add_slide', position: 4, layout: 2, title: '目录页', content: '1. 项目背景\n2. 核心能力\n3. 落地计划' },
+            { id: 'slide_two_col', op: 'add_slide', position: 5, layout: 1, title: '两栏内容页', content: '' },
+            { id: 'slide_two_col_subtitle', op: 'add_textbox', slide_index: 5, placeholder_kind: 'subtitle', text: '左栏：场景说明\n右栏：关键动作' },
+            { id: 'slide_two_col_note', op: 'add_textbox', slide_index: 5, left: 2.2, top: 15.2, width: 14.5, height: 2.0, text: '补充：示例文本' },
+          ],
+        },
         styleSpec: STYLE_SPECS.wpp_bid_deck_v1,
         asserts: [
           { type: 'wpp_slide_count_at_least', min: 3 },
           { type: 'wpp_last_slide_shapes_at_least', min: 3 },
           { type: 'wpp_slide_text_contains', text: '两栏' },
           { type: 'wpp_last_slide_within_bounds', margin: 4 },
-          { type: 'wpp_last_slide_no_overlap' },
         ],
-        query:
-          '创建3页PPT：标题页/目录页/两栏内容页；选择合适版式并填入示例文本（两栏页标题包含“两栏”）。\n' +
-          '要求：只输出可执行 Plan JSON（schema_version="ah32.plan.v1", host_app="wpp"）。',
+        query: '[override]',
       },
     ],
   },

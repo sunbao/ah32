@@ -2691,17 +2691,47 @@ export class PlanExecutor {
     }
   }
 
+  private insertMarkerText(doc: any, selection: any, markerText: string, paragraphAfter: boolean = true) {
+    const startPos = this.safe(() => selection?.Range?.Start)
+    this.insertText(selection, markerText, false, false)
+    const endPos =
+      this.safe(() => selection?.Range?.Start) ??
+      this.safe(() => selection?.Range?.End) ??
+      startPos
+    if (typeof startPos === 'number' && typeof endPos === 'number' && endPos >= startPos) {
+      const markerRange = this.getDocRange(doc, startPos, endPos)
+      if (markerRange) this.formatMarkerRange(markerRange)
+    }
+    if (paragraphAfter) this.insertParagraphAfter(selection)
+  }
+
   private insertParagraphAfter(selection: any) {
     const r = this.safe(() => selection?.Range)
+    const moveToEnd = (targetRange: any) => {
+      try {
+        const endPos = this.safe(() => (targetRange as any)?.End)
+        if (typeof endPos !== 'number') return
+        this.safe(() => (targetRange as any)?.SetRange && (targetRange as any).SetRange(endPos, endPos))
+        this.safe(() => selection?.SetRange && selection.SetRange(endPos, endPos))
+        this.safe(() => selection?.Range?.SetRange && selection.Range.SetRange(endPos, endPos))
+        this.safe(() => selection?.Collapse && selection.Collapse(0))
+      } catch (e) {
+        ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e)
+      }
+    }
     if (r && typeof r.InsertParagraphAfter === 'function') {
       this.safe(() => r.InsertParagraphAfter())
+      moveToEnd(r)
       return
     }
     if (selection && typeof selection.TypeParagraph === 'function') {
       this.safe(() => selection.TypeParagraph())
       return
     }
-    if (r) this.safe(() => (r.Text = '\n'))
+    if (r) {
+      this.safe(() => (r.Text = '\n'))
+      moveToEnd(r)
+    }
   }
 
   private insertParagraphBefore(range: any) {
@@ -3705,21 +3735,6 @@ export class PlanExecutor {
             usedBookmark = true
             return
           }
-        } else {
-          const selR = this.safe(() => ctx.selection?.Range)
-          const startPos = selR ? this.safe(() => (selR as any).Start) : null
-
-          this.executeActions(ctx, action.actions, emit)
-
-          const afterR = this.safe(() => ctx.selection?.Range)
-          const endPos = afterR ? this.safe(() => (afterR as any).End) : null
-          if (typeof startPos === 'number' && typeof endPos === 'number' && endPos >= startPos) {
-            this.deleteBookmark(ctx.doc, bmName)
-            const r2 = this.getDocRange(ctx.doc, startPos, endPos)
-            if (r2) this.safe(() => (bms as any).Add && (bms as any).Add(bmName, r2))
-            usedBookmark = true
-            return
-          }
         }
       }
     } catch (e) {
@@ -3733,20 +3748,12 @@ export class PlanExecutor {
 
     // Create new block.
     if (!startR || !endR) {
-      const selRange = this.safe(() => ctx.selection?.Range)
-      if (!selRange) throw new Error('selection range not available')
-
       try {
+        const selRange = this.safe(() => ctx.selection?.Range)
+        if (!selRange) throw new Error('selection range not available')
         const fontSnap = this.snapshotFont(selRange)
         this.clearHiddenFormattingForRange(selRange)
-        try {
-          ;(selRange as any).Text = startTag
-        } catch (e) {
-          ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e)
-          throw new Error(`upsert_block failed to insert start marker: ${_errMsg(e)}`)
-        }
-        this.formatMarkerRange(selRange)
-        this.insertParagraphAfter(ctx.selection)
+        this.insertMarkerText(ctx.doc, ctx.selection, startTag, true)
         try {
           const r2 = this.safe(() => ctx.selection?.Range)
           this.clearHiddenFormattingForRange(r2)
@@ -3759,17 +3766,7 @@ export class PlanExecutor {
         this.executeActions(ctx, action.actions, emit)
 
         this.insertParagraphAfter(ctx.selection)
-        const endRange = this.safe(() => ctx.selection?.Range)
-        if (!endRange) throw new Error('selection range not available')
-        this.clearHiddenFormattingForRange(endRange)
-        try {
-          ;(endRange as any).Text = endTag
-        } catch (e) {
-          ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e)
-          throw new Error(`upsert_block failed to insert end marker: ${_errMsg(e)}`)
-        }
-        this.formatMarkerRange(endRange)
-        this.insertParagraphAfter(ctx.selection)
+        this.insertMarkerText(ctx.doc, ctx.selection, endTag, true)
         const s2 = this.findTextRange(ctx.doc, startTag)
         const e2 = s2 ? this.findTextRange(ctx.doc, endTag, s2.End) : null
         if (!s2 || !e2) {
@@ -3822,19 +3819,12 @@ export class PlanExecutor {
       try {
         const selRange2 = this.safe(() => ctx.selection?.Range)
         if (!selRange2) throw new Error('selection range not available')
-
-        this.safe(() => (selRange2.Text = startTag))
-        this.formatMarkerRange(selRange2)
-        this.insertParagraphAfter(ctx.selection)
+        this.insertMarkerText(ctx.doc, ctx.selection, startTag, true)
 
         this.executeActions(ctx, action.actions, emit)
 
         this.insertParagraphAfter(ctx.selection)
-        const endRange2 = this.safe(() => ctx.selection?.Range)
-        if (!endRange2) throw new Error('selection range not available')
-        this.safe(() => (endRange2.Text = endTag))
-        this.formatMarkerRange(endRange2)
-        this.insertParagraphAfter(ctx.selection)
+        this.insertMarkerText(ctx.doc, ctx.selection, endTag, true)
         return
       } finally {
         if (savedSelection) this.restoreSelection(ctx.selection, savedSelection)
@@ -3856,6 +3846,170 @@ export class PlanExecutor {
     if (s.length > 31) s = s.slice(0, 31)
     if (!s) s = 'AH32'
     return s
+  }
+
+  private sanitizeEtFileName(name: string): string {
+    let s = String(name || 'ah32_bench')
+      .replace(/[\\/:*?"<>|]/g, '_')
+      .replace(/\s+/g, '_')
+      .replace(/_+/g, '_')
+      .replace(/^_+|_+$/g, '')
+    if (!s) s = 'ah32_bench'
+    return s.slice(0, 48)
+  }
+
+  private getWorkbookFullPathEt(wb: any): string {
+    const fullName = String(this.safe(() => (wb as any)?.FullName, '' as any) || '').trim()
+    if (fullName) return fullName
+    const path = String(this.safe(() => (wb as any)?.Path, '' as any) || '').trim()
+    const name = String(this.safe(() => (wb as any)?.Name, '' as any) || '').trim()
+    if (path && name) return `${path}\\${name}`
+    return ''
+  }
+
+  private isWorkbookSavedAsXlsxEt(wb: any): boolean {
+    const fullPath = this.getWorkbookFullPathEt(wb).toLowerCase()
+    return !!fullPath && fullPath.endsWith('.xlsx')
+  }
+
+  private ensureWorkbookSavedAsXlsxEt(app: any, wb: any, reason: string): any {
+    if (!wb) throw new Error('ET workbook not available')
+    if (this.isWorkbookSavedAsXlsxEt(wb)) return wb
+
+    const originalName = String(this.safe(() => (wb as any)?.Name, '' as any) || '').trim() || 'ah32_bench'
+    const savePath = `C:\\Users\\Public\\Documents\\${this.sanitizeEtFileName(originalName)}_${Date.now()}.xlsx`
+    let prevAlerts: any = null
+    try {
+      prevAlerts = this.safe(() => (app as any)?.DisplayAlerts, null as any)
+      if (prevAlerts !== null && typeof prevAlerts !== 'undefined') {
+        this.safe(() => ((app as any).DisplayAlerts = 0))
+      }
+      const saveOk = this.safe(() => {
+        const fn = (wb as any)?.SaveAs
+        if (typeof fn !== 'function') return false
+        fn.call(wb, savePath)
+        return true
+      }, false as any)
+      if (!saveOk) throw new Error('SaveAs unavailable')
+      this.safe(() => (typeof (wb as any)?.Activate === 'function' ? (wb as any).Activate() : null))
+      const activeWb = this.getActiveWorkbook(app) || wb
+      try {
+        _planDiag('info', `${reason}: autosaved workbook for ET pivot path=${savePath}`)
+      } catch (e) {
+        ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e)
+      }
+      this.emitCapabilityEvent('plan.capability_matrix', {
+        host_app: 'et',
+        op: 'create_pivot_table',
+        branch: 'Workbook.SaveAs.xlsx',
+        fallback: true,
+        success: true,
+        path: savePath,
+      })
+      return activeWb
+    } catch (e) {
+      this.emitCapabilityEvent('plan.capability_matrix', {
+        host_app: 'et',
+        op: 'create_pivot_table',
+        branch: 'Workbook.SaveAs.xlsx',
+        fallback: true,
+        success: false,
+      })
+      throw e
+    } finally {
+      try {
+        if (prevAlerts !== null && typeof prevAlerts !== 'undefined') (app as any).DisplayAlerts = prevAlerts
+      } catch (e) {
+        ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e)
+      }
+    }
+  }
+
+  private getEtRangeCell(range: any, row: number, col: number): any {
+    try {
+      const cells = this.safe(() => (range as any)?.Cells)
+      if (typeof cells === 'function') return cells.call(range, row, col)
+      if (cells && typeof (cells as any).Item === 'function') return (cells as any).Item(row, col)
+    } catch (e) {
+      ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e)
+    }
+    return null
+  }
+
+  private readEtCellText(cell: any): string {
+    if (!cell) return ''
+    const raw =
+      this.safe(() => (cell as any).Value2, null as any) ??
+      this.safe(() => (cell as any).Value, null as any) ??
+      this.safe(() => (cell as any).Text, null as any)
+    return String(raw == null ? '' : raw).trim()
+  }
+
+  private writeEtCellText(cell: any, value: string): boolean {
+    if (!cell) return false
+    const text = String(value || '').trim()
+    if (!text) return false
+    const okValue2 = !!this.safe(() => {
+      ;(cell as any).Value2 = text
+      return true
+    }, false as any)
+    if (okValue2) return true
+    return !!this.safe(() => {
+      ;(cell as any).Value = text
+      return true
+    }, false as any)
+  }
+
+  private ensurePivotSourceHeadersEt(sourceRange: any): string[] {
+    const colCount = Number(this.safe(() => (sourceRange as any)?.Columns?.Count, 0)) || 0
+    if (colCount <= 0) return []
+
+    const seen = new Map<string, number>()
+    const finalHeaders: string[] = []
+    const renamed: string[] = []
+
+    const makeUnique = (base: string, idx: number) => {
+      let candidate = String(base || '').trim() || `字段${idx}`
+      const key = candidate.toLowerCase()
+      const count = seen.get(key) || 0
+      if (count <= 0) {
+        seen.set(key, 1)
+        return candidate
+      }
+      let next = count + 1
+      let unique = `${candidate}_${next}`
+      while (seen.has(unique.toLowerCase())) {
+        next += 1
+        unique = `${candidate}_${next}`
+      }
+      seen.set(key, next)
+      seen.set(unique.toLowerCase(), 1)
+      return unique
+    }
+
+    for (let c = 1; c <= colCount; c++) {
+      const cell = this.getEtRangeCell(sourceRange, 1, c)
+      const raw = this.readEtCellText(cell)
+      const fallback = raw || `字段${c}`
+      const next = makeUnique(fallback, c)
+      finalHeaders.push(next)
+      if (next !== raw) {
+        if (!this.writeEtCellText(cell, next)) {
+          throw new Error(`failed to normalize ET pivot header at column=${c}`)
+        }
+        renamed.push(`c${c}:${raw || '<empty>'}->${next}`)
+      }
+    }
+
+    if (renamed.length) {
+      try {
+        _planDiag('info', `create_pivot_table normalized ET headers: ${renamed.slice(0, 8).join(' | ')}`)
+      } catch (e) {
+        ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e)
+      }
+    }
+
+    return finalHeaders
   }
 
   private getOrCreateSheet(wb: any, sheetName: string): any {
@@ -5063,8 +5217,9 @@ export class PlanExecutor {
     if (values.length <= 0) throw new Error('create_pivot_table requires at least one value field')
 
     const sel = selection || this.safe(() => app?.Selection)
-    const wb = this.safe(() => app?.ActiveWorkbook)
+    let wb = this.safe(() => app?.ActiveWorkbook)
     if (!wb) throw new Error('ET workbook not available')
+    wb = this.ensureWorkbookSavedAsXlsxEt(app, wb, 'create_pivot_table')
 
     const src = this.resolveSheetAndAddrEt(app, sel, sourceRangeAddrRaw)
     const srcSheet = src.sheet
@@ -5097,6 +5252,7 @@ export class PlanExecutor {
     if (!sourceRange) throw new Error(`invalid source_range address: ${sourceRangeAddr}`)
     const destinationRange = this.safe(() => (dstSheet as any).Range(destinationAddr))
     if (!destinationRange) throw new Error(`invalid destination address: ${destinationAddr}`)
+    const normalizedHeaders = this.ensurePivotSourceHeadersEt(sourceRange)
 
     const pivotCaches = this.safe(() => {
       const pc = (wb as any)?.PivotCaches
@@ -5121,6 +5277,50 @@ export class PlanExecutor {
       return sourceRangeAddr
     })()
 
+    const quoteSheetName = (name: string) => {
+      const safe = String(name || '').trim()
+      if (!safe) return 'Sheet1'
+      if (/[\s'!]/.test(safe)) return `'${safe.replace(/'/g, "''")}'`
+      return safe
+    }
+    const srcSheetName = String(this.safe(() => (srcSheet as any)?.Name, '' as any) || '').trim() || 'Sheet1'
+    const localA1 = (() => {
+      try {
+        const addr = (sourceRange as any)?.Address
+        if (typeof addr === 'function') {
+          const s = String(addr.call(sourceRange, true, true, 1, false) || '').trim()
+          if (s) return `${quoteSheetName(srcSheetName)}!${s}`
+        } else if (typeof addr === 'string') {
+          const s = String(addr || '').trim()
+          if (s) return `${quoteSheetName(srcSheetName)}!${s}`
+        }
+      } catch (e) {
+        ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e)
+      }
+      return `${quoteSheetName(srcSheetName)}!${sourceRangeAddr}`
+    })()
+    const r1c1Source = (() => {
+      try {
+        const row = Number(this.safe(() => (sourceRange as any)?.Row, NaN as any))
+        const col = Number(this.safe(() => (sourceRange as any)?.Column, NaN as any))
+        const rowCount = Number(this.safe(() => (sourceRange as any)?.Rows?.Count, NaN as any))
+        const colCount = Number(this.safe(() => (sourceRange as any)?.Columns?.Count, NaN as any))
+        if (Number.isFinite(row) && Number.isFinite(col) && Number.isFinite(rowCount) && Number.isFinite(colCount)) {
+          const endRow = row + rowCount - 1
+          const endCol = col + colCount - 1
+          return `${quoteSheetName(srcSheetName)}!R${row}C${col}:R${endRow}C${endCol}`
+        }
+      } catch (e) {
+        ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e)
+      }
+      return ''
+    })()
+    const sourceVariants = [
+      { label: 'ext_addr', value: sourceData },
+      { label: 'local_a1', value: localA1 },
+      { label: 'r1c1', value: r1c1Source },
+    ].filter(v => String(v.value || '').trim())
+
     let cache: any = null
     const cacheErrors: string[] = []
     const tryCache = (label: string, fn: () => any) => {
@@ -5134,36 +5334,23 @@ export class PlanExecutor {
       }
     }
 
-    tryCache('PivotCaches.Create(str)', () => {
-      const fn = (pivotCaches as any)?.Create
-      return typeof fn === 'function' ? fn.call(pivotCaches, 1, sourceData) : null
-    })
     tryCache('PivotCaches.Create(range)', () => {
       const fn = (pivotCaches as any)?.Create
       return typeof fn === 'function' ? fn.call(pivotCaches, 1, sourceRange) : null
-    })
-    tryCache('PivotCaches.Add(str)', () => {
-      const fn = (pivotCaches as any)?.Add
-      return typeof fn === 'function' ? fn.call(pivotCaches, 1, sourceData) : null
     })
     tryCache('PivotCaches.Add(range)', () => {
       const fn = (pivotCaches as any)?.Add
       return typeof fn === 'function' ? fn.call(pivotCaches, 1, sourceRange) : null
     })
-
-    if (!cache) {
-      try {
-        _planDiag(
-          'error',
-          `create_pivot_table failed to create pivot cache: source_range=${sourceRangeAddrRaw} sourceData=${sourceData} errors=${cacheErrors
-            .slice(0, 4)
-            .join(' | ')}`
-        )
-      } catch (e) {
-        ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e)
-      }
-      const detail = cacheErrors.filter(Boolean).slice(0, 2).join(' | ')
-      throw new Error(detail ? `failed to create pivot cache: ${detail}` : 'failed to create pivot cache')
+    for (const variant of sourceVariants) {
+      tryCache(`PivotCaches.Create(${variant.label})`, () => {
+        const fn = (pivotCaches as any)?.Create
+        return typeof fn === 'function' ? fn.call(pivotCaches, 1, variant.value) : null
+      })
+      tryCache(`PivotCaches.Add(${variant.label})`, () => {
+        const fn = (pivotCaches as any)?.Add
+        return typeof fn === 'function' ? fn.call(pivotCaches, 1, variant.value) : null
+      })
     }
 
     const pivotName = tableName || `ah32_pivot_${Date.now()}`
@@ -5184,23 +5371,49 @@ export class PlanExecutor {
         pivotErrors.push(`${label}: ${_errMsg(e)}`)
       }
     }
-    tryPivot('Cache.CreatePivotTable', () => {
-      const fn = (cache as any)?.CreatePivotTable
-      return typeof fn === 'function' ? fn.call(cache, destinationRange, pivotName) : null
-    })
+    if (cache) {
+      tryPivot('Cache.CreatePivotTable', () => {
+        const fn = (cache as any)?.CreatePivotTable
+        return typeof fn === 'function' ? fn.call(cache, destinationRange, pivotName) : null
+      })
+    }
+    if (!pivot) {
+      const wizardVariants = [
+        { label: 'range', value: sourceRange },
+        ...sourceVariants,
+      ]
+      for (const variant of wizardVariants) {
+        tryPivot(`PivotTableWizard(${variant.label})`, () => {
+          const wizardTarget =
+            dstSheet ||
+            this.safe(() => app?.ActiveSheet) ||
+            this.safe(() => wb?.ActiveSheet)
+          const fn =
+            (wizardTarget as any)?.PivotTableWizard ||
+            (wb as any)?.PivotTableWizard ||
+            (app as any)?.PivotTableWizard
+          if (typeof fn !== 'function') return null
+          fn.call(wizardTarget || wb || app, 1, variant.value, destinationRange, pivotName)
+          return (
+            this.safe(() => (dstSheet as any).PivotTables?.(pivotName), null as any) ||
+            this.safe(() => (dstSheet as any).PivotTables?.Item?.(pivotName), null as any)
+          )
+        })
+      }
+    }
 
     if (!pivot) {
       try {
         _planDiag(
           'error',
-          `create_pivot_table failed to create pivot table: destination=${destinationAddrRaw} pivot_name=${pivotName} errors=${pivotErrors
-            .slice(0, 4)
-            .join(' | ')}`
+          `create_pivot_table failed: source_range=${sourceRangeAddrRaw} sourceData=${sourceData} destination=${destinationAddrRaw} pivot_name=${pivotName} headers=${normalizedHeaders.join(',')} cache_errors=${cacheErrors
+            .slice(0, 6)
+            .join(' | ')} pivot_errors=${pivotErrors.slice(0, 6).join(' | ')}`
         )
       } catch (e) {
         ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e)
       }
-      const detail = pivotErrors.filter(Boolean).slice(0, 2).join(' | ')
+      const detail = [...cacheErrors, ...pivotErrors].filter(Boolean).slice(0, 3).join(' | ')
       throw new Error(detail ? `failed to create pivot table: ${detail}` : 'failed to create pivot table')
     }
 
@@ -6784,10 +6997,29 @@ export class PlanExecutor {
       }
     }
 
-    // Fallback: if blank/custom layout has no placeholders, insert visible textboxes.
+    // Fallback: prefer WPP-aware textbox placement so body content avoids overlapping title placeholders.
     try {
-      if (title && !titleSet) this.addTextbox(newSlide, title, { top: 24, height: 64, fontSize: 36, bold: true })
-      if (content && !contentSet) this.addTextbox(newSlide, content, { top: 110, height: 320, fontSize: 20 })
+      if (title && !titleSet) {
+        this.addTextboxWpp(ctx, {
+          id: `${String((action as any)?.id || 'add_slide')}_title_fallback`,
+          op: 'add_textbox',
+          text: title,
+          placeholder_kind: 'title',
+          font_size: 36,
+          font_bold: true,
+          slide_index: Number(this.safe(() => (newSlide as any)?.SlideIndex, 0) || 0) || undefined,
+        } as any)
+      }
+      if (content && !contentSet) {
+        this.addTextboxWpp(ctx, {
+          id: `${String((action as any)?.id || 'add_slide')}_body_fallback`,
+          op: 'add_textbox',
+          text: content,
+          placeholder_kind: 'body',
+          font_size: 20,
+          slide_index: Number(this.safe(() => (newSlide as any)?.SlideIndex, 0) || 0) || undefined,
+        } as any)
+      }
     } catch (e) {
       try {
         _planDiag('warning', `add_slide fallback textboxes failed: ${_errMsg(e)}`)
@@ -7070,6 +7302,26 @@ export class PlanExecutor {
         }
       })()
 
+      const isPlaceholderPromptText = (value: string) => {
+        const normalized = String(value || '')
+          .trim()
+          .replace(/\s+/g, '')
+          .toLowerCase()
+        if (!normalized) return true
+        const placeholderPrompts = [
+          '单击此处添加标题',
+          '单击此处添加文本',
+          '单击此处添加副标题',
+          '点击此处添加标题',
+          '点击此处添加文本',
+          '点击此处添加副标题',
+          'clicktoaddtitle',
+          'clicktoaddtext',
+          'clicktoaddsubtitle',
+        ]
+        return placeholderPrompts.includes(normalized)
+      }
+
       const tryFill = (t: number, kind: string) => {
         const target = getPlaceholderShape(t, 1, kind)
         if (!target) return false
@@ -7077,7 +7329,7 @@ export class PlanExecutor {
         const tr = tf ? this.safe(() => (tf as any).TextRange) : null
         if (!tr) return false
         const existing = String(this.safe(() => (tr as any).Text, '' as any) as any).trim()
-        if (existing) return false
+        if (existing && !isPlaceholderPromptText(existing)) return false
         this.safe(() => ((tr as any).Text = text))
         applyStyleToTextRange(tr)
         return true
