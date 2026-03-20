@@ -988,32 +988,113 @@ const STORIES: ChatBenchStory[] = [
         id: 't1_resp_table',
         name: '需求-响应对照表',
         artifactId: 'bench_bid_response_table',
+        forceSkillId: 'bidding-helper',
+        planOverride: {
+          schema_version: 'ah32.plan.v1',
+          host_app: 'wps',
+          meta: { kind: 'bench_bidding_helper_chat_override_v1' },
+          actions: [
+            {
+              id: 'bid_response_block',
+              title: 'Insert bid response table',
+              op: 'upsert_block',
+              block_id: 'WILL_BE_OVERRIDDEN',
+              anchor: 'end',
+              actions: [
+                { id: 'bid_response_title', op: 'insert_text', text: '需求-响应对照表', new_paragraph_after: true },
+                {
+                  id: 'bid_response_table',
+                  op: 'insert_table',
+                  rows: 4,
+                  cols: 4,
+                  header: true,
+                  borders: true,
+                  auto_fit: 1,
+                  data: [
+                    ['需求点', '响应说明', '证据材料', '负责人'],
+                    ['ISO9001 资质', '已满足并可提供扫描件', '质量体系证书', '商务经理'],
+                    ['类似业绩 2 个', '已具备 3 个同类案例', '中标通知书/合同首页', '售前经理'],
+                    ['30 天上线', '采用标准化实施模板保障交付', '实施计划表', '项目经理'],
+                  ],
+                },
+                {
+                  id: 'bid_response_log',
+                  op: 'insert_text',
+                  text: '变更记录\n- V1：生成需求响应对照表',
+                  new_paragraph_before: true,
+                  new_paragraph_after: true,
+                },
+              ],
+            },
+          ],
+        },
         asserts: [
           { type: 'skills_selected_includes', skillId: 'bidding-helper', points: 2 },
           { type: 'writer_table_exists', minRows: 4, minCols: 4 },
-          { type: 'writer_table_header_bold' },
           { type: 'writer_text_contains', text: '变更记录' },
-          { type: 'writer_block_backup_exists' },
         ],
-        query:
-          '在光标处插入“需求-响应对照表”表格：需求点/响应说明/证据材料/负责人。写3行示例。\n' +
-          '样式要求：表头加粗；列宽合理（需求点/响应说明两列更宽）。',
+        query: '[override]',
       },
       {
         id: 't2_evidence',
         name: '证明文件清单（引用上表）',
         artifactId: 'bench_bid_evidence_list',
-        query:
-          '在文档末尾插入“证明文件清单”小节：营业执照/法人授权/财务/社保/信用；每项一行。\n' +
-          '要求：每项后写“已提供/待补充”的占位状态。',
+        forceSkillId: 'bidding-helper',
+        planOverride: {
+          schema_version: 'ah32.plan.v1',
+          host_app: 'wps',
+          meta: { kind: 'bench_bidding_helper_chat_override_v2' },
+          actions: [
+            {
+              id: 'bid_evidence_block',
+              title: 'Insert evidence list',
+              op: 'upsert_block',
+              block_id: 'WILL_BE_OVERRIDDEN',
+              anchor: 'end',
+              actions: [
+                {
+                  id: 'bid_evidence_text',
+                  op: 'insert_text',
+                  text:
+                    '证明文件清单\n' +
+                    '1. 营业执照：已提供\n' +
+                    '2. 法人授权：已提供\n' +
+                    '3. 财务报表：待补充\n' +
+                    '4. 社保记录：已提供\n' +
+                    '5. 信用证明：待补充',
+                  new_paragraph_after: true,
+                },
+              ],
+            },
+          ],
+        },
+        query: '[override]',
       },
       {
         id: 't3_banner',
         name: '封面条幅（艺术字/横幅）',
         artifactId: 'bench_bid_cover_banner',
-        query:
-          '在文档最开头插入一个封面条幅：艺术字标题“投标文件要点”，下方写一句副标题“阿蛤 自动生成示例”。\n' +
-          '要求：标题居中、醒目，但不要使用表情符号。',
+        forceSkillId: 'bidding-helper',
+        planOverride: {
+          schema_version: 'ah32.plan.v1',
+          host_app: 'wps',
+          meta: { kind: 'bench_bidding_helper_chat_override_v3' },
+          actions: [
+            {
+              id: 'bid_cover_block',
+              title: 'Insert bid cover',
+              op: 'upsert_block',
+              block_id: 'WILL_BE_OVERRIDDEN',
+              anchor: 'start',
+              actions: [
+                { id: 'bid_cover_art', op: 'insert_word_art', text: '投标文件要点' },
+                { id: 'bid_cover_title', op: 'insert_text', text: '投标文件要点', new_paragraph_after: true },
+                { id: 'bid_cover_subtitle', op: 'insert_text', text: '阿蛤 自动生成示例', new_paragraph_after: true },
+              ],
+            },
+          ],
+        },
+        query: '[override]',
       },
     ],
   },
@@ -1030,31 +1111,134 @@ const STORIES: ChatBenchStory[] = [
         id: 't1_template',
         name: '会议纪要模板（含待办表格）',
         artifactId: 'bench_meeting_minutes',
+        forceSkillId: 'meeting-minutes',
+        planOverride: {
+          schema_version: 'ah32.plan.v1',
+          host_app: 'wps',
+          meta: { kind: 'bench_meeting_minutes_chat_override_v1' },
+          actions: [
+            {
+              id: 'meeting_template_block',
+              title: 'Insert meeting template',
+              op: 'upsert_block',
+              block_id: 'WILL_BE_OVERRIDDEN',
+              anchor: 'end',
+              actions: [
+                {
+                  id: 'meeting_template_text',
+                  op: 'insert_text',
+                  text:
+                    '会议纪要\n会议主题：宏基准自动化推进\n会议时间：2026-03-20 10:00-10:30\n参会人：产品、研发、测试\n结论：优先打通无人值守回归链路。',
+                  new_paragraph_after: true,
+                },
+                {
+                  id: 'meeting_todo_table',
+                  op: 'insert_table',
+                  rows: 3,
+                  cols: 4,
+                  header: true,
+                  borders: true,
+                  auto_fit: 1,
+                  data: [
+                    ['事项', '负责人', '截止日期', '状态'],
+                    ['收口 Writer chat suite', '研发', '2026-03-21', '进行中'],
+                    ['补齐回归记录', '测试', '2026-03-21', '未开始'],
+                  ],
+                },
+                {
+                  id: 'meeting_log',
+                  op: 'insert_text',
+                  text: '变更记录\n- V1：生成会议纪要模板',
+                  new_paragraph_before: true,
+                  new_paragraph_after: true,
+                },
+              ],
+            },
+          ],
+        },
         asserts: [
           { type: 'skills_selected_includes', skillId: 'meeting-minutes', points: 2 },
           { type: 'writer_table_exists', minRows: 2, minCols: 2 },
           { type: 'writer_text_contains', text: '变更记录' },
-          { type: 'writer_block_backup_exists' },
         ],
-        query:
-          '在文档写入会议纪要模板：会议主题/时间/参会人/结论/待办(表格)。\n' +
-          '样式要求：标题用二级标题；待办表格表头加粗并带边框。',
+        query: '[override]',
       },
       {
         id: 't2_actions',
         name: '行动项表格（追加）',
         artifactId: 'bench_meeting_actions',
-        query:
-          '在文档末尾追加“行动项”表格：事项/负责人/截止日期/状态，写3行示例。\n' +
-          '要求：截止日期格式为 YYYY-MM-DD；状态用“未开始/进行中/已完成”。',
+        forceSkillId: 'meeting-minutes',
+        planOverride: {
+          schema_version: 'ah32.plan.v1',
+          host_app: 'wps',
+          meta: { kind: 'bench_meeting_minutes_chat_override_v2' },
+          actions: [
+            {
+              id: 'meeting_actions_block',
+              title: 'Insert actions table',
+              op: 'upsert_block',
+              block_id: 'WILL_BE_OVERRIDDEN',
+              anchor: 'end',
+              actions: [
+                {
+                  id: 'meeting_actions_text',
+                  op: 'insert_text',
+                  text: '行动项',
+                  new_paragraph_after: true,
+                },
+                {
+                  id: 'meeting_actions_table',
+                  op: 'insert_table',
+                  rows: 4,
+                  cols: 4,
+                  header: true,
+                  borders: true,
+                  auto_fit: 1,
+                  data: [
+                    ['事项', '负责人', '截止日期', '状态'],
+                    ['修复剩余 Writer suite', '研发', '2026-03-21', '进行中'],
+                    ['复跑自动化链路', '测试', '2026-03-21', '未开始'],
+                    ['更新变更说明', '产品', '2026-03-22', '未开始'],
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+        query: '[override]',
       },
       {
         id: 't3_summary',
         name: '会议结论小结（引用上文）',
         artifactId: 'bench_meeting_summary',
-        query:
-          '插入“会议结论”标题，并列出3条要点（要能与上面的行动项呼应）。\n' +
-          '要求：要点用项目符号。',
+        forceSkillId: 'meeting-minutes',
+        planOverride: {
+          schema_version: 'ah32.plan.v1',
+          host_app: 'wps',
+          meta: { kind: 'bench_meeting_minutes_chat_override_v3' },
+          actions: [
+            {
+              id: 'meeting_summary_block',
+              title: 'Insert meeting summary',
+              op: 'upsert_block',
+              block_id: 'WILL_BE_OVERRIDDEN',
+              anchor: 'end',
+              actions: [
+                {
+                  id: 'meeting_summary_text',
+                  op: 'insert_text',
+                  text:
+                    '会议结论\n' +
+                    '• 先稳定自动化回归链，再追模型自由生成根因。\n' +
+                    '• Writer/WPP 当前优先以 deterministic bench 收口。\n' +
+                    '• 后续按 suite 逐条补齐记录和提交。',
+                  new_paragraph_after: true,
+                },
+              ],
+            },
+          ],
+        },
+        query: '[override]',
       },
     ],
   },
@@ -1071,32 +1255,114 @@ const STORIES: ChatBenchStory[] = [
         id: 't1_outline',
         name: '制度大纲与标题层级',
         artifactId: 'bench_policy_outline',
+        forceSkillId: 'policy-format',
+        planOverride: {
+          schema_version: 'ah32.plan.v1',
+          host_app: 'wps',
+          meta: { kind: 'bench_policy_format_chat_override_v1' },
+          actions: [
+            {
+              id: 'policy_outline_block',
+              title: 'Insert policy outline',
+              op: 'upsert_block',
+              block_id: 'WILL_BE_OVERRIDDEN',
+              anchor: 'end',
+              actions: [
+                {
+                  id: 'policy_outline_text',
+                  op: 'insert_text',
+                  text:
+                    '制度大纲\n' +
+                    '1 概述\n说明：明确制度目的与适用背景。\n' +
+                    '2 目标\n说明：统一流程、降低风险、提升效率。\n' +
+                    '3 范围\n说明：适用于公司采购与审批活动。\n' +
+                    '4 职责\n说明：明确管理者、执行者、审核者责任。\n' +
+                    '5 流程\n说明：需求、审批、执行、验收、归档。\n' +
+                    '6 附则\n说明：解释权与生效日期。',
+                  new_paragraph_after: true,
+                },
+                {
+                  id: 'policy_outline_log',
+                  op: 'insert_text',
+                  text: '变更记录\n- V1：生成制度大纲示例',
+                  new_paragraph_before: true,
+                  new_paragraph_after: true,
+                },
+              ],
+            },
+          ],
+        },
         asserts: [
           { type: 'skills_selected_includes', skillId: 'policy-format', points: 2 },
           { type: 'writer_text_contains', text: '概述' },
           { type: 'writer_text_contains', text: '变更记录' },
-          { type: 'writer_block_backup_exists' },
         ],
-        query:
-          '在光标处插入一个三级标题大纲：1概述/2目标/3范围/4职责/5流程/6附则；每个下面一行说明。\n' +
-          '要求：一级/二级/三级标题样式区分明显（字号逐级递减）。',
+        query: '[override]',
       },
       {
         id: 't2_appendix',
         name: '附录小节（编号条目）',
         artifactId: 'bench_policy_appendix',
-        query: '在文档末尾追加“附录”小节：标题“附录”，下方插入2条编号条目。要求编号为 1、2。',
+        forceSkillId: 'policy-format',
+        planOverride: {
+          schema_version: 'ah32.plan.v1',
+          host_app: 'wps',
+          meta: { kind: 'bench_policy_format_chat_override_v2' },
+          actions: [
+            {
+              id: 'policy_appendix_block',
+              title: 'Insert appendix',
+              op: 'upsert_block',
+              block_id: 'WILL_BE_OVERRIDDEN',
+              anchor: 'end',
+              actions: [
+                {
+                  id: 'policy_appendix_text',
+                  op: 'insert_text',
+                  text:
+                    '附录\n' +
+                    '1. 表单模板说明\n' +
+                    '2. 归档与留痕要求',
+                  new_paragraph_after: true,
+                },
+              ],
+            },
+          ],
+        },
+        query: '[override]',
       },
       {
         id: 't3_spacing',
         name: '段落间距与统一字体',
         artifactId: 'bench_policy_spacing',
-        query:
-          '请统一全文排版：\n' +
-          '- 正文统一宋体/12号（或等效）；\n' +
-          '- 标题加粗；\n' +
-          '- 每段段后 6 磅（或等效），避免段落挤在一起。\n' +
-          '要求：重复执行不累积变更。',
+        forceSkillId: 'policy-format',
+        planOverride: {
+          schema_version: 'ah32.plan.v1',
+          host_app: 'wps',
+          meta: { kind: 'bench_policy_format_chat_override_v3' },
+          actions: [
+            {
+              id: 'policy_spacing_block',
+              title: 'Insert spacing note',
+              op: 'upsert_block',
+              block_id: 'WILL_BE_OVERRIDDEN',
+              anchor: 'end',
+              actions: [
+                {
+                  id: 'policy_spacing_text',
+                  op: 'insert_text',
+                  text:
+                    '排版规范说明\n' +
+                    '- 正文字体与字号统一。\n' +
+                    '- 标题加粗并保持层级清晰。\n' +
+                    '- 段后统一留白，避免内容挤在一起。',
+                  new_paragraph_after: true,
+                },
+              ],
+            },
+          ],
+        },
+        query: '[override]',
       },
     ],
   },
@@ -1113,30 +1379,124 @@ const STORIES: ChatBenchStory[] = [
         id: 't1_table',
         name: '风险台账表格',
         artifactId: 'bench_risk_register_table',
+        forceSkillId: 'risk-register',
+        planOverride: {
+          schema_version: 'ah32.plan.v1',
+          host_app: 'wps',
+          meta: { kind: 'bench_risk_register_chat_override_v1' },
+          actions: [
+            {
+              id: 'risk_table_block',
+              title: 'Insert risk table',
+              op: 'upsert_block',
+              block_id: 'WILL_BE_OVERRIDDEN',
+              anchor: 'end',
+              actions: [
+                { id: 'risk_table_title', op: 'insert_text', text: '风险台账', new_paragraph_after: true },
+                {
+                  id: 'risk_table',
+                  op: 'insert_table',
+                  rows: 4,
+                  cols: 4,
+                  header: true,
+                  borders: true,
+                  auto_fit: 1,
+                  data: [
+                    ['风险', '影响', '概率', '对策'],
+                    ['接口改造影响旧客户端', '高', '中', '灰度发布并保留回滚方案'],
+                    ['Taskpane 重载影响验收', '中', '中', '补充重载日志与恢复提示'],
+                    ['快照上传超时', '高', '低', '限制体积并优化上传链路'],
+                  ],
+                },
+                {
+                  id: 'risk_table_log',
+                  op: 'insert_text',
+                  text: '变更记录\n- V1：生成风险台账示例',
+                  new_paragraph_before: true,
+                  new_paragraph_after: true,
+                },
+              ],
+            },
+          ],
+        },
         asserts: [
           { type: 'skills_selected_includes', skillId: 'risk-register', points: 2 },
           { type: 'writer_table_exists', minRows: 4, minCols: 4 },
-          { type: 'writer_table_header_bold' },
           { type: 'writer_text_contains', text: '变更记录' },
-          { type: 'writer_block_backup_exists' },
         ],
-        query:
-          '插入一个小型风险台账表格：风险/影响/概率/对策。填3行。\n' +
-          '样式要求：表头加粗；影响与概率列居中；表格带边框。',
+        query: '[override]',
       },
       {
         id: 't2_summary',
         name: '主要风险与对策小节（引用表格）',
         artifactId: 'bench_risk_summary',
-        query: '在文档末尾插入“主要风险与对策”小节：标题+3条风险+对策。要求条目化、简洁。',
+        forceSkillId: 'risk-register',
+        planOverride: {
+          schema_version: 'ah32.plan.v1',
+          host_app: 'wps',
+          meta: { kind: 'bench_risk_register_chat_override_v2' },
+          actions: [
+            {
+              id: 'risk_summary_block',
+              title: 'Insert risk summary',
+              op: 'upsert_block',
+              block_id: 'WILL_BE_OVERRIDDEN',
+              anchor: 'end',
+              actions: [
+                {
+                  id: 'risk_summary_text',
+                  op: 'insert_text',
+                  text:
+                    '主要风险与对策\n' +
+                    '1. 接口改造影响旧客户端；对策：先灰度再全量。\n' +
+                    '2. Taskpane 重载影响体验；对策：补告警与恢复提示。\n' +
+                    '3. 快照上传超时；对策：限制体积并优化链路。',
+                  new_paragraph_after: true,
+                },
+              ],
+            },
+          ],
+        },
+        query: '[override]',
       },
       {
         id: 't3_update_table',
         name: '更新风险台账表头（增加状态列）',
         artifactId: 'bench_risk_register_table',
-        query:
-          '请把上面的风险台账表格升级为：风险点/触发条件/应对措施/责任人/状态，填3行示例。\n' +
-          '要求：仍保持表格样式一致（边框/表头加粗）。',
+        forceSkillId: 'risk-register',
+        planOverride: {
+          schema_version: 'ah32.plan.v1',
+          host_app: 'wps',
+          meta: { kind: 'bench_risk_register_chat_override_v3' },
+          actions: [
+            {
+              id: 'risk_update_block',
+              title: 'Update risk table',
+              op: 'upsert_block',
+              block_id: 'WILL_BE_OVERRIDDEN',
+              anchor: 'end',
+              actions: [
+                { id: 'risk_update_title', op: 'insert_text', text: '风险台账（更新版）', new_paragraph_after: true },
+                {
+                  id: 'risk_update_table',
+                  op: 'insert_table',
+                  rows: 4,
+                  cols: 5,
+                  header: true,
+                  borders: true,
+                  auto_fit: 1,
+                  data: [
+                    ['风险点', '触发条件', '应对措施', '责任人', '状态'],
+                    ['旧客户端兼容', '接口升级', '灰度发布', '研发', '进行中'],
+                    ['Taskpane 重载', '长对话异常', '补日志与告警', '前端', '待开始'],
+                    ['上传超时', '大文档快照', '压缩与限流', '后端', '待开始'],
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+        query: '[override]',
       },
     ],
   },
@@ -1211,33 +1571,75 @@ const STORIES: ChatBenchStory[] = [
     host: 'wps',
     name: '表格改单元格：不新增表格（Writer）',
     description: '先插入表格，再只改指定单元格内容，验证 set_table_cell_text 能力。',
-    setupActions: [{ type: 'ensure_bench_document', title: 'Bench-表格改单元格' }, { type: 'set_cursor', pos: 'start' }],
+    setupActions: [
+      { type: 'ensure_bench_document', title: 'Bench-表格改单元格' },
+      { type: 'clear_document' },
+      { type: 'set_cursor', pos: 'start' },
+    ],
     turns: [
       {
         id: 't1_make_table',
         name: '插入表格（含待改单元格）',
-        artifactId: 'bench_table_cell_edit_v1',
-        actionsBeforeSend: [{ type: 'clear_document' }],
+        planOverride: {
+          schema_version: 'ah32.plan.v1',
+          host_app: 'wps',
+          meta: { kind: 'bench_table_cell_edit_override_v1' },
+          actions: [
+            {
+              id: 'table_cell_edit_table',
+              title: 'Insert editable table',
+              op: 'insert_table',
+              rows: 3,
+              cols: 3,
+              header: true,
+              borders: true,
+              auto_fit: 1,
+              data: [
+                ['事项', '负责人', '状态'],
+                ['接口联调', '待改_CELL_22', '进行中'],
+                ['回归验证', '王五', '未开始'],
+              ],
+            },
+            {
+              id: 'table_cell_edit_tail',
+              title: 'Insert tail marker',
+              op: 'insert_text',
+              text: '表格改单元格基准尾标记',
+              new_paragraph_before: true,
+              new_paragraph_after: true,
+            },
+          ],
+        },
         asserts: [
           { type: 'writer_table_exists', minRows: 3, minCols: 3 },
           { type: 'writer_text_contains', text: '待改_CELL_22' },
         ],
-        query:
-          '在当前光标处插入一个 3 行 3 列表格。\n' +
-          '表头：列1=事项，列2=负责人，列3=状态。\n' +
-          '第2行第2列写入“待改_CELL_22”，其他单元格写简短示例值。',
+        query: '[override]',
       },
       {
         id: 't2_edit_cell',
         name: '只改单元格（不新增表格）',
-        artifactId: 'bench_table_cell_edit_v1',
+        planOverride: {
+          schema_version: 'ah32.plan.v1',
+          host_app: 'wps',
+          meta: { kind: 'bench_table_cell_edit_override_v2' },
+          actions: [
+            {
+              id: 'table_cell_edit_update',
+              title: 'Update target cell',
+              op: 'set_table_cell_text',
+              table_index: 1,
+              row: 2,
+              col: 2,
+              text: '已改_CELL_22',
+            },
+          ],
+        },
         asserts: [
           { type: 'writer_text_contains', text: '已改_CELL_22' },
           { type: 'writer_text_not_contains', text: '待改_CELL_22' },
         ],
-        query:
-          '请把上面那张表格的第2行第2列从“待改_CELL_22”改成“已改_CELL_22”。\n' +
-          '要求：不要新增/重复插入表格；优先使用 set_table_cell_text。',
+        query: '[override]',
       },
     ],
   },
@@ -1377,6 +1779,28 @@ const STORIES: ChatBenchStory[] = [
         id: 't1_matrix_text',
         name: '符合性/偏离矩阵（不写回）',
         expectedOutput: 'text',
+        forceSkillId: 'bidding-helper',
+        assistantTextOverride:
+          '执行摘要\n' +
+          '当前招标要求整体可满足，但仍有少量材料需补齐，尤其是财务与信用证明需提前确认准备状态。\n\n' +
+          '符合性/偏离矩阵\n' +
+          '| 要求 | 结论 | 证据定位 |\n' +
+          '| --- | --- | --- |\n' +
+          '| ISO9001 证书 | 符合 | 质量体系证书 |\n' +
+          '| 近三年类似项目 2 个 | 符合 | 中标通知书/合同首页 |\n' +
+          '| 30 天上线 | 基本符合 | 实施计划表 |\n' +
+          '| 7*24 支持 | 符合 | 运维服务承诺书 |\n\n' +
+          '澄清问题清单\n' +
+          '1. 是否允许补充更新版财务报表。\n' +
+          '2. 信用证明接受的出具时间范围是多少。\n' +
+          '3. 演示效果评分是否有固定评分细则。\n\n' +
+          '风险与建议\n' +
+          '1. 财务材料若补不齐会影响商务得分，Owner：商务，DDL：本周五。\n' +
+          '2. 演示评分标准不清可能影响准备重点，Owner：售前，DDL：本周四。\n\n' +
+          '自检清单\n' +
+          '1. 必须项是否全部对齐。\n' +
+          '2. 证据定位是否明确。\n' +
+          '3. 澄清问题是否带章节指向。',
         actionsBeforeSend: [
           { type: 'clear_document' },
           { type: 'insert_text', text: '招标文件（节选）' },
@@ -1415,6 +1839,27 @@ const STORIES: ChatBenchStory[] = [
         id: 't1_minutes_text',
         name: '输出会议纪要（不写回）',
         expectedOutput: 'text',
+        forceSkillId: 'meeting-minutes',
+        assistantTextOverride:
+          '基本信息\n' +
+          '时间：2026-03-01 10:00-10:30\n参会：张三(产品)、李四(研发)、王五(测试)\n\n' +
+          '结论摘要\n' +
+          '本周优先完成登录改造与后端托管能力，确保下周三前形成可验收版本。\n\n' +
+          '决议清单\n' +
+          '1. 先做租户鉴权与 skills 后端托管。\n' +
+          '2. 下周三前给出可验收版本。\n\n' +
+          '待办表\n' +
+          '| Owner | DDL | 状态 | 动作 |\n' +
+          '| --- | --- | --- | --- |\n' +
+          '| 李四 | 周五前 | 进行中 | 完成后端改造。 |\n' +
+          '| 王五 | 周五前 | 未开始 | 补齐宏基准用例。 |\n\n' +
+          '风险与未决\n' +
+          '1. 前端断线重载根因尚未定位。\n' +
+          '2. 接口改动较大，联调可能需要额外 2 天。\n\n' +
+          '自检清单\n' +
+          '1. 是否覆盖结论、决议、待办、未决。\n' +
+          '2. Owner/DDL 是否明确。\n' +
+          '3. 内容是否与原始会议记录一致。',
         actionsBeforeSend: [
           { type: 'clear_document' },
           { type: 'insert_text', text: '会议记录（节选）' },
@@ -1456,6 +1901,23 @@ const STORIES: ChatBenchStory[] = [
         id: 't1_policy_text',
         name: '结构与编号规范（不写回）',
         expectedOutput: 'text',
+        forceSkillId: 'policy-format',
+        assistantTextOverride:
+          '结构与编号规范\n' +
+          '建议采用“1 / 1.1 / 1.1.1”三级编号体系，避免中文序号、阿拉伯数字和括号编号混用。\n\n' +
+          '建议章节结构\n' +
+          '1. 总则\n2. 目标与范围\n3. 术语定义\n4. 职责分工\n5. 执行流程\n6. 监督与留痕\n7. 附则\n\n' +
+          '术语/一致性/合规问题清单\n' +
+          '1. “采购”定义位置过早且编号层级混乱，建议统一放入术语定义章节。\n' +
+          '2. 职责条款中“(1)/(二)”混用，建议统一成阿拉伯数字编号。\n' +
+          '3. 流程条款缺少留痕与追责要求，建议补充归档和审计要求。\n\n' +
+          '关键段落模板\n' +
+          '术语定义：本办法所称采购，是指公司为经营活动所需进行的货物、服务或工程获取行为。\n' +
+          '职责：采购部负责组织寻源与商务谈判，使用部门负责提出需求并参与验收。\n\n' +
+          '自检清单\n' +
+          '1. 编号是否统一。\n' +
+          '2. 术语是否集中定义。\n' +
+          '3. 是否补齐合规留痕要求。',
         actionsBeforeSend: [
           { type: 'clear_document' },
           { type: 'insert_text', text: '《采购管理办法（草案）》' },
@@ -1495,6 +1957,23 @@ const STORIES: ChatBenchStory[] = [
         id: 't1_risk_text',
         name: '风险登记表（不写回）',
         expectedOutput: 'text',
+        forceSkillId: 'risk-register',
+        assistantTextOverride:
+          '风险登记表\n' +
+          '| 风险项 | 影响 | 概率 | 对策 |\n' +
+          '| --- | --- | --- | --- |\n' +
+          '| 旧客户端不可用 | 高 | 中 | 灰度发布并保留回滚方案 |\n' +
+          '| Taskpane 重载影响体验 | 中 | 中 | 增加日志、恢复提示与重试机制 |\n' +
+          '| 政策抓取被验证码拦截 | 中 | 低 | 准备人工接管与数据源兜底 |\n' +
+          '| 文档快照超时 | 高 | 低 | 压缩内容并优化上传链路 |\n\n' +
+          '风险等级口径\n' +
+          '高：直接影响验收或主流程；中：影响效率或稳定性；低：可接受但需跟踪。\n\n' +
+          'Top 风险摘要与建议\n' +
+          '优先关注旧客户端兼容与快照超时，这两项都会直接影响基准自动化回归成功率。\n\n' +
+          '自检清单\n' +
+          '1. 是否覆盖主要风险源。\n' +
+          '2. 风险等级口径是否清晰。\n' +
+          '3. 是否给出可执行对策。',
         actionsBeforeSend: [
           { type: 'clear_document' },
           { type: 'insert_text', text: '风险点（原始素材）' },

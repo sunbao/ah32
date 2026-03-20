@@ -2995,7 +2995,7 @@ export class PlanExecutor {
     }
 
     const count = Number(this.safe(() => (tables as any)?.Count, 0)) || 0
-    if (!tables || count < tableIndex) {
+    if (!tables || count < 1 || (hasTableIndex && count < tableIndex)) {
       this.emitCapabilityEvent('plan.capability_matrix', {
         host_app: 'wps',
         op: 'set_table_cell_text',
@@ -3013,11 +3013,50 @@ export class PlanExecutor {
       return
     }
 
-    const table =
-      this.safe(() => (tables as any).Item?.(tableIndex)) ||
-      this.safe(() => (tables as any).Item(tableIndex)) ||
-      this.safe(() => (tables as any)(tableIndex)) ||
-      null
+    let resolvedTableIndex = tableIndex
+    let table: any = null
+    let resolvedRows = 0
+    let resolvedCols = 0
+
+    if (blockId && !hasTableIndex) {
+      let bestScore = -1
+      let bestStart = -1
+      for (let idx = 1; idx <= count; idx += 1) {
+        const candidate =
+          this.safe(() => (tables as any).Item?.(idx)) ||
+          this.safe(() => (tables as any).Item(idx)) ||
+          this.safe(() => (tables as any)(idx)) ||
+          null
+        if (!candidate) continue
+        const candidateRows = Number(this.safe(() => (candidate as any)?.Rows?.Count, 0)) || 0
+        const candidateCols = Number(this.safe(() => (candidate as any)?.Columns?.Count, 0)) || 0
+        if (candidateRows < row || candidateCols < col) continue
+        const candidateStart = Number(this.safe(() => (candidate as any)?.Range?.Start, -1)) || -1
+        const candidateScore = candidateRows * candidateCols
+        if (
+          !table ||
+          candidateScore > bestScore ||
+          (candidateScore === bestScore && candidateStart >= bestStart)
+        ) {
+          table = candidate
+          resolvedTableIndex = idx
+          resolvedRows = candidateRows
+          resolvedCols = candidateCols
+          bestScore = candidateScore
+          bestStart = candidateStart
+        }
+      }
+    }
+
+    if (!table) {
+      table =
+        this.safe(() => (tables as any).Item?.(resolvedTableIndex)) ||
+        this.safe(() => (tables as any).Item(resolvedTableIndex)) ||
+        this.safe(() => (tables as any)(resolvedTableIndex)) ||
+        null
+      resolvedRows = Number(this.safe(() => (table as any)?.Rows?.Count, 0)) || 0
+      resolvedCols = Number(this.safe(() => (table as any)?.Columns?.Count, 0)) || 0
+    }
     if (!table) throw new Error('set_table_cell_text: failed to resolve table')
 
     try {
@@ -3040,10 +3079,12 @@ export class PlanExecutor {
       fallback: false,
       success: true,
       block_id: blockId || undefined,
-      table_index: tableIndex,
+      table_index: resolvedTableIndex,
       scope: tableScope,
       row,
       col,
+      resolved_rows: resolvedRows,
+      resolved_cols: resolvedCols,
     })
   }
 
@@ -3162,6 +3203,25 @@ export class PlanExecutor {
           ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', firstCellError)
         }
       }
+    }
+
+    // Keep subsequent writes outside the table. On some WPS builds the selection remains
+    // inside the first/last cell after Tables.Add(), which makes later marker/text writes land
+    // inside the table and breaks block-scoped updates.
+    try {
+      const tableRange = this.safe(() => (table as any).Range)
+      const tableEnd = Number(this.safe(() => (tableRange as any)?.End, NaN))
+      if (Number.isFinite(tableEnd)) {
+        this.safe(() => (tableRange as any)?.SetRange && (tableRange as any).SetRange(tableEnd, tableEnd))
+        this.safe(() => selection?.SetRange && selection.SetRange(tableEnd, tableEnd))
+        this.safe(() => selection?.Range?.SetRange && selection.Range.SetRange(tableEnd, tableEnd))
+        const tail = this.getDocRange(doc, tableEnd, tableEnd)
+        this.safe(() => tail && (tail as any).Select && (tail as any).Select())
+        this.safe(() => selection?.Collapse && selection.Collapse(0))
+      }
+    } catch (e) {
+      ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/plan-executor.ts', e)
+      _planDiag('warning', `insert_table(wps) failed to move selection after table: ${_errMsg(e)}`)
     }
   }
 

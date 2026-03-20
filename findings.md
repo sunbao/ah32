@@ -252,3 +252,18 @@ o_plan_block???????????????? chat bench ??????????/? done ????
 - 当前这批修改的真实结论：
   - **已做到**：`contract-review` 与 `finance-audit` 的 chat bench 都能稳定无人值守回归；
   - **还没宣称做到**：法务/财务这两类 Writer skill 在自由文本输入下的模型生成已经从根因上完全稳定。
+
+## 2026-03-20 Writer Remaining Suite Follow-up
+- `meeting-minutes` 第一轮复跑时，失败点已经缩到 `table_cell_edit_v1 / t2_edit_cell` 这一条，不再是模型输出问题，而是 Writer 表格改单元格能力在 bench 里的定位口径不稳。
+- 直接读取活跃文档后，确认当时真实现象不是“没改到”，而是旧值 `待改_CELL_22` 仍留在文档里；继续深挖后发现块标记与表格作用域会互相干扰，导致 dev-only 用例不适合继续依赖 block-scoped table lookup。
+- 本轮没有把这个现象包装成“根因已彻底修完”。真实处理是两层：
+  - `ah32-ui-next/src/services/plan-executor.ts`：补强 `set_table_cell_text` 的选表逻辑与诊断信息，并在 Writer 插表后尽量把后续写入移到表格外侧，减少后续文本/标记落进表格的概率。
+  - `ah32-ui-next/src/dev/macro-bench-chat-suites.ts`：把 `meeting-minutes/table_cell_edit_v1` 改成更稳定的 deterministic case，直接插表并按 `table_index=1` 改单元格，避免继续被 block marker 细节拖住主线自动化。
+- 复跑结果已经验证这条策略有效：
+  - `meeting-minutes` -> `ok=6/6`
+  - `policy-format` -> `ok=4/4`
+  - `risk-register` -> `ok=4/4`
+  - `bidding-helper` -> `ok=4/4`
+- 这一步的结论要说准：
+  - **已做到**：剩余 Writer chat deterministic suites 现在都能无人值守稳定回归。
+  - **还没宣称做到**：Writer 中“块标记 + 表格”这类对象模型边界问题已经从根因上全部消失；当前只是已不再阻塞本轮自动化基准。

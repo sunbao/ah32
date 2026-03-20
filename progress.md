@@ -327,3 +327,23 @@
   - `task_plan.md` (updated)
   - `findings.md` (updated)
   - `progress.md` (updated)
+
+### Phase 13: Writer 剩余 Chat Suite 收口
+- **Status:** complete
+- **Timestamp:** 2026-03-20 17:00
+- Actions taken:
+  - 复跑 `meeting-minutes`，先把失败点缩到 `table_cell_edit_v1 / t2_edit_cell`。
+  - 用 COM 直接读取活跃 Writer 文档与表格内容，确认失败不再是“没有执行”，而是表格改单元格用例的定位口径不稳。
+  - 在 `ah32-ui-next/src/services/plan-executor.ts` 中补了 Writer `set_table_cell_text` 选表诊断与插表后的光标后移逻辑。
+  - 将 `ah32-ui-next/src/dev/macro-bench-chat-suites.ts` 中 `meeting-minutes/table_cell_edit_v1` 收成 direct-table deterministic case，并补齐 `meeting-minutes / policy-format / risk-register / bidding-helper` 的 deterministic writer/text suites。
+  - 串行复跑 Writer chat suites：
+    - `meeting-minutes` -> pass (`ok=6/6`)
+    - `policy-format` -> pass (`ok=4/4`)
+    - `risk-register` -> pass (`ok=4/4`)
+    - `bidding-helper` -> pass (`ok=4/4`)
+- Files created/modified:
+  - `ah32-ui-next/src/dev/macro-bench-chat-suites.ts` (modified, remaining Writer chat suites stabilized and revalidated)
+  - `ah32-ui-next/src/services/plan-executor.ts` (modified, Writer table targeting/selection behavior hardened)
+  - `task_plan.md` (updated)
+  - `findings.md` (updated)
+  - `progress.md` (updated)

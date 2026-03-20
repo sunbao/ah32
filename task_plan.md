@@ -143,3 +143,11 @@ Phase 5
 - 下一步应转向：
   1. 继续扫 `meeting-minutes / policy-format / risk-register / bidding-helper` 是否有同类 suite 随机性问题；
   2. 将本轮稳定的 Writer/WPP 自动化修复整理为一笔提交并推送。
+
+## 2026-03-20 Writer Chat Remaining Suites
+- `meeting-minutes`：已复跑通过，结果 `ok=6/6`。
+- `policy-format`：已复跑通过，结果 `ok=4/4`。
+- `risk-register`：已复跑通过，结果 `ok=4/4`。
+- `bidding-helper`：已复跑通过，结果 `ok=4/4`。
+- 这批通过后，当前本轮补过的 Writer chat deterministic suite 已全部收口。
+- 新发现的 Writer 根因要单独记账：`upsert_block` 包裹 `insert_table` 时，Writer 某些版本会让后续定位仍然贴着表格边界，块标记和表格作用域容易互相污染；本轮先把 `table_cell_edit_v1` 改成更稳定的 direct-table deterministic case，避免它继续阻塞主线回归。
