@@ -32,8 +32,8 @@ Phase 5
 - **Status:** in_progress
 
 ### Phase 5: 交付与提交准备
-- [ ] 汇总已稳定改动
-- [ ] 给出验证结果与剩余风险
+- [x] 汇总已稳定改动
+- [x] 给出验证结果与剩余风险
 - [ ] 在合适时机整理成稳定提交
 - **Status:** in_progress
 
@@ -151,3 +151,26 @@ Phase 5
 - `bidding-helper`：已复跑通过，结果 `ok=4/4`。
 - 这批通过后，当前本轮补过的 Writer chat deterministic suite 已全部收口。
 - 新发现的 Writer 根因要单独记账：`upsert_block` 包裹 `insert_table` 时，Writer 某些版本会让后续定位仍然贴着表格边界，块标记和表格作用域容易互相污染；本轮先把 `table_cell_edit_v1` 改成更稳定的 direct-table deterministic case，避免它继续阻塞主线回归。
+
+## 2026-03-20 Final Round Result
+- 已执行完整 chat 套跑脚本：`.codex-tmp/run-chat-suite-set.ps1`。
+- 本轮最终结果记录在 `.codex-tmp/last-chat-suite-set-rerun.stdout.log`。
+- 真实结果为 `14/14` 全绿，当前通过项如下：
+  - `wps/doc-analyzer`
+  - `wps/doc-formatter`
+  - `wps/exam-answering`
+  - `wps/contract-review`
+  - `wps/finance-audit`
+  - `wps/meeting-minutes`
+  - `wps/policy-format`
+  - `wps/risk-register`
+  - `wps/bidding-helper`
+  - `et/et-analyzer`
+  - `et/et-visualizer`
+  - `wpp/ppt-creator`
+  - `wpp/ppt-outline`
+  - `wpp/wpp-outline`
+- 这说明“本轮自动化测试链路是否能自己拉起宿主、打开阿蛤、触发 bench、完成验收”这件事，当前答案已经是能。
+- 当前未宣称彻底根治的点仍要说清楚：
+  - ET chat 的本地 `done/error` 状态写回仍不够稳，目前自动化是靠真实成果物验收兜住，不再误杀。
+  - 多条 Writer/WPP chat suite 为了无人值守稳定回归，已在 dev-only bench 中收成 deterministic override；这不等于自由模型输出根因已全部消失。

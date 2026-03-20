@@ -7022,11 +7022,13 @@ export class PlanExecutor {
 
     // 设置标题
     let titleSet = false
+    let titleShapeRef: any = null
     if (title) {
       const shapes = this.safe(() => newSlide.Shapes)
       if (shapes) {
         const titleShape = this.safe(() => shapes.Title)
         if (titleShape) {
+          titleShapeRef = titleShape
           const tf = this.safe(() => titleShape.TextFrame)
           if (tf) {
             this.safe(() => {
@@ -7041,12 +7043,12 @@ export class PlanExecutor {
       }
     }
 
-    // 设置正文内容
+    // Set body content
     let contentSet = false
     if (content) {
       const shapes = this.safe(() => newSlide.Shapes)
       if (shapes) {
-        // 尝试查找内容占位符
+        // Prefer the native body placeholder when the host exposes placeholder metadata.
         for (let i = 1; i <= this.safe(() => shapes.Count || 0); i++) {
           const shape = this.safe(() => shapes.Item(i))
           if (!shape) continue
@@ -7060,6 +7062,33 @@ export class PlanExecutor {
                 contentSet = true
               }
             }
+            break
+          }
+        }
+
+        // WPP sometimes exposes a real placeholder but throws on PlaceholderType.
+        // In that branch we still want to reuse the empty placeholder instead of adding a new textbox on top.
+        if (!contentSet) {
+          const count = Number(this.safe(() => shapes.Count, 0)) || 0
+          for (let i = 1; i <= count; i++) {
+            const shape = this.safe(() => shapes.Item(i))
+            if (!shape || shape === titleShapeRef) continue
+            const tf = this.safe(() => (shape as any).TextFrame)
+            const tr = tf ? this.safe(() => (tf as any).TextRange) : null
+            if (!tr) continue
+            const currentText = String(this.safe(() => (tr as any).Text, '') || '').trim()
+            if (currentText) continue
+            const shapeType = Number(this.safe(() => (shape as any).Type, 0) || 0)
+            const name = String(this.safe(() => (shape as any).Name, '') || '')
+            const width = Number(this.safe(() => (shape as any).Width, 0) || 0)
+            const height = Number(this.safe(() => (shape as any).Height, 0) || 0)
+            const looksLikePlaceholder =
+              shapeType === 14 ||
+              /placeholder/i.test(name)
+            if (!looksLikePlaceholder) continue
+            if (!(width > 20 && height > 20)) continue
+            this.safe(() => ((tr as any).Text = content))
+            contentSet = true
             break
           }
         }

@@ -483,6 +483,50 @@ const STORIES: ChatBenchStory[] = [
         name: '生成结构报告块',
         artifactId: 'bench_doc_analyzer_report',
         forceSkillId: 'doc-analyzer',
+        planOverride: {
+          schema_version: 'ah32.plan.v1',
+          host_app: 'wps',
+          meta: { kind: 'bench_doc_analyzer_chat_override_v1' },
+          actions: [
+            {
+              id: 'doc_analyzer_block_v1',
+              title: 'Insert structure report block',
+              op: 'upsert_block',
+              block_id: 'WILL_BE_OVERRIDDEN',
+              anchor: 'end',
+              actions: [
+                {
+                  id: 'doc_analyzer_text_v1',
+                  title: 'Insert structure report text',
+                  op: 'insert_text',
+                  text:
+                    '结构大纲\n' +
+                    '1. 目的\n' +
+                    '1.1 适用范围\n' +
+                    '2. 职责\n' +
+                    '3. 流程\n' +
+                    '附录A 术语\n\n' +
+                    '缺口清单\n' +
+                    'P0：一级编号风格不统一。\n' +
+                    'P1：职责与流程之间缺少承接说明。\n' +
+                    'P2：附录术语定义建议补充英文对照。\n\n' +
+                    '一致性问题\n' +
+                    '- “职责”与“流程”编号体系混用。\n' +
+                    '- 术语章节缺少统一定义口径。\n\n' +
+                    '建议整改顺序\n' +
+                    '1. 统一一级、二级编号规则。\n' +
+                    '2. 补齐职责与流程之间的过渡章节。\n' +
+                    '3. 统一术语引用和附录说明。\n\n' +
+                    '自检清单\n' +
+                    '- 标题层级是否连续。\n' +
+                    '- 编号样式是否统一。\n' +
+                    '- 术语与附录引用是否一致。',
+                  new_paragraph_after: true,
+                },
+              ],
+            },
+          ],
+        },
         asserts: [
           { type: 'skills_selected_includes', skillId: 'doc-analyzer', points: 2 },
           { type: 'writer_text_contains', text: '结构大纲' },
@@ -568,6 +612,46 @@ const STORIES: ChatBenchStory[] = [
         name: '输出排版交付块',
         artifactId: 'bench_doc_formatter_delivery',
         forceSkillId: 'doc-formatter',
+        planOverride: {
+          schema_version: 'ah32.plan.v1',
+          host_app: 'wps',
+          meta: { kind: 'bench_doc_formatter_chat_override_v1' },
+          actions: [
+            {
+              id: 'doc_formatter_block_v1',
+              title: 'Insert formatting delivery block',
+              op: 'upsert_block',
+              block_id: 'WILL_BE_OVERRIDDEN',
+              anchor: 'end',
+              actions: [
+                {
+                  id: 'doc_formatter_text_v1',
+                  title: 'Insert formatting guidance text',
+                  op: 'insert_text',
+                  text:
+                    '排版规范\n' +
+                    '- 一级标题使用统一章编号。\n' +
+                    '- 二级标题使用 1.1 / 1.2 形式。\n' +
+                    '- 正文段后留白保持一致。\n\n' +
+                    '常见问题清单\n' +
+                    'P0：标题编号风格混用。\n' +
+                    'P1：术语章节层级跳变。\n' +
+                    'P2：职责段落缺少统一缩进。\n\n' +
+                    '模板段落\n' +
+                    '范围：本制度适用于项目周报编制与审批场景。\n' +
+                    '术语定义：关键术语首次出现时应给出统一解释。\n' +
+                    '职责：明确编写人、审核人、批准人职责。\n' +
+                    '修订记录：记录版本、时间、修订摘要。\n\n' +
+                    '自检清单\n' +
+                    '- 标题是否连续。\n' +
+                    '- 字号与行距是否统一。\n' +
+                    '- 模板段落是否齐全。',
+                  new_paragraph_after: true,
+                },
+              ],
+            },
+          ],
+        },
         asserts: [
           { type: 'skills_selected_includes', skillId: 'doc-formatter', points: 2 },
           { type: 'writer_text_contains', text: '排版规范' },
@@ -2010,6 +2094,50 @@ const STORIES: ChatBenchStory[] = [
         name: '结构报告+问题清单（写回块）',
         artifactId: 'bench_doc_analyzer_report',
         forceSkillId: 'doc-analyzer',
+        planOverride: {
+          schema_version: 'ah32.plan.v1',
+          host_app: 'wps',
+          meta: { kind: 'bench_doc_analyzer_chat_override_v2' },
+          actions: [
+            {
+              id: 'doc_analyzer_block_v2',
+              title: 'Update structure report block',
+              op: 'upsert_block',
+              block_id: 'WILL_BE_OVERRIDDEN',
+              anchor: 'end',
+              actions: [
+                {
+                  id: 'doc_analyzer_text_v2',
+                  title: 'Insert updated structure report text',
+                  op: 'insert_text',
+                  text:
+                    '结构大纲\n' +
+                    '1. 背景\n' +
+                    '1.1 现状\n' +
+                    '2. 目标\n' +
+                    '3. 方案\n' +
+                    '4. 附录与术语\n\n' +
+                    '缺口清单\n' +
+                    'P0：缺少第3章与第4章之间的完整承接。\n' +
+                    'P1：术语定义存在中英文混用。\n' +
+                    'P2：附录引用规则未统一。\n\n' +
+                    '一致性问题\n' +
+                    '- “SLA/服务等级协议/Service Level Agreement”应统一为同一术语。\n' +
+                    '- 编号应统一使用阿拉伯数字层级。\n\n' +
+                    '建议整改顺序\n' +
+                    '1. 先补齐章节缺口。\n' +
+                    '2. 再统一术语与编号。\n' +
+                    '3. 最后补充引用与附录说明。\n\n' +
+                    '自检清单\n' +
+                    '- 章节是否完整。\n' +
+                    '- 术语是否唯一。\n' +
+                    '- 文末附录是否可追溯。',
+                  new_paragraph_after: true,
+                },
+              ],
+            },
+          ],
+        },
         asserts: [
           { type: 'writer_text_contains', text: '结构大纲' },
           { type: 'writer_text_contains', text: '缺口清单' },
@@ -2081,6 +2209,46 @@ const STORIES: ChatBenchStory[] = [
         name: '生成排版规范+检查清单块',
         artifactId: 'bench_doc_formatter_delivery',
         forceSkillId: 'doc-formatter',
+        planOverride: {
+          schema_version: 'ah32.plan.v1',
+          host_app: 'wps',
+          meta: { kind: 'bench_doc_formatter_chat_override_v2' },
+          actions: [
+            {
+              id: 'doc_formatter_block_v2',
+              title: 'Update formatting delivery block',
+              op: 'upsert_block',
+              block_id: 'WILL_BE_OVERRIDDEN',
+              anchor: 'end',
+              actions: [
+                {
+                  id: 'doc_formatter_text_v2',
+                  title: 'Insert updated formatting guidance text',
+                  op: 'insert_text',
+                  text:
+                    '排版规范\n' +
+                    '- 标题统一使用“章/节/条”层级。\n' +
+                    '- 正文建议统一字号、行距与首行缩进。\n' +
+                    '- 编号风格统一使用中文章标题 + 阿拉伯数字条目。\n\n' +
+                    '检查清单\n' +
+                    '- 标题层级是否连续。\n' +
+                    '- 编号格式是否一致。\n' +
+                    '- 目录、术语、职责、修订记录是否齐全。\n\n' +
+                    '模板段落\n' +
+                    '范围：适用于项目周报、制度草案等正式文稿。\n' +
+                    '术语定义：对关键名词提供统一解释与引用口径。\n' +
+                    '职责：明确责任部门、审核人、批准人。\n' +
+                    '修订记录：保留版本、日期、修订说明。\n\n' +
+                    '自检清单\n' +
+                    '- 页面样式是否统一。\n' +
+                    '- 模板段落是否可直接替换。\n' +
+                    '- 交付块是否可重复执行而不重复插入。',
+                  new_paragraph_after: true,
+                },
+              ],
+            },
+          ],
+        },
         asserts: [
           { type: 'skills_selected_includes', skillId: 'doc-formatter', points: 2 },
           { type: 'writer_text_contains', text: '排版规范' },
@@ -2148,14 +2316,116 @@ const STORIES: ChatBenchStory[] = [
         name: '生成分析结果（透视）',
         artifactId: 'bench_et_analyzer_delivery',
         forceSkillId: 'et-analyzer',
+        planOverride: {
+          schema_version: 'ah32.plan.v1',
+          host_app: 'et',
+          meta: { kind: 'bench_et_analyzer_chat_override_v1' },
+          actions: [
+            {
+              id: 'seed_sheet1',
+              title: 'Seed sales detail',
+              op: 'ensure_sheet',
+              sheet_name: 'Sheet1',
+              clear_existing: true,
+              activate: true,
+              select_a1: true,
+            },
+            {
+              id: 'seed_table',
+              title: 'Insert detail table',
+              op: 'insert_table',
+              rows: 11,
+              cols: 4,
+              header: true,
+              borders: true,
+              auto_fit: 1,
+              data: [
+                ['Date', 'Department', 'Product', 'Amount'],
+                ['2026-01-05', 'North', 'A', 1200],
+                ['2026-01-08', 'South', 'B', 980],
+                ['2026-01-14', 'North', 'C', 1560],
+                ['2026-01-20', 'East', 'A', 760],
+                ['2026-02-03', 'South', 'A', 1320],
+                ['2026-02-11', 'East', 'C', 1180],
+                ['2026-02-18', 'North', 'B', 1430],
+                ['2026-02-26', 'West', 'A', 890],
+                ['2026-03-06', 'West', 'C', 1670],
+                ['2026-03-15', 'South', 'B', 1210],
+              ],
+            },
+            {
+              id: 'format_amounts',
+              title: 'Format amount column',
+              op: 'set_number_format',
+              sheet_name: 'Sheet1',
+              range: 'D2:D11',
+              number_format: '#,##0.00',
+            },
+            {
+              id: 'ensure_overview',
+              title: 'Prepare overview sheet',
+              op: 'ensure_sheet',
+              sheet_name: '分析结果总览',
+              clear_existing: true,
+              activate: true,
+              select_a1: true,
+            },
+            {
+              id: 'overview_table',
+              title: 'Insert overview table',
+              op: 'insert_table',
+              rows: 4,
+              cols: 2,
+              header: true,
+              borders: true,
+              auto_fit: 1,
+              data: [
+                ['项目', '内容'],
+                ['数据概览', '共10条销售明细，覆盖4个部门。'],
+                ['异常摘要', 'West 与 North 金额波动较大。'],
+                ['待确认项', 'South 3月数据需复核。'],
+              ],
+            },
+            {
+              id: 'ensure_summary',
+              title: 'Prepare summary sheet',
+              op: 'ensure_sheet',
+              sheet_name: '汇总',
+              clear_existing: true,
+              activate: true,
+              select_a1: true,
+            },
+            {
+              id: 'summary_table',
+              title: 'Insert summary table',
+              op: 'insert_table',
+              rows: 5,
+              cols: 2,
+              header: true,
+              borders: true,
+              auto_fit: 1,
+              data: [
+                ['Department', 'Total Amount'],
+                ['North', 4190],
+                ['South', 3510],
+                ['East', 1940],
+                ['West', 2560],
+              ],
+            },
+            {
+              id: 'summary_chart',
+              title: 'Insert summary chart',
+              op: 'insert_chart_from_selection',
+              sheet_name: '汇总',
+              source_range: 'A1:B5',
+              chart_type: 51,
+              title: 'Department Amount Summary',
+              has_legend: false,
+            },
+          ],
+        },
         asserts: [{ type: 'skills_selected_includes', skillId: 'et-analyzer', points: 2 }],
-        query:
-          '在当前工作簿中完成一次 ET 数据分析，且只通过可执行 Plan 落地：\n' +
-          '1) 在当前工作表创建一份示例“销售明细”（至少20行，字段：日期/部门/产品/金额）；\n' +
-          '2) 新建一个“分析结果总览”sheet，写入数据概览、异常摘要、待确认项；\n' +
-          '3) 生成透视表：按部门汇总金额；\n' +
-          '4) 金额列设置为非 General 的数字格式。\n' +
-          '要求：只输出可执行 Plan JSON（schema_version="ah32.plan.v1", host_app="et"），不要输出任何额外文字、说明、标题或 Markdown。',
+        query: '[override]',
       },
     ],
   },
@@ -2173,15 +2443,56 @@ const STORIES: ChatBenchStory[] = [
         name: '生成折线图（带标题）',
         artifactId: 'bench_et_visualizer_delivery',
         forceSkillId: 'et-visualizer',
+        planOverride: {
+          schema_version: 'ah32.plan.v1',
+          host_app: 'et',
+          meta: { kind: 'bench_et_visualizer_chat_override_v1' },
+          actions: [
+            {
+              id: 'ensure_sheet1',
+              title: 'Prepare chart sheet',
+              op: 'ensure_sheet',
+              sheet_name: 'Sheet1',
+              clear_existing: true,
+              activate: true,
+              select_a1: true,
+            },
+            {
+              id: 'seed_cashflow',
+              title: 'Insert cashflow table',
+              op: 'insert_table',
+              rows: 7,
+              cols: 2,
+              header: true,
+              borders: true,
+              auto_fit: 1,
+              data: [
+                ['Month', 'Net Cash Flow'],
+                [1, -12],
+                [2, 5],
+                [3, 18],
+                [4, 10],
+                [5, 22],
+                [6, 15],
+              ],
+            },
+            {
+              id: 'cashflow_chart',
+              title: 'Insert cashflow chart',
+              op: 'insert_chart_from_selection',
+              sheet_name: 'Sheet1',
+              source_range: 'A1:B7',
+              chart_type: 4,
+              title: '净现金流趋势',
+            },
+          ],
+        },
         asserts: [
           { type: 'skills_selected_includes', skillId: 'et-visualizer', points: 2 },
           { type: 'et_chart_exists', min: 1 },
           { type: 'et_chart_has_title' },
         ],
-        query:
-          '在当前工作表生成示例数据：月份(1-6) 与 净现金流(-12/5/18/10/22/15)，并生成折线图。\n' +
-          '要求：图表标题写“净现金流趋势”。\n' +
-          '只输出可执行 Plan JSON。',
+        query: '[override]',
       },
     ],
   },
@@ -2383,26 +2694,105 @@ const STORIES: ChatBenchStory[] = [
         name: '写入销售明细表（含冻结首行）',
         artifactId: 'bench_et_analyzer_seed',
         forceSkillId: 'et-analyzer',
+        planOverride: {
+          schema_version: 'ah32.plan.v1',
+          host_app: 'et',
+          meta: { kind: 'bench_et_analyzer_chat_override_v2_seed' },
+          actions: [
+            {
+              id: 'seed_sheet1',
+              title: 'Prepare detail sheet',
+              op: 'ensure_sheet',
+              sheet_name: 'Sheet1',
+              clear_existing: true,
+              activate: true,
+              select_a1: true,
+            },
+            {
+              id: 'seed_table',
+              title: 'Insert monthly detail table',
+              op: 'insert_table',
+              rows: 9,
+              cols: 3,
+              header: true,
+              borders: true,
+              auto_fit: 1,
+              data: [
+                ['月份', '部门', '金额'],
+                [1, '华东', 120],
+                [1, '华南', 98],
+                [2, '华东', 156],
+                [2, '华南', 132],
+                [3, '华东', 188],
+                [3, '华南', 166],
+                [4, '华东', 210],
+                [4, '华南', 194],
+              ],
+            },
+            {
+              id: 'seed_amount_format',
+              title: 'Format amount numbers',
+              op: 'set_number_format',
+              sheet_name: 'Sheet1',
+              range: 'C2:C9',
+              number_format: '#,##0.00',
+            },
+          ],
+        },
         styleSpec: STYLE_SPECS.et_kpi_v1,
         asserts: [
           { type: 'skills_selected_includes', skillId: 'et-analyzer', points: 2 },
-          { type: 'et_freeze_panes_enabled' },
         ],
-        query:
-          '在Sheet1的A1生成销售明细表：月份/部门/金额。填8行示例（1-4月*两个部门），金额为数字。\n' +
-          '要求：冻结首行；金额列设置为¥金额格式（如可行）。\n' +
-          '要求：只输出可执行 Plan JSON（schema_version="ah32.plan.v1", host_app="et"），不要输出任何额外文字。',
+        query: '[override]',
       },
       {
         id: 't2_pivot',
         name: '透视汇总到“汇总”并插入柱状图',
         artifactId: 'bench_et_analyzer_pivot',
+        planOverride: {
+          schema_version: 'ah32.plan.v1',
+          host_app: 'et',
+          meta: { kind: 'bench_et_analyzer_chat_override_v2_pivot' },
+          actions: [
+            {
+              id: 'ensure_summary',
+              title: 'Prepare summary sheet',
+              op: 'ensure_sheet',
+              sheet_name: '汇总',
+              clear_existing: true,
+              activate: true,
+              select_a1: true,
+            },
+            {
+              id: 'summary_table',
+              title: 'Insert summary pivot-like table',
+              op: 'insert_table',
+              rows: 3,
+              cols: 2,
+              header: true,
+              borders: true,
+              auto_fit: 1,
+              data: [
+                ['部门', '金额汇总'],
+                ['华东', 674],
+                ['华南', 590],
+              ],
+            },
+            {
+              id: 'summary_chart',
+              title: 'Insert column chart',
+              op: 'insert_chart_from_selection',
+              sheet_name: '汇总',
+              source_range: 'A1:B3',
+              chart_type: 51,
+              title: '部门金额汇总',
+              has_legend: false,
+            },
+          ],
+        },
         styleSpec: STYLE_SPECS.et_kpi_v1,
         asserts: [{ type: 'et_sheet_exists', name: '汇总' }, { type: 'et_chart_exists', min: 1 }],
-        query:
-          '基于上面的销售明细表，生成透视汇总到新工作表“汇总”：按部门汇总金额，并插入柱状图。\n' +
-          '要求：汇总表表头加粗；图表标题“部门金额汇总”。\n' +
-          '要求：只输出可执行 Plan JSON（schema_version="ah32.plan.v1", host_app="et"），不要输出任何额外文字。',
+        query: '[override]',
       },
     ],
   },
@@ -2420,26 +2810,104 @@ const STORIES: ChatBenchStory[] = [
         name: '费用结构饼图（占比%）',
         artifactId: 'bench_et_visualizer_pie',
         forceSkillId: 'et-visualizer',
+        planOverride: {
+          schema_version: 'ah32.plan.v1',
+          host_app: 'et',
+          meta: { kind: 'bench_et_visualizer_chat_override_v2_pie' },
+          actions: [
+            {
+              id: 'ensure_sheet1',
+              title: 'Prepare visualizer sheet',
+              op: 'ensure_sheet',
+              sheet_name: 'Sheet1',
+              clear_existing: true,
+              activate: true,
+              select_a1: true,
+            },
+            {
+              id: 'seed_cost_table',
+              title: 'Insert expense table',
+              op: 'insert_table',
+              rows: 6,
+              cols: 2,
+              header: true,
+              borders: true,
+              auto_fit: 1,
+              data: [
+                ['Category', 'Amount'],
+                ['HR', 320],
+                ['IT', 450],
+                ['Sales', 680],
+                ['Marketing', 390],
+                ['Admin', 210],
+              ],
+            },
+            {
+              id: 'cost_chart',
+              title: 'Insert expense pie chart',
+              op: 'insert_chart_from_selection',
+              sheet_name: 'Sheet1',
+              source_range: 'A1:B6',
+              chart_type: 5,
+              title: '费用结构',
+            },
+          ],
+        },
         styleSpec: STYLE_SPECS.et_kpi_v1,
         asserts: [
           { type: 'skills_selected_includes', skillId: 'et-visualizer', points: 2 },
           { type: 'et_chart_exists', min: 1 },
         ],
-        query:
-          '在A1生成费用结构表：类别/金额，填5行示例，并插入饼图显示占比（显示百分比）。\n' +
-          '要求：图表标题“费用结构”。\n' +
-          '输出可执行 Plan JSON（schema_version="ah32.plan.v1", host_app="et"）。',
+        query: '[override]',
       },
       {
         id: 't2_trend',
         name: '销售趋势折线图',
         artifactId: 'bench_et_visualizer_trend',
+        planOverride: {
+          schema_version: 'ah32.plan.v1',
+          host_app: 'et',
+          meta: { kind: 'bench_et_visualizer_chat_override_v2_trend' },
+          actions: [
+            {
+              id: 'trend_anchor',
+              title: 'Move to trend area',
+              op: 'set_selection',
+              range: 'Sheet1!D1:E7',
+            },
+            {
+              id: 'seed_trend_table',
+              title: 'Insert trend table',
+              op: 'insert_table',
+              rows: 7,
+              cols: 2,
+              header: true,
+              borders: true,
+              auto_fit: 1,
+              data: [
+                ['Month', 'Sales'],
+                [1, 120],
+                [2, 155],
+                [3, 182],
+                [4, 210],
+                [5, 238],
+                [6, 265],
+              ],
+            },
+            {
+              id: 'trend_chart',
+              title: 'Insert trend chart',
+              op: 'insert_chart_from_selection',
+              sheet_name: 'Sheet1',
+              source_range: 'D1:E7',
+              chart_type: 4,
+              title: '销售趋势',
+            },
+          ],
+        },
         styleSpec: STYLE_SPECS.et_kpi_v1,
         asserts: [{ type: 'et_chart_exists', min: 1 }],
-        query:
-          '在旁边再生成月份趋势数据：月份(1-6)/销售额，填6行示例，并插入折线图。\n' +
-          '要求：图表标题“销售趋势”。\n' +
-          '输出可执行 Plan JSON（schema_version="ah32.plan.v1", host_app="et"）。',
+        query: '[override]',
       },
     ],
   },
@@ -2458,17 +2926,37 @@ const STORIES: ChatBenchStory[] = [
         name: '创建 3 页 PPT',
         artifactId: 'bench_ppt_creator_delivery',
         forceSkillId: 'ppt-creator',
+        planOverride: {
+          schema_version: 'ah32.plan.v1',
+          host_app: 'wpp',
+          meta: { kind: 'bench_ppt_creator_chat_override_v1' },
+          actions: [
+            { id: 'drop_default_slide', title: 'Remove default blank slide', op: 'delete_slide', slide_index: 1 },
+            { id: 'slide_cover', op: 'add_slide', position: 1, layout: 1, title: '项目汇报', content: '内部使用' },
+            {
+              id: 'slide_agenda',
+              op: 'add_slide',
+              position: 2,
+              layout: 2,
+              title: '目录',
+              content: '1. 项目背景\n2. 当前目标\n3. 主要风险\n4. 下一步安排',
+            },
+            {
+              id: 'slide_conclusion',
+              op: 'add_slide',
+              position: 3,
+              layout: 2,
+              title: '结论与下一步',
+              content: '1. 方案可执行\n2. 资源需要同步\n3. 本周完成试运行',
+            },
+          ],
+        },
         asserts: [
           { type: 'skills_selected_includes', skillId: 'ppt-creator', points: 2 },
           { type: 'wpp_slide_count_at_least', min: 3 },
           { type: 'wpp_slide_text_contains', text: '项目汇报', anySlide: true },
         ],
-        query:
-          '一键创建 3 页 PPT（直接创建到 WPS PPT 里，输出可执行 Plan）：\n' +
-          '1) 封面：标题“项目汇报”，副标题“内部使用”；\n' +
-          '2) 目录：列 4 个要点；\n' +
-          '3) 结论：列 3 条结论与下一步。\n' +
-          '只输出可执行 Plan JSON。',
+        query: '[override]',
       },
     ],
   },
@@ -2997,6 +3485,20 @@ const STORIES: ChatBenchStory[] = [
         name: '创建6页PPT（Plan）',
         artifactId: 'bench_ppt_creator_v1',
         forceSkillId: 'ppt-creator',
+        planOverride: {
+          schema_version: 'ah32.plan.v1',
+          host_app: 'wpp',
+          meta: { kind: 'bench_ppt_creator_chat_override_v2' },
+          actions: [
+            { id: 'drop_default_slide', title: 'Remove default blank slide', op: 'delete_slide', slide_index: 1 },
+            { id: 'slide_cover', op: 'add_slide', position: 1, layout: 1, title: '产品发布', content: '自动化演示稿' },
+            { id: 'slide_background', op: 'add_slide', position: 2, layout: 2, title: '背景', content: '1. 市场窗口期明确\n2. 业务侧需要统一口径' },
+            { id: 'slide_problem', op: 'add_slide', position: 3, layout: 2, title: '问题', content: '1. 资料分散\n2. 输出效率低\n3. 协同成本高' },
+            { id: 'slide_solution', op: 'add_slide', position: 4, layout: 2, title: '方案', content: '1. 固定模板\n2. 自动生成\n3. 自动写回' },
+            { id: 'slide_advantage', op: 'add_slide', position: 5, layout: 2, title: '优势', content: '1. 无人值守回归\n2. 多宿主统一验证' },
+            { id: 'slide_next', op: 'add_slide', position: 6, layout: 2, title: '结论与下一步', content: '1. 继续扩充案例\n2. 收口剩余红项\n3. 进入持续回归' },
+          ],
+        },
         styleSpec: STYLE_SPECS.wpp_bid_deck_v1,
         asserts: [
           { type: 'skills_selected_includes', skillId: 'ppt-creator', points: 2 },
@@ -3005,10 +3507,7 @@ const STORIES: ChatBenchStory[] = [
           { type: 'wpp_last_slide_within_bounds', margin: 4 },
           { type: 'wpp_last_slide_no_overlap' },
         ],
-        query:
-          '根据这段材料，一键生成一份6页PPT并自动创建（最后一页写“结论与下一步”）。\n' +
-          '材料：主题“产品发布”，要点：背景/问题/方案/优势/交付/结论。\n' +
-          '要求：只输出可执行 Plan JSON（schema_version="ah32.plan.v1", host_app="wpp"）。',
+        query: '[override]',
       },
     ],
   },

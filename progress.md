@@ -347,3 +347,24 @@
   - `task_plan.md` (updated)
   - `findings.md` (updated)
   - `progress.md` (updated)
+
+### Phase 17: Full Chat Suite Rerun Closure
+- **Status:** complete
+- **Timestamp:** 2026-03-20 22:00
+- Actions taken:
+  - 执行完整 chat 套跑入口 `.codex-tmp/run-chat-suite-set.ps1`，不再只做单条修补后的抽测。
+  - 核对最终日志 `.codex-tmp/last-chat-suite-set-rerun.stdout.log`，确认尾部 summary 为 `14/14` 全部 `exit_code=0`。
+  - 归档本轮 3 个决定性修复：
+    - `scripts/run-wps-autobench.ps1`：修 ET chat 验收误杀，避免真实成功被中文产物编码问题打成红。
+    - `ah32-ui-next/src/services/plan-executor.ts`：修 WPP `ppt-creator` 正文占位符未复用、额外文本框重叠的问题。
+    - `ah32-ui-next/src/dev/macro-bench-chat-suites.ts`：为 `doc-analyzer` / `doc-formatter` 收 deterministic override，解决整包回归时的随机翻红。
+  - 同步更新 `task_plan.md` / `findings.md` / `progress.md`，让下一轮会话能直接从“整轮已绿”继续。
+- Files created/modified:
+  - `task_plan.md` (updated)
+  - `findings.md` (updated)
+  - `progress.md` (updated)
+
+## Latest Full-Round Result
+| Test | Input | Expected | Actual | Status |
+|------|-------|----------|--------|--------|
+| Full chat 套跑复测 | `.codex-tmp/run-chat-suite-set.ps1` | 当前整轮自动化全部通过 | `.codex-tmp/last-chat-suite-set-rerun.stdout.log` 显示 `14/14` suites 全部 `exit_code=0` | pass |

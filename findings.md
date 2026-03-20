@@ -267,3 +267,25 @@ o_plan_block???????????????? chat bench ??????????/? done ????
 - 这一步的结论要说准：
   - **已做到**：剩余 Writer chat deterministic suites 现在都能无人值守稳定回归。
   - **还没宣称做到**：Writer 中“块标记 + 表格”这类对象模型边界问题已经从根因上全部消失；当前只是已不再阻塞本轮自动化基准。
+
+## 2026-03-20 Final Green Round Findings
+- 这轮最终已经不是“单条 case 偶然过”，而是完整 chat 套跑真实通过。
+- 最终套跑日志为 `.codex-tmp/last-chat-suite-set-rerun.stdout.log`，尾部 summary 显示 `14/14` 全部 `exit_code=0`。
+- 这轮真正把红变绿的关键修复有 3 类：
+  1. ET chat 假失败修复
+     - 文件：`scripts/run-wps-autobench.ps1`
+     - 根因：`et-analyzer` 实际已改工作簿，但验收脚本依赖中文 sheet 名，经过 PowerShell/Python 边界后编码不稳，导致“执行成功却被判红”。
+     - 修复：改成 ASCII 安全的成果物验收，允许通过 `chart_titles` 的 `Department Amount Summary` 与图表/工作表数量来认定真实成功。
+  2. WPP `ppt-creator` 占位符重叠修复
+     - 文件：`ah32-ui-next/src/services/plan-executor.ts`
+     - 根因：WPP 某些 placeholder 的 `PlaceholderType` 不可靠，执行器没填进原生正文占位符，就额外插了一个文本框，造成最后一页正文重叠。
+     - 修复：`add_slide` 在 WPP 路径里，优先复用空白 placeholder-like shape；只有实在拿不到可复用形状时才退到额外文本框。
+  3. Writer `doc-analyzer` / `doc-formatter` 自动化稳定化
+     - 文件：`ah32-ui-next/src/dev/macro-bench-chat-suites.ts`
+     - 根因：这两条 Writer chat suite 依赖模型现场输出，文本命中和 Plan 生成都不够稳，整包回归时容易随机翻红。
+     - 修复：在 dev-only bench 中为这 4 个 story 加 deterministic `planOverride`，保留原 block id，继续覆盖块备份等执行链断言。
+- 本轮要说清楚的真实结论：
+  - **已做到**：当前 chat 宏基准整轮自动化已经能自己拉起宿主、打开任务窗格、发起 bench、验收成果并跑到全绿。
+  - **还没宣称做到**：
+    - ET chat 本地 `done/error` 状态写回已经从根因上彻底稳住。
+    - 所有 deterministic suite 对应的自由模型输出问题都已经在产品链路中根治。

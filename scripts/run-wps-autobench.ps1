@@ -495,6 +495,7 @@ function Test-BenchMutation {
   switch ($SuiteIdValue) {
     'et-analyzer' {
       $sheetNames = @($State.sheet_names)
+      $chartTitles = @($State.chart_titles)
       $extraGeneratedSheets = @()
       foreach ($sheet in @($State.sheets)) {
         $name = [string]($sheet.name)
@@ -504,7 +505,14 @@ function Test-BenchMutation {
         }
         $extraGeneratedSheets += $name
       }
-      $macroOk = (([int]$State.sheet_count -ge 2) -and ([int]$State.chart_count -ge 1) -and (Test-StringCollectionContains -Values $sheetNames -Expected 'Summary'))
+      $macroOk = (
+        ([int]$State.sheet_count -ge 4) -and
+        ([int]$State.chart_count -ge 1) -and
+        (
+          (Test-StringCollectionContains -Values $sheetNames -Expected 'Summary') -or
+          (Test-StringCollectionContains -Values $chartTitles -Expected 'Department Amount Summary')
+        )
+      )
       $chatOk = (
         ([int]$State.sheet_count -ge 5) -and
         ([int]$State.chart_count -ge 1) -and
