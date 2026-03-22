@@ -6,6 +6,13 @@ AH32 (product name: **Aha**) is an enterprise office assistant for **WPS Office*
 
 Note: due to historical reasons, the backend Python package directory remains `src/ah32/` (import path is still `ah32`).
 
+## Latest Milestone
+
+- Current milestone version: `v0.3.0`
+- This is the first unattended macro-bench automation milestone across Writer, ET, and WPP.
+- Current validated baseline: chat macro-bench `14/14` green.
+- Milestone details: [CHANGELOG.md](CHANGELOG.md)
+
 ## Visual Overview
 
 ### Product Overview
