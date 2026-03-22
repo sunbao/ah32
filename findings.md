@@ -289,3 +289,29 @@ o_plan_block???????????????? chat bench ??????????/? done ????
   - **还没宣称做到**：
     - ET chat 本地 `done/error` 状态写回已经从根因上彻底稳住。
     - 所有 deterministic suite 对应的自由模型输出问题都已经在产品链路中根治。
+## 2026-03-21 ET 宿主状态根因修复结果
+- 这次不是再靠“成果物验收兜住”来解释 ET 通过，而是把 ET chat 宿主状态本身继续修到了可稳定收尾。
+- 最新确认过的 ET 根因链：
+  1. ET 写状态后删除定义名称 `AH32_DEV_BENCH_STATUS`，会在部分工作簿/图表状态下把前端主流程卡住；
+  2. ET 把细碎 stage 逐条同步写回宿主，会放大这种卡顿风险；
+  3. bench 会话切换时绑定当前文档，对 ET dev bench 没必要，还会增加宿主同步取数阻塞面。
+- 对应修复已经真实验证：
+  - `ah32-ui-next/src/dev/macro-bench-chat.ts`
+    - ET 改为只写 `_AH32_DEV_STATUS!A1`；
+    - 删除定义名称动作移除；
+    - ET 状态 payload 压缩；
+    - ET 细粒度 stage 不再同步写回宿主；
+    - `switchBenchSessionBucket(true)` 只对 Writer 绑定当前文档。
+  - `ah32-ui-next/src/components/dev/MacroBenchWidget.vue`
+    - ET widget 状态同步同样不再删除定义名称。
+- 真实复跑轨迹：
+  - 第一次复跑：卡点从 `turn_exec_done` 挪到 `turn_switch_session_pre`，证明“删定义名称”那一层确实是问题之一；
+  - 第二次复跑：去掉 ET 细粒度 stage 宿主写回后，`et-analyzer` 终于真实落到 `done`；
+  - 随后 `et-visualizer` 也真实落到 `done`。
+- 最终验收结果：
+  - `et-analyzer`：`done`，`ok=3/3`
+  - `et-visualizer`：`done`，`ok=3/3`
+  - 完整 chat 套跑：`.codex-tmp/run-chat-suite-set.ps1` -> `14/14` 全绿
+- 所以当前结论已经升级为：
+  - **不是** “ET 只能靠成果物兜底算通过”；
+  - **而是** “ET chat 的宿主状态主链已经能稳定走到 done，并且整轮回归未见 Writer/WPP 回归”。

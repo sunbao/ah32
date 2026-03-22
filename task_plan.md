@@ -174,3 +174,25 @@ Phase 5
 - 当前未宣称彻底根治的点仍要说清楚：
   - ET chat 的本地 `done/error` 状态写回仍不够稳，目前自动化是靠真实成果物验收兜住，不再误杀。
   - 多条 Writer/WPP chat suite 为了无人值守稳定回归，已在 dev-only bench 中收成 deterministic override；这不等于自由模型输出根因已全部消失。
+## 2026-03-21 ET Host Status Root Fix
+- ET chat 之前虽然能靠成果物验收通过，但宿主状态经常卡在 `running`，这次已经把根因继续往前推到真正可验证的修复。
+- 这轮真实定位出的 ET 根因不是单点，而是 3 个会把主流程绊住的宿主状态相关动作叠加：
+  1. 每次写状态后还去删 `AH32_DEV_BENCH_STATUS` 定义名称；
+  2. ET 状态写回 payload 过重；
+  3. 把每个细碎 stage 都同步写回宿主，导致 chat 主流程被状态上报反向卡住。
+- 已落地并验证的修复：
+  - `ah32-ui-next/src/dev/macro-bench-chat.ts`
+    - ET 状态写回改为只依赖隐藏工作表 `_AH32_DEV_STATUS!A1`，不再删除定义名称；
+    - ET 状态 payload 做了压缩；
+    - ET 的细粒度 `pushStage(...)` 不再同步写回宿主，只保留关键持久化/最终完成状态；
+    - bench 会话切换里“绑定当前文档”限制到 Writer，ET/WPP 不再为 dev bench 额外走这条同步宿主取数路径。
+  - `ah32-ui-next/src/components/dev/MacroBenchWidget.vue`
+    - ET widget 状态写回同样只保留隐藏工作表，不再碰定义名称。
+- 真实联调结果：
+  - `et-analyzer`：第一次复跑卡点从 `turn_exec_done` 前移到 `turn_switch_session_pre`，说明“删定义名称”这刀已经生效；
+  - 继续收掉 ET 细粒度阶段写回后，`et-analyzer` 真实输出终态 `done`，结果 `ok=3/3`；
+  - `et-visualizer` 同样真实输出终态 `done`，结果 `ok=3/3`；
+  - 随后执行 `.codex-tmp/run-chat-suite-set.ps1` 整轮回归，结果仍为 `14/14` 全绿。
+- 当前这次的结论和 2026-03-20 不同：
+  - **已做到**：ET chat 不再只靠成果物兜底退出，本地宿主状态现在能稳定落到 `done`；
+  - **同时确认**：这轮 ET 根因修复没有把 Writer/WPP 自动化链路打坏。

@@ -837,9 +837,76 @@ let chatBenchStatusPending:
   | { host: MacroBenchHost; payloadObj: Record<string, any>; attempt: number }
   | null = null
 
+const compactHostBenchStatusPayload = (host: MacroBenchHost, payloadObj: Record<string, any>): Record<string, any> => {
+  try {
+    if (host !== 'et') return payloadObj
+    const progress = payloadObj?.progress && typeof payloadObj.progress === 'object'
+      ? {
+          idx: Number((payloadObj.progress as any).idx || 0) || 0,
+          total: Number((payloadObj.progress as any).total || 0) || 0,
+          host: 'et',
+          suiteId: String((payloadObj.progress as any).suiteId || payloadObj.suiteId || '').trim(),
+        }
+      : undefined
+    const detailStage = payloadObj?.detailStage && typeof payloadObj.detailStage === 'object'
+      ? {
+          stage: String((payloadObj.detailStage as any).stage || '').trim(),
+          host: 'et',
+          suiteId: String((payloadObj.detailStage as any).suiteId || payloadObj.suiteId || '').trim(),
+          runId: String((payloadObj.detailStage as any).runId || '').trim(),
+          chatSessionId: String((payloadObj.detailStage as any).chatSessionId || '').trim(),
+          storyId: String((payloadObj.detailStage as any).storyId || '').trim(),
+          turnId: String((payloadObj.detailStage as any).turnId || '').trim(),
+          idx: Number((payloadObj.detailStage as any).idx || 0) || 0,
+          total: Number((payloadObj.detailStage as any).total || 0) || 0,
+          ok: typeof (payloadObj.detailStage as any).ok === 'boolean' ? !!(payloadObj.detailStage as any).ok : undefined,
+          execOk: typeof (payloadObj.detailStage as any).execOk === 'boolean' ? !!(payloadObj.detailStage as any).execOk : undefined,
+          assertOk: typeof (payloadObj.detailStage as any).assertOk === 'boolean' ? !!(payloadObj.detailStage as any).assertOk : undefined,
+          execAttempts: Number((payloadObj.detailStage as any).execAttempts || 0) || 0,
+          repairsUsed: Number((payloadObj.detailStage as any).repairsUsed || 0) || 0,
+        }
+      : undefined
+    const summary = payloadObj?.summary && typeof payloadObj.summary === 'object'
+      ? {
+          total: Number((payloadObj.summary as any).total || 0) || 0,
+          ok: Number((payloadObj.summary as any).ok || 0) || 0,
+          fail: Number((payloadObj.summary as any).fail || 0) || 0,
+        }
+      : undefined
+    const recentFailures = Array.isArray(payloadObj?.recentFailures)
+      ? payloadObj.recentFailures.slice(0, 5).map((item: any) => ({
+          storyId: String(item?.storyId || '').trim(),
+          turnId: String(item?.turnId || '').trim(),
+          message: String(item?.message || '').trim().slice(0, 180),
+        }))
+      : undefined
+    return {
+      stage: String(payloadObj?.stage || '').trim(),
+      runMode: 'chat',
+      suiteId: String(payloadObj?.suiteId || '').trim(),
+      preset: String(payloadObj?.preset || '').trim(),
+      running: !!payloadObj?.running,
+      stopped: !!payloadObj?.stopped,
+      at: String(payloadObj?.at || '').trim(),
+      ok: Number(payloadObj?.ok || 0) || 0,
+      total: Number(payloadObj?.total || 0) || 0,
+      completedTurns: Number(payloadObj?.completedTurns || 0) || 0,
+      okTurns: Number(payloadObj?.okTurns || 0) || 0,
+      assertOkTurns: Number(payloadObj?.assertOkTurns || 0) || 0,
+      progress,
+      detailStage,
+      summary,
+      recentFailures,
+    }
+  } catch (e) {
+    ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e)
+    return payloadObj
+  }
+}
+
 const writeChatBenchStatusToHostOnce = (host: MacroBenchHost, payloadObj: Record<string, any>): boolean => {
   try {
-    const payload = JSON.stringify(payloadObj)
+    const payload = JSON.stringify(compactHostBenchStatusPayload(host, payloadObj))
     return !!wpsBridge.runWithWpsApi(
       `macro-bench-chat:status:${host}`,
       () => {
@@ -883,12 +950,8 @@ const writeChatBenchStatusToHostOnce = (host: MacroBenchHost, payloadObj: Record
           } catch (_e5) {
             try { cell.Value2 = payload } catch (_e6) { return false }
           }
-          try {
-            const names = wb?.Names
-            if (names) {
-              try { names.Item('AH32_DEV_BENCH_STATUS').Delete() } catch (_e7) {}
-            }
-          } catch (_e8) {}
+          // The hidden status sheet is the canonical ET status channel. Avoid touching
+          // workbook defined names here: ET can stall on name mutations after sheet/chart ops.
           return true
         }
         if (host === 'wpp') {
@@ -1827,6 +1890,7 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
       ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/dev/macro-bench-chat.ts', e)
     }
     try {
+      if (host === 'et') return
       const info = { ...(extra || {}) }
       const progress =
         typeof info.idx === 'number' && typeof info.total === 'number'
@@ -3065,10 +3129,11 @@ export const runChatBenchCurrentHost = async (chatStore: ChatStoreLike, opts: {
 
   const switchBenchSessionBucket = async (bindToActiveDocument: boolean = false, timeoutMs: number = 1500) => {
     try {
+      const shouldBindActiveDocument = bindToActiveDocument && host === 'wps'
       const work = Promise.resolve(
         (chatStore as any).switchToSession?.(
           activeChatSessionId,
-          bindToActiveDocument ? { bindToActiveDocument: true } : undefined
+          shouldBindActiveDocument ? { bindToActiveDocument: true } : undefined
         )
       )
       await withTimeout(work, timeoutMs, 'switch_bench_session')

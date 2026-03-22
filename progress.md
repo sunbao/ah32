@@ -368,3 +368,29 @@
 | Test | Input | Expected | Actual | Status |
 |------|-------|----------|--------|--------|
 | Full chat 套跑复测 | `.codex-tmp/run-chat-suite-set.ps1` | 当前整轮自动化全部通过 | `.codex-tmp/last-chat-suite-set-rerun.stdout.log` 显示 `14/14` suites 全部 `exit_code=0` | pass |
+### Phase 18: ET Host Status Root Fix and Full Regression
+- **Status:** complete
+- **Timestamp:** 2026-03-21 12:20
+- Actions taken:
+  - 继续深挖 ET chat 仍停在 `running` 的根因，不再接受“成果物验收能过就算完”。
+  - 确认 ET 宿主状态写回里，删除定义名称 `AH32_DEV_BENCH_STATUS` 会把前端主流程卡住；将 ET chat 与 ET widget 都改为只写隐藏工作表 `_AH32_DEV_STATUS!A1`。
+  - 给 ET 宿主状态 payload 做压缩，减少 A1 JSON 长度和宿主写入压力。
+  - 确认第二层卡点在 ET 细粒度 stage 写回；将 ET 的 `pushStage(...)` 宿主写回关闭，只保留关键持久化/终态状态更新。
+  - 确认第三层阻塞面来自 bench 会话切换时不必要的“绑定当前文档”；将该绑定限制到 Writer，ET/WPP dev bench 不再走这条同步宿主取数路径。
+  - 每次修改后都执行 `npm -C ah32-ui-next run build`，确认前端构建通过。
+  - 真实复跑 `et-analyzer`，从最初卡在 `turn_exec_done`，推进到卡在 `turn_switch_session_pre`，最终推进到真实终态 `done`，结果 `ok=3/3`。
+  - 真实复跑 `et-visualizer`，确认也真实终态 `done`，结果 `ok=3/3`。
+  - 执行整轮回归 `.codex-tmp/run-chat-suite-set.ps1`，最终 summary 仍为 `14/14` 全绿。
+- Files created/modified:
+  - `ah32-ui-next/src/dev/macro-bench-chat.ts` (modified, ET host status root fix)
+  - `ah32-ui-next/src/components/dev/MacroBenchWidget.vue` (modified, ET widget status root fix)
+  - `task_plan.md` (updated)
+  - `findings.md` (updated)
+  - `progress.md` (updated)
+
+## Latest Result
+| Test | Input | Expected | Actual | Status |
+|------|-------|----------|--------|--------|
+| ET chat 宿主状态复测 | `scripts/run-wps-autobench.ps1 -BenchHost et -RunMode chat -SuiteId et-analyzer -Preset standard -Action start -ApiBase http://192.168.1.154:5123` | 不再停在 `running`，真实落到 `done` | `done`, `ok=3/3` | pass |
+| ET chat 回归复测 | `scripts/run-wps-autobench.ps1 -BenchHost et -RunMode chat -SuiteId et-visualizer -Preset standard -Action start -ApiBase http://192.168.1.154:5123` | 真实落到 `done` | `done`, `ok=3/3` | pass |
+| Full chat 套跑回归 | `.codex-tmp/run-chat-suite-set.ps1` | 修 ET 后整轮仍通过 | `14/14` 全绿 | pass |

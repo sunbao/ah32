@@ -210,6 +210,7 @@ const lastMode = ref<RunMode>('macro')
 const lastError = ref<string>('')
 const latestDetailStage = ref<any>(null)
 const autoBenchDebugText = ref<string>('')
+const benchStatusHost = ref<MacroBenchHost | null>(null)
 let autoBenchPollTimer: number | null = null
 let benchUnmounting = false
 
@@ -555,9 +556,22 @@ const buildBenchFailureDigest = (run: any) => {
   }
 }
 
+const getBenchStatusHost = (): MacroBenchHost => {
+  const locked = benchStatusHost.value
+  if (locked === 'wps' || locked === 'et' || locked === 'wpp') return locked
+  return safeHost()
+}
+
+const shouldSkipWidgetChatStatusWrite = (stage: string): boolean => {
+  if (runMode.value !== 'chat') return false
+  return stage === 'running' || stage === 'done'
+}
+
 const syncDevBenchStatus = (stage: string, extra?: Record<string, any>) => {
   try {
-    if (safeHost() !== 'wps') return
+    if (shouldSkipWidgetChatStatusWrite(stage)) return
+    const host = getBenchStatusHost()
+    if (!host) return
     const payload = JSON.stringify({
       stage,
       runMode: runMode.value,
@@ -571,16 +585,67 @@ const syncDevBenchStatus = (stage: string, extra?: Record<string, any>) => {
     wpsBridge.runWithWpsApi(
       'macroBenchWidget.syncDevBenchStatus',
       () => {
-        const app = (window as any).Application
-        const doc = app?.ActiveDocument
-        const vars = doc?.Variables
-        if (!vars) return false
-        try {
-          vars.Item('AH32_DEV_BENCH_STATUS').Value = payload
-        } catch (_e) {
-          vars.Add('AH32_DEV_BENCH_STATUS', payload)
+        const app = wpsBridge.getApplication()
+        if (host === 'wps') {
+          const doc = app?.ActiveDocument || app?.Documents?.Item?.(1) || null
+          const vars = doc?.Variables
+          if (!vars) return false
+          try {
+            vars.Item('AH32_DEV_BENCH_STATUS').Value = payload
+          } catch (_e) {
+            vars.Add('AH32_DEV_BENCH_STATUS', payload)
+          }
+          return true
         }
-        return true
+        if (host === 'et') {
+          const wb = app?.ActiveWorkbook || app?.Workbooks?.Item?.(1) || null
+          if (!wb) return false
+          let ok = false
+          try {
+            let sheet = null as any
+            try {
+              sheet = wb.Worksheets?.Item?.('_AH32_DEV_STATUS') || null
+            } catch (_e) {
+              sheet = null
+            }
+            if (!sheet) {
+              try {
+                sheet = wb.Worksheets?.Add?.()
+                if (sheet) {
+                  try { sheet.Name = '_AH32_DEV_STATUS' } catch (_e2) {}
+                }
+              } catch (_e3) {
+                sheet = null
+              }
+            }
+            if (sheet) {
+              try { sheet.Visible = 0 } catch (_e4) {}
+              const cell = sheet.Range?.('A1')
+              if (cell) {
+                try { cell.Value = payload } catch (_e5) {
+                  try { cell.Value2 = payload } catch (_e6) {}
+                }
+                ok = true
+              }
+            }
+          } catch (_e) {}
+          // Treat the hidden status sheet as canonical. Avoid mutating defined names during
+          // ET bench runs because name operations can stall after workbook structure changes.
+          return ok
+        }
+        if (host === 'wpp') {
+          const pres = app?.ActivePresentation || app?.Presentations?.Item?.(1) || null
+          const tags = pres?.Tags
+          if (!pres || !tags) return false
+          try { tags.Delete('AH32_DEV_BENCH_STATUS') } catch (_e) {}
+          try {
+            tags.Add('AH32_DEV_BENCH_STATUS', payload)
+            return true
+          } catch (_e) {
+            return false
+          }
+        }
+        return false
       },
       false
     )
@@ -685,12 +750,12 @@ const triggerAutoBench = (cfg: DevBenchAutoConfig, source: 'url' | 'doc_var') =>
 }
 
 const pollAutoBenchRequest = () => {
-  if (safeHost() !== 'wps') return
   if (running.value && runMode.value === 'chat') {
     const runtime = getChatRuntimeSnapshot()
     if (runtime) syncDevBenchStatus('running', { progress: progress.value || undefined, chatRuntime: runtime, detailStage: latestDetailStage.value || undefined })
   }
   if (running.value) return
+  if (safeHost() !== 'wps') return
   const docCfg = readDevBenchRequestFromDocument()
   if (!docCfg?.enabled) return
   triggerAutoBench(docCfg, 'doc_var')
@@ -700,6 +765,7 @@ const start = async () => {
   if (running.value) return
   benchUnmounting = false
   running.value = true
+  benchStatusHost.value = safeHost()
   stopped.value = false
   macroAbort.value = null
   progress.value = null
@@ -722,7 +788,7 @@ const start = async () => {
         },
         onStage: (p) => {
           latestDetailStage.value = p
-          syncDevBenchStatus('running', { progress: progress.value || undefined, detailStage: p })
+          syncDevBenchStatus('running', { progress: progress.value || undefined, detailStage: p, chatRuntime: getChatRuntimeSnapshot() || undefined })
         },
         shouldStop: () => stopped.value,
         signal: ctrl.signal,
@@ -773,6 +839,7 @@ const start = async () => {
     }
   } finally {
     running.value = false
+    benchStatusHost.value = null
     macroAbort.value = null
     if (!benchUnmounting) clearAutoResumeHint()
     if (stopped.value || lastError.value) syncDevBenchStatus(stopped.value ? 'stopped' : 'error')
@@ -811,6 +878,7 @@ const resume = async () => {
 
   running.value = true
   benchUnmounting = false
+  benchStatusHost.value = host
   stopped.value = false
   macroAbort.value = null
   progress.value = null
@@ -823,15 +891,15 @@ const resume = async () => {
   try {
     const ctrl = new AbortController()
     macroAbort.value = ctrl
-    const out = await runChatBenchCurrentHost(chatStore as any, {
-      onProgress: (p) => {
-        progress.value = p
-        syncDevBenchStatus('running', { progress: p, resumed: true })
-      },
-      onStage: (p) => {
-        latestDetailStage.value = p
-        syncDevBenchStatus('running', { progress: progress.value || undefined, resumed: true, detailStage: p })
-      },
+      const out = await runChatBenchCurrentHost(chatStore as any, {
+        onProgress: (p) => {
+          progress.value = p
+          syncDevBenchStatus('running', { progress: p, resumed: true, chatRuntime: getChatRuntimeSnapshot() || undefined })
+        },
+        onStage: (p) => {
+          latestDetailStage.value = p
+          syncDevBenchStatus('running', { progress: progress.value || undefined, resumed: true, detailStage: p, chatRuntime: getChatRuntimeSnapshot() || undefined })
+        },
       shouldStop: () => stopped.value,
       signal: ctrl.signal,
       suiteId: suiteId.value,
@@ -862,6 +930,7 @@ const resume = async () => {
     }
   } finally {
     running.value = false
+    benchStatusHost.value = null
     if (!benchUnmounting) clearAutoResumeHint()
     if (stopped.value || lastError.value) syncDevBenchStatus(stopped.value ? 'stopped' : 'error', { resumed: true })
     try {
@@ -1075,6 +1144,7 @@ onBeforeUnmount(() => {
   benchUnmounting = true
   try { if (running.value) writeAutoResumeHint() } catch (e) { ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/components/dev/MacroBenchWidget.vue', e) }
   try { if (running.value) stop() } catch (e) { ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/components/dev/MacroBenchWidget.vue', e) }
+  benchStatusHost.value = null
   try {
     if (autoBenchPollTimer !== null) {
       window.clearInterval(autoBenchPollTimer)
