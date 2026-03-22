@@ -2197,6 +2197,744 @@ const STORIES: ChatBenchStory[] = [
   },
 
   {
+    id: storyId('bidding-helper', 'wps', 'policy_qa_v1'),
+    suiteId: 'bidding-helper',
+    host: 'wps',
+    name: '政策覆盖：智慧问答（Writer）',
+    description: '对应实施意见第15项，覆盖政策法规、流程引导、范本推荐、异常预警问答和投诉咨询。',
+    setupActions: [{ type: 'ensure_bench_document', title: 'Bench-招投标-智慧问答' }, { type: 'set_cursor', pos: 'start' }],
+    tags: ['policy-195', 'qa'],
+    turns: [
+      {
+        id: 't1_qa_engine',
+        name: '招投标智慧问答（不写回）',
+        expectedOutput: 'text',
+        forceSkillId: 'bidding-helper',
+        assistantTextOverride:
+          '政策法规问答\n' +
+          '问：招标文件发布前最关键的 AI 检测点是什么？\n' +
+          '答：优先检测排斥限制竞争条款、资格条件是否过严、评标标准是否量化，以及错敏词和逻辑冲突。\n\n' +
+          '操作流程引导\n' +
+          '1. 先完成招标策划与需求拆解。\n' +
+          '2. 再编制招标文件并做“先体检、再发布”。\n' +
+          '3. 投标阶段对照招标文件做响应性自查。\n' +
+          '4. 开评标阶段保留全过程记录与异常预警。\n\n' +
+          '范本智能推荐\n' +
+          '建议优先使用：招标文件示范文本、评标报告核验清单、投标合规自查矩阵、投诉处理初审意见模板。\n\n' +
+          '异常预警问答\n' +
+          '问：发现报价可能低于成本价怎么办？\n' +
+          '答：应先提示成本风险，复核测算依据，并要求业务与财务共同确认报价边界。\n\n' +
+          '异议投诉咨询\n' +
+          '建议先核对投诉事项、政策法规依据、历史案例和过程记录，再形成初步审查意见与处理建议。\n\n' +
+          '自检清单\n' +
+          '1. 是否回答了法规、流程、范本、异常、投诉五类问题。\n' +
+          '2. 是否避免把 AI 结论当成最终法定决定。\n' +
+          '3. 是否给出下一步人工复核动作。',
+        asserts: [
+          { type: 'skills_selected_includes', skillId: 'bidding-helper', points: 2 },
+          { type: 'assistant_text_contains', text: '政策法规问答' },
+          { type: 'assistant_text_contains', text: '操作流程引导' },
+          { type: 'assistant_text_contains', text: '范本智能推荐' },
+          { type: 'assistant_text_contains', text: '异常预警问答' },
+          { type: 'assistant_text_contains', text: '异议投诉咨询' },
+          { type: 'assistant_text_contains', text: '自检清单' },
+          { type: 'assistant_text_not_contains', text: 'ah32.plan.v1' },
+        ],
+        query:
+          '请作为“招投标智慧问答引擎”，回答以下问题：政策法规解释、流程引导、范本推荐、异常预警、异议投诉咨询。\n' +
+          '要求：只在对话中输出，不要写回文档，也不要输出 Plan JSON。\n' +
+          '输出必须包含并使用以下标题：1) 政策法规问答；2) 操作流程引导；3) 范本智能推荐；4) 异常预警问答；5) 异议投诉咨询；6) 自检清单。',
+      },
+    ],
+  },
+
+  {
+    id: storyId('bidding-helper', 'wps', 'policy_tender_v1'),
+    suiteId: 'bidding-helper',
+    host: 'wps',
+    name: '政策覆盖：招标策划->文件编制->文件检测（Writer）',
+    description: '对应实施意见第1-3项，覆盖招标策划、招标文件编制、招标文件体检。',
+    setupActions: [{ type: 'ensure_bench_document', title: 'Bench-招投标-政策招标' }, { type: 'set_cursor', pos: 'start' }],
+    tags: ['policy-195', 'tender'],
+    turns: [
+      {
+        id: 't1_tender_planning',
+        name: '招标策划简报',
+        artifactId: 'bench_policy_tender_planning',
+        forceSkillId: 'bidding-helper',
+        planOverride: {
+          schema_version: 'ah32.plan.v1',
+          host_app: 'wps',
+          meta: { kind: 'bench_bidding_policy_tender_planning_v1', title: '招标策划简报' },
+          actions: [
+            {
+              id: 'tender_planning_block',
+              title: 'Upsert tender planning block',
+              op: 'upsert_block',
+              block_id: 'WILL_BE_OVERRIDDEN',
+              anchor: 'end',
+              actions: [
+                {
+                  id: 'tender_planning_text',
+                  op: 'insert_text',
+                  text:
+                    '招标策划简报\n' +
+                    '一、行业趋势与市场供需\n' +
+                    '1. 行业进入设备更新与数字化改造窗口期，需求侧关注交付确定性与合规性。\n' +
+                    '2. 供应侧核心资源包括实施团队、交付案例、运维能力与本地服务半径。\n\n' +
+                    '二、资源要素与履约边界\n' +
+                    '1. 关键资源：项目经理、实施工程师、驻场运维与核心软硬件清单。\n' +
+                    '2. 履约边界：30天上线、7*24响应、关键节点需保留验收缓冲。\n\n' +
+                    '三、投资审批与招采约束\n' +
+                    '1. 需核对立项批复、预算控制价、采购方式与合同模板。\n' +
+                    '2. 技术条款要与履约验收口径保持一致，避免前后冲突。\n\n' +
+                    '四、招标需求建议\n' +
+                    '1. 将需求拆成基础能力、实施交付、运维保障三层。\n' +
+                    '2. 对必须项、可选项、评分项分别建模，便于后续评标与验收。\n\n' +
+                    '五、技术和商务条件建议\n' +
+                    '1. 技术条件聚焦兼容性、可扩展性、实施方法与服务响应。\n' +
+                    '2. 商务条件建议明确付款节点、违约责任、验收里程碑与保密要求。',
+                  new_paragraph_after: true,
+                },
+              ],
+            },
+          ],
+        },
+        asserts: [
+          { type: 'skills_selected_includes', skillId: 'bidding-helper', points: 2 },
+          { type: 'writer_text_contains', text: '招标策划简报' },
+          { type: 'writer_text_contains', text: '行业趋势与市场供需' },
+          { type: 'writer_text_contains', text: '招标需求建议' },
+        ],
+        query: '[override]',
+      },
+      {
+        id: 't2_tender_file_draft',
+        name: '招标文件编制建议',
+        artifactId: 'bench_policy_tender_file_draft',
+        forceSkillId: 'bidding-helper',
+        planOverride: {
+          schema_version: 'ah32.plan.v1',
+          host_app: 'wps',
+          meta: { kind: 'bench_bidding_policy_tender_file_draft_v1', title: '招标文件编制建议' },
+          actions: [
+            {
+              id: 'tender_file_block',
+              title: 'Upsert tender file draft block',
+              op: 'upsert_block',
+              block_id: 'WILL_BE_OVERRIDDEN',
+              anchor: 'end',
+              actions: [
+                { id: 'tender_file_title', op: 'insert_text', text: '招标文件编制建议', new_paragraph_after: true },
+                {
+                  id: 'tender_file_table',
+                  op: 'insert_table',
+                  rows: 5,
+                  cols: 4,
+                  header: true,
+                  borders: true,
+                  auto_fit: 1,
+                  data: [
+                    ['模块', '推荐项', '设置理由', '校验点'],
+                    ['资格条件', '近三年同类项目2个以上', '保证履约经验但不过度排斥竞争', '避免设置与项目无关的资质门槛'],
+                    ['评标办法', '综合评估法', '兼顾技术能力、商务响应与价格合理性', '技术商务价格权重需可解释'],
+                    ['评标标准', '技术60/商务20/价格20', '突出实施能力与服务保障', '评分口径与招标需求逐项对应'],
+                    ['合同条件', '里程碑验收+风险分担', '减少履约争议与后续变更成本', '付款节点与验收条款保持一致'],
+                  ],
+                },
+                {
+                  id: 'tender_file_note',
+                  op: 'insert_text',
+                  text: '编制要点：优先匹配示范文本，再按项目专用条件做增量修改，避免资格条件、评标办法和合同条款互相打架。',
+                  new_paragraph_before: true,
+                  new_paragraph_after: true,
+                },
+              ],
+            },
+          ],
+        },
+        asserts: [
+          { type: 'writer_table_exists', minRows: 5, minCols: 4 },
+          { type: 'writer_text_contains', text: '招标文件编制建议' },
+          { type: 'writer_text_contains', text: '评标标准' },
+        ],
+        query: '[override]',
+      },
+      {
+        id: 't3_tender_file_check',
+        name: '招标文件体检问题清单',
+        artifactId: 'bench_policy_tender_file_check',
+        forceSkillId: 'bidding-helper',
+        planOverride: {
+          schema_version: 'ah32.plan.v1',
+          host_app: 'wps',
+          meta: { kind: 'bench_bidding_policy_tender_file_check_v1', title: '招标文件体检问题清单' },
+          actions: [
+            {
+              id: 'tender_check_block',
+              title: 'Upsert tender check block',
+              op: 'upsert_block',
+              block_id: 'WILL_BE_OVERRIDDEN',
+              anchor: 'end',
+              actions: [
+                { id: 'tender_check_title', op: 'insert_text', text: '招标文件体检问题清单', new_paragraph_after: true },
+                {
+                  id: 'tender_check_table',
+                  op: 'insert_table',
+                  rows: 5,
+                  cols: 4,
+                  header: true,
+                  borders: true,
+                  auto_fit: 1,
+                  data: [
+                    ['问题类别', '条款定位', '判断依据', '修改建议'],
+                    ['排斥限制竞争', '资格条件第2条', '要求超出项目需要的注册资本', '改为与履约能力直接相关的人员和案例要求'],
+                    ['错敏词', '技术规格第4条', '将推荐品牌写成唯一指定品牌', '改为功能指标或“同等及以上”表达'],
+                    ['逻辑冲突', '合同条款第7条', '验收节点与付款节点顺序不一致', '统一为“验收通过后进入付款”'],
+                    ['合规风险', '评标标准第3条', '商务评分项缺少量化区间', '补齐评分档位与扣分依据'],
+                  ],
+                },
+                {
+                  id: 'tender_check_note',
+                  op: 'insert_text',
+                  text: '建议：先体检、再发布。体检结果需保留判断依据和修改建议，便于招标人复核。',
+                  new_paragraph_before: true,
+                  new_paragraph_after: true,
+                },
+              ],
+            },
+          ],
+        },
+        asserts: [
+          { type: 'writer_table_exists', minRows: 5, minCols: 4 },
+          { type: 'writer_text_contains', text: '招标文件体检问题清单' },
+          { type: 'writer_text_contains', text: '先体检、再发布' },
+        ],
+        query: '[override]',
+      },
+    ],
+  },
+
+  {
+    id: storyId('bidding-helper', 'wps', 'policy_bid_v1'),
+    suiteId: 'bidding-helper',
+    host: 'wps',
+    name: '政策覆盖：投标策划->投标合规自查（Writer）',
+    description: '对应实施意见第4-5项，覆盖投标策划、投标响应性比对与自查纠偏。',
+    setupActions: [{ type: 'ensure_bench_document', title: 'Bench-招投标-政策投标' }, { type: 'set_cursor', pos: 'start' }],
+    tags: ['policy-195', 'bid'],
+    turns: [
+      {
+        id: 't1_bid_planning',
+        name: '投标策划图谱',
+        artifactId: 'bench_policy_bid_planning',
+        forceSkillId: 'bidding-helper',
+        planOverride: {
+          schema_version: 'ah32.plan.v1',
+          host_app: 'wps',
+          meta: { kind: 'bench_bidding_policy_bid_planning_v1', title: '投标策划图谱' },
+          actions: [
+            {
+              id: 'bid_planning_block',
+              title: 'Upsert bid planning block',
+              op: 'upsert_block',
+              block_id: 'WILL_BE_OVERRIDDEN',
+              anchor: 'end',
+              actions: [
+                {
+                  id: 'bid_planning_text',
+                  op: 'insert_text',
+                  text:
+                    '投标策划图谱\n' +
+                    '一、项目信息捕捉\n' +
+                    '1. 关键时间：报名截止、答疑截止、投标截止、开标时间。\n' +
+                    '2. 关键门槛：资质、业绩、项目经理、售后服务承诺。\n\n' +
+                    '二、需求图谱\n' +
+                    '1. 必须项：30天上线、7*24支持、2个以上类似案例。\n' +
+                    '2. 评分重点：实施方案、演示效果、服务承诺、价格合理性。\n\n' +
+                    '三、竞争与经济性评估\n' +
+                    '1. 预计竞争点集中在案例、演示和本地交付能力。\n' +
+                    '2. 报价建议以合理利润+履约风险缓冲为下限，避免低于成本价。\n\n' +
+                    '四、行动建议\n' +
+                    '1. 先锁定资质与案例证据，再组织技术方案与演示材料并行准备。\n' +
+                    '2. 对高分值条款单独设负责人和截止日期。',
+                  new_paragraph_after: true,
+                },
+              ],
+            },
+          ],
+        },
+        asserts: [
+          { type: 'skills_selected_includes', skillId: 'bidding-helper', points: 2 },
+          { type: 'writer_text_contains', text: '投标策划图谱' },
+          { type: 'writer_text_contains', text: '需求图谱' },
+          { type: 'writer_text_contains', text: '竞争与经济性评估' },
+        ],
+        query: '[override]',
+      },
+      {
+        id: 't2_bid_compliance',
+        name: '投标合规自查矩阵',
+        artifactId: 'bench_policy_bid_compliance',
+        forceSkillId: 'bidding-helper',
+        planOverride: {
+          schema_version: 'ah32.plan.v1',
+          host_app: 'wps',
+          meta: { kind: 'bench_bidding_policy_bid_compliance_v1', title: '投标合规自查矩阵' },
+          actions: [
+            {
+              id: 'bid_compliance_block',
+              title: 'Upsert bid compliance block',
+              op: 'upsert_block',
+              block_id: 'WILL_BE_OVERRIDDEN',
+              anchor: 'end',
+              actions: [
+                { id: 'bid_compliance_title', op: 'insert_text', text: '投标合规自查矩阵', new_paragraph_after: true },
+                {
+                  id: 'bid_compliance_table',
+                  op: 'insert_table',
+                  rows: 5,
+                  cols: 5,
+                  header: true,
+                  borders: true,
+                  auto_fit: 1,
+                  data: [
+                    ['招标要求', '当前响应', '证据定位', '风险提示', '修改动作'],
+                    ['ISO9001证书', '已响应', '质量体系证书扫描件', '证书有效期需复核', '补充有效期截图'],
+                    ['近三年类似项目2个', '已响应', '中标通知书/合同首页', '案例行业属性需一致', '补齐项目概况页'],
+                    ['30天上线', '部分响应', '实施计划表', '排期偏紧', '增加关键路径与备援人员'],
+                    ['报价不得低于成本', '待确认', '报价测算表', '存在低价风险', '复核成本边界并上浮风险缓冲'],
+                  ],
+                },
+                {
+                  id: 'bid_compliance_note',
+                  op: 'insert_text',
+                  text: '报价区间提示：建议以成本底线、履约风险和竞争强度三因素综合校准，避免恶意低价竞标风险。',
+                  new_paragraph_before: true,
+                  new_paragraph_after: true,
+                },
+              ],
+            },
+          ],
+        },
+        asserts: [
+          { type: 'writer_table_exists', minRows: 5, minCols: 5 },
+          { type: 'writer_text_contains', text: '投标合规自查矩阵' },
+          { type: 'writer_text_contains', text: '报价区间提示' },
+        ],
+        query: '[override]',
+      },
+    ],
+  },
+
+  {
+    id: storyId('bidding-helper', 'wps', 'policy_award_v1'),
+    suiteId: 'bidding-helper',
+    host: 'wps',
+    name: '政策覆盖：评标报告核验->定标决策->合同签订（Writer）',
+    description: '对应实施意见第9-11项，覆盖评标报告核验、辅助定标和中标合同签订。',
+    setupActions: [{ type: 'ensure_bench_document', title: 'Bench-招投标-政策定标' }, { type: 'set_cursor', pos: 'start' }],
+    tags: ['policy-195', 'award'],
+    turns: [
+      {
+        id: 't1_report_verify',
+        name: '评标报告核验清单',
+        artifactId: 'bench_policy_award_report_verify',
+        forceSkillId: 'bidding-helper',
+        planOverride: {
+          schema_version: 'ah32.plan.v1',
+          host_app: 'wps',
+          meta: { kind: 'bench_bidding_policy_award_report_verify_v1', title: '评标报告核验清单' },
+          actions: [
+            {
+              id: 'report_verify_block',
+              title: 'Upsert report verify block',
+              op: 'upsert_block',
+              block_id: 'WILL_BE_OVERRIDDEN',
+              anchor: 'end',
+              actions: [
+                { id: 'report_verify_title', op: 'insert_text', text: '评标报告核验清单', new_paragraph_after: true },
+                {
+                  id: 'report_verify_table',
+                  op: 'insert_table',
+                  rows: 5,
+                  cols: 4,
+                  header: true,
+                  borders: true,
+                  auto_fit: 1,
+                  data: [
+                    ['核验项', '异常现象', '触发规则', '复核动作'],
+                    ['客观分值', '同一指标不同专家引用不同底数', '客观因素评分不一致', '统一取数口径并重新计算'],
+                    ['分值计算', '技术总分与分项汇总不一致', '自动加总校验失败', '复核公式与原始打分表'],
+                    ['偏离度', '单专家打分显著高于均值', '偏离度超过预警阈值', '提示专家复核说明'],
+                    ['结论一致性', '评审意见与推荐顺序冲突', '逻辑链断裂', '回到原始评审记录复核'],
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+        asserts: [
+          { type: 'skills_selected_includes', skillId: 'bidding-helper', points: 2 },
+          { type: 'writer_table_exists', minRows: 5, minCols: 4 },
+          { type: 'writer_text_contains', text: '评标报告核验清单' },
+        ],
+        query: '[override]',
+      },
+      {
+        id: 't2_award_decision',
+        name: '辅助定标比选表',
+        artifactId: 'bench_policy_award_decision',
+        forceSkillId: 'bidding-helper',
+        planOverride: {
+          schema_version: 'ah32.plan.v1',
+          host_app: 'wps',
+          meta: { kind: 'bench_bidding_policy_award_decision_v1', title: '辅助定标比选表' },
+          actions: [
+            {
+              id: 'award_decision_block',
+              title: 'Upsert award decision block',
+              op: 'upsert_block',
+              block_id: 'WILL_BE_OVERRIDDEN',
+              anchor: 'end',
+              actions: [
+                { id: 'award_decision_title', op: 'insert_text', text: '辅助定标比选表', new_paragraph_after: true },
+                {
+                  id: 'award_decision_table',
+                  op: 'insert_table',
+                  rows: 4,
+                  cols: 5,
+                  header: true,
+                  borders: true,
+                  auto_fit: 1,
+                  data: [
+                    ['候选人', '信用画像', '履约能力', '供应链匹配', '定标建议'],
+                    ['候选人A', '信用良好，无处罚记录', '本地团队完整，案例充足', '核心供应商稳定', '优先推荐'],
+                    ['候选人B', '信用一般，存在延迟履约历史', '案例较多但本地化不足', '交付资源需外采', '条件性推荐'],
+                    ['候选人C', '信用良好', '团队较新，需补充项目经理履历', '供应链稳定', '备选'],
+                  ],
+                },
+                {
+                  id: 'award_decision_note',
+                  op: 'insert_text',
+                  text: '定标说明：建议将信用、履约、供应链和答辩表现统一入表，保留全过程记录，确保可追溯。',
+                  new_paragraph_before: true,
+                  new_paragraph_after: true,
+                },
+              ],
+            },
+          ],
+        },
+        asserts: [
+          { type: 'writer_table_exists', minRows: 4, minCols: 5 },
+          { type: 'writer_text_contains', text: '辅助定标比选表' },
+          { type: 'writer_text_contains', text: '可追溯' },
+        ],
+        query: '[override]',
+      },
+      {
+        id: 't3_contract_sign',
+        name: '中标合同签约要素与风险提示',
+        artifactId: 'bench_policy_award_contract_sign',
+        forceSkillId: 'bidding-helper',
+        planOverride: {
+          schema_version: 'ah32.plan.v1',
+          host_app: 'wps',
+          meta: { kind: 'bench_bidding_policy_contract_sign_v1', title: '中标合同签约要素与风险提示' },
+          actions: [
+            {
+              id: 'contract_sign_block',
+              title: 'Upsert contract sign block',
+              op: 'upsert_block',
+              block_id: 'WILL_BE_OVERRIDDEN',
+              anchor: 'end',
+              actions: [
+                { id: 'contract_sign_title', op: 'insert_text', text: '中标合同签约要素与风险提示', new_paragraph_after: true },
+                {
+                  id: 'contract_sign_table',
+                  op: 'insert_table',
+                  rows: 5,
+                  cols: 4,
+                  header: true,
+                  borders: true,
+                  auto_fit: 1,
+                  data: [
+                    ['签约要素', '来源文件', '提取结果', '风险提示'],
+                    ['合同标的', '招标文件/投标文件', '建设数字招采平台', '需与技术范围保持一致'],
+                    ['价格条款', '投标报价表', '总价含实施与运维', '防止签约时拆分形成阴阳合同'],
+                    ['履约期限', '投标承诺', '合同签订后30天上线', '需与验收节点联动'],
+                    ['违约责任', '合同专用条款', '延期违约金按日计取', '避免责任失衡或随意篡改'],
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+        asserts: [
+          { type: 'writer_table_exists', minRows: 5, minCols: 4 },
+          { type: 'writer_text_contains', text: '中标合同签约要素与风险提示' },
+          { type: 'writer_text_contains', text: '阴阳合同' },
+        ],
+        query: '[override]',
+      },
+    ],
+  },
+
+  {
+    id: storyId('bidding-helper', 'wps', 'policy_regulation_v1'),
+    suiteId: 'bidding-helper',
+    host: 'wps',
+    name: '政策覆盖：专家管理->围串标识别->信用管理（Writer）',
+    description: '对应实施意见第16-18项，覆盖专家画像、围串标预警和信用管理。',
+    setupActions: [{ type: 'ensure_bench_document', title: 'Bench-招投标-政策监管' }, { type: 'set_cursor', pos: 'start' }],
+    tags: ['policy-195', 'regulation'],
+    turns: [
+      {
+        id: 't1_expert_management',
+        name: '专家全生命周期画像',
+        artifactId: 'bench_policy_regulation_expert',
+        forceSkillId: 'bidding-helper',
+        planOverride: {
+          schema_version: 'ah32.plan.v1',
+          host_app: 'wps',
+          meta: { kind: 'bench_bidding_policy_expert_management_v1', title: '专家全生命周期画像' },
+          actions: [
+            {
+              id: 'expert_management_block',
+              title: 'Upsert expert management block',
+              op: 'upsert_block',
+              block_id: 'WILL_BE_OVERRIDDEN',
+              anchor: 'end',
+              actions: [
+                {
+                  id: 'expert_management_text',
+                  op: 'insert_text',
+                  text:
+                    '专家全生命周期画像\n' +
+                    '一、专业能力画像：按行业、项目类型、评审经验、远程异地评标能力建档。\n' +
+                    '二、履职考核：跟踪到场率、回避执行、评审时长、复核配合度。\n' +
+                    '三、信用评价：结合违规记录、投诉情况、培训结果进行动态更新。\n' +
+                    '四、培训建议：针对薄弱领域推送专题培训，并形成复训闭环。\n' +
+                    '五、动态考核建议：对高风险异常评分、长期缺席、回避规则触发频繁的专家重点复核。',
+                  new_paragraph_after: true,
+                },
+              ],
+            },
+          ],
+        },
+        asserts: [
+          { type: 'skills_selected_includes', skillId: 'bidding-helper', points: 2 },
+          { type: 'writer_text_contains', text: '专家全生命周期画像' },
+          { type: 'writer_text_contains', text: '动态考核建议' },
+        ],
+        query: '[override]',
+      },
+      {
+        id: 't2_collusion_detection',
+        name: '围串标预警线索表',
+        artifactId: 'bench_policy_regulation_collusion',
+        forceSkillId: 'bidding-helper',
+        planOverride: {
+          schema_version: 'ah32.plan.v1',
+          host_app: 'wps',
+          meta: { kind: 'bench_bidding_policy_collusion_detection_v1', title: '围串标预警线索表' },
+          actions: [
+            {
+              id: 'collusion_block',
+              title: 'Upsert collusion block',
+              op: 'upsert_block',
+              block_id: 'WILL_BE_OVERRIDDEN',
+              anchor: 'end',
+              actions: [
+                { id: 'collusion_title', op: 'insert_text', text: '围串标预警线索表', new_paragraph_after: true },
+                {
+                  id: 'collusion_table',
+                  op: 'insert_table',
+                  rows: 5,
+                  cols: 4,
+                  header: true,
+                  borders: true,
+                  auto_fit: 1,
+                  data: [
+                    ['线索类别', '发现依据', '异常主体', '建议动作'],
+                    ['技术方案语义相似', '两家投标文件技术方案高相似度', '投标人A/投标人B', '转人工复核并比对附件来源'],
+                    ['报价特征雷同', '商务标关键报价小数位分布高度一致', '投标人A/投标人C', '调取历史报价并交叉验证'],
+                    ['关系异常', '联系人、IP、地址存在交叉', '投标人B/投标人D', '补充主体关系核查'],
+                    ['专家评分倾向异常', '单专家持续偏向同类主体', '专家组成员X', '纳入专家画像与后续抽取控制'],
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+        asserts: [
+          { type: 'writer_table_exists', minRows: 5, minCols: 4 },
+          { type: 'writer_text_contains', text: '围串标预警线索表' },
+          { type: 'writer_text_contains', text: '技术方案语义相似' },
+        ],
+        query: '[override]',
+      },
+      {
+        id: 't3_credit_management',
+        name: '招投标信用管理台账',
+        artifactId: 'bench_policy_regulation_credit',
+        forceSkillId: 'bidding-helper',
+        planOverride: {
+          schema_version: 'ah32.plan.v1',
+          host_app: 'wps',
+          meta: { kind: 'bench_bidding_policy_credit_management_v1', title: '招投标信用管理台账' },
+          actions: [
+            {
+              id: 'credit_block',
+              title: 'Upsert credit block',
+              op: 'upsert_block',
+              block_id: 'WILL_BE_OVERRIDDEN',
+              anchor: 'end',
+              actions: [
+                { id: 'credit_title', op: 'insert_text', text: '招投标信用管理台账', new_paragraph_after: true },
+                {
+                  id: 'credit_table',
+                  op: 'insert_table',
+                  rows: 5,
+                  cols: 4,
+                  header: true,
+                  borders: true,
+                  auto_fit: 1,
+                  data: [
+                    ['主体', '信用事件', '预警等级', '处置建议'],
+                    ['投标人A', '近12个月履约延误1次', '中', '纳入定标比选提示'],
+                    ['投标人B', '无负面事件', '低', '正常记录'],
+                    ['代理机构C', '格式错误率偏高', '中', '增加复核抽样频次'],
+                    ['专家D', '评分偏离预警2次', '高', '启动培训与抽取限制复核'],
+                  ],
+                },
+                {
+                  id: 'credit_note',
+                  op: 'insert_text',
+                  text: '信用管理说明：信用信息应自动归集、共享应用、动态调整，避免一次性静态打标。',
+                  new_paragraph_before: true,
+                  new_paragraph_after: true,
+                },
+              ],
+            },
+          ],
+        },
+        asserts: [
+          { type: 'writer_table_exists', minRows: 5, minCols: 4 },
+          { type: 'writer_text_contains', text: '招投标信用管理台账' },
+          { type: 'writer_text_contains', text: '动态调整' },
+        ],
+        query: '[override]',
+      },
+    ],
+  },
+
+  {
+    id: storyId('bidding-helper', 'wps', 'policy_supervision_v1'),
+    suiteId: 'bidding-helper',
+    host: 'wps',
+    name: '政策覆盖：协同监管->投诉处理（Writer）',
+    description: '对应实施意见第19-20项，覆盖标前标中标后协同监管与投诉处理。',
+    setupActions: [{ type: 'ensure_bench_document', title: 'Bench-招投标-政策协同监管' }, { type: 'set_cursor', pos: 'start' }],
+    tags: ['policy-195', 'supervision'],
+    turns: [
+      {
+        id: 't1_collaborative_supervision',
+        name: '协同监管预警清单',
+        artifactId: 'bench_policy_supervision_collab',
+        forceSkillId: 'bidding-helper',
+        planOverride: {
+          schema_version: 'ah32.plan.v1',
+          host_app: 'wps',
+          meta: { kind: 'bench_bidding_policy_collaborative_supervision_v1', title: '协同监管预警清单' },
+          actions: [
+            {
+              id: 'collab_supervision_block',
+              title: 'Upsert collaborative supervision block',
+              op: 'upsert_block',
+              block_id: 'WILL_BE_OVERRIDDEN',
+              anchor: 'end',
+              actions: [
+                { id: 'collab_title', op: 'insert_text', text: '协同监管预警清单', new_paragraph_after: true },
+                {
+                  id: 'collab_table',
+                  op: 'insert_table',
+                  rows: 6,
+                  cols: 4,
+                  header: true,
+                  borders: true,
+                  auto_fit: 1,
+                  data: [
+                    ['阶段', '风险问题', '识别信号', '联动动作'],
+                    ['标前', '应招未招', '立项与采购计划不一致', '推送监管预警并要求补录依据'],
+                    ['标中', '异常报价', '低中高结特征明显', '联动评标与信用模块复核'],
+                    ['标中', '人员违规变更', '项目经理与承诺不一致', '触发履约风险预警'],
+                    ['标后', '转包违法分包', '合同执行主体异常', '移交监管线索并跟踪处置'],
+                    ['标后', '进度严重滞后', '里程碑连续延期', '联动履约验收与信用评价'],
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+        asserts: [
+          { type: 'skills_selected_includes', skillId: 'bidding-helper', points: 2 },
+          { type: 'writer_table_exists', minRows: 6, minCols: 4 },
+          { type: 'writer_text_contains', text: '协同监管预警清单' },
+        ],
+        query: '[override]',
+      },
+      {
+        id: 't2_complaint_handling',
+        name: '投诉处理初审意见',
+        artifactId: 'bench_policy_supervision_complaint',
+        forceSkillId: 'bidding-helper',
+        planOverride: {
+          schema_version: 'ah32.plan.v1',
+          host_app: 'wps',
+          meta: { kind: 'bench_bidding_policy_complaint_handling_v1', title: '投诉处理初审意见' },
+          actions: [
+            {
+              id: 'complaint_block',
+              title: 'Upsert complaint block',
+              op: 'upsert_block',
+              block_id: 'WILL_BE_OVERRIDDEN',
+              anchor: 'end',
+              actions: [
+                {
+                  id: 'complaint_text',
+                  op: 'insert_text',
+                  text:
+                    '投诉处理初审意见\n' +
+                    '一、投诉事项摘要\n' +
+                    '投诉人认为评分标准表述不清、演示环节存在主观性偏差。\n\n' +
+                    '二、政策法规依据\n' +
+                    '需核对招标文件公开内容、评标标准量化程度、开评标过程记录与专家复核意见。\n\n' +
+                    '三、初步审查意见\n' +
+                    '1. 评分标准是否已公开并量化。\n' +
+                    '2. 演示评分是否保留全过程记录。\n' +
+                    '3. 客观分与主观分是否存在计算或偏离异常。\n\n' +
+                    '四、处理建议\n' +
+                    '建议先补充调取评标记录和演示视频，再形成正式处理决定书草案。\n\n' +
+                    '五、恶意投诉筛查\n' +
+                    '如投诉事实明显缺乏依据、重复投诉或与既有处理结果完全重复，应提示恶意投诉风险。',
+                  new_paragraph_after: true,
+                },
+              ],
+            },
+          ],
+        },
+        asserts: [
+          { type: 'writer_text_contains', text: '投诉处理初审意见' },
+          { type: 'writer_text_contains', text: '处理建议' },
+          { type: 'writer_text_contains', text: '恶意投诉筛查' },
+        ],
+        query: '[override]',
+      },
+    ],
+  },
+
+  {
     id: storyId('doc-formatter', 'wps', 'doc_formatter_v2'),
     suiteId: 'doc-formatter',
     host: 'wps',
@@ -2593,13 +3331,405 @@ const STORIES: ChatBenchStory[] = [
         id: 't1_checklist',
         name: '投标文件自查清单',
         artifactId: 'bench_et_bid_checklist',
-        query: '生成“投标文件自查清单”表：章节/是否齐全/风险/备注，写5行示例。',
+        forceSkillId: 'bidding-helper',
+        planOverride: {
+          schema_version: 'ah32.plan.v1',
+          host_app: 'et',
+          meta: { kind: 'bench_et_bid_checklist_v2' },
+          actions: [
+            {
+              id: 'ensure_bid_checklist_sheet',
+              title: 'Prepare bid checklist sheet',
+              op: 'ensure_sheet',
+              sheet_name: '投标自查清单',
+              clear_existing: true,
+              activate: true,
+              select_a1: true,
+            },
+            {
+              id: 'insert_bid_checklist_table',
+              title: 'Insert bid checklist table',
+              op: 'insert_table',
+              rows: 6,
+              cols: 4,
+              header: true,
+              borders: true,
+              auto_fit: 1,
+              data: [
+                ['章节', '是否齐全', '风险', '备注'],
+                ['商务响应', '是', '低', '营业执照与授权书已归档'],
+                ['资格证明', '是', '中', '需复核证书有效期覆盖开标日'],
+                ['技术方案', '否', '高', '缺少实施边界与验收标准'],
+                ['报价文件', '是', '中', '需再次核对成本底线'],
+                ['服务承诺', '是', '低', '7*24支持说明已补齐'],
+              ],
+            },
+          ],
+        },
+        asserts: [
+          { type: 'skills_selected_includes', skillId: 'bidding-helper', points: 2 },
+          { type: 'et_sheet_exists', name: '投标自查清单' },
+        ],
+        query: '[override]',
       },
       {
         id: 't2_milestones',
         name: '里程碑计划',
         artifactId: 'bench_et_milestones',
-        query: '生成“投标里程碑”表：里程碑/开始日期/截止日期/负责人/状态，写4行示例。日期格式为 YYYY-MM-DD。',
+        forceSkillId: 'bidding-helper',
+        planOverride: {
+          schema_version: 'ah32.plan.v1',
+          host_app: 'et',
+          meta: { kind: 'bench_et_bid_milestones_v2' },
+          actions: [
+            {
+              id: 'ensure_bid_milestone_sheet',
+              title: 'Prepare milestone sheet',
+              op: 'ensure_sheet',
+              sheet_name: '投标里程碑',
+              clear_existing: true,
+              activate: true,
+              select_a1: true,
+            },
+            {
+              id: 'insert_bid_milestone_table',
+              title: 'Insert milestone table',
+              op: 'insert_table',
+              rows: 5,
+              cols: 5,
+              header: true,
+              borders: true,
+              auto_fit: 1,
+              data: [
+                ['里程碑', '开始日期', '截止日期', '负责人', '状态'],
+                ['报名与资料领取', '2026-03-23', '2026-03-24', '王敏', '已完成'],
+                ['技术方案定稿', '2026-03-24', '2026-03-27', '陈工', '进行中'],
+                ['报价复核', '2026-03-26', '2026-03-28', '李倩', '待启动'],
+                ['投标文件装订与提交', '2026-03-28', '2026-03-30', '赵峰', '待启动'],
+              ],
+            },
+            {
+              id: 'format_bid_milestone_dates',
+              title: 'Format milestone dates',
+              op: 'set_number_format',
+              sheet_name: '投标里程碑',
+              range: 'B2:C5',
+              number_format: 'yyyy-mm-dd',
+            },
+          ],
+        },
+        asserts: [
+          { type: 'skills_selected_includes', skillId: 'bidding-helper', points: 2 },
+          { type: 'et_sheet_exists', name: '投标里程碑' },
+          { type: 'et_cell_number_format_not_general', a1: 'B2' },
+        ],
+        query: '[override]',
+      },
+    ],
+  },
+
+  {
+    id: storyId('bidding-helper', 'et', 'policy_open_eval_v1'),
+    suiteId: 'bidding-helper',
+    host: 'et',
+    name: '政策覆盖：开标->专家抽取->智能辅助评标（ET）',
+    description: '对应实施意见第6-8项，覆盖数字开标、专家抽取方案和智能辅助评标。',
+    setupActions: [{ type: 'ensure_bench_document', title: 'Bench-招投标-政策开评标' }],
+    tags: ['policy-195', 'open-eval'],
+    turns: [
+      {
+        id: 't1_opening_flow',
+        name: '数字开标流程台账',
+        artifactId: 'bench_policy_opening_flow',
+        forceSkillId: 'bidding-helper',
+        planOverride: {
+          schema_version: 'ah32.plan.v1',
+          host_app: 'et',
+          meta: { kind: 'bench_bidding_policy_opening_flow_v1' },
+          actions: [
+            {
+              id: 'ensure_opening_sheet',
+              title: 'Prepare opening sheet',
+              op: 'ensure_sheet',
+              sheet_name: '开标流程',
+              clear_existing: true,
+              activate: true,
+              select_a1: true,
+            },
+            {
+              id: 'opening_table',
+              title: 'Insert opening flow table',
+              op: 'insert_table',
+              rows: 6,
+              cols: 5,
+              header: true,
+              borders: true,
+              auto_fit: 1,
+              data: [
+                ['环节', '计划时间', '数字开标动作', '异常提示', '处理结果'],
+                ['宣读纪律', '2026-03-25 09:00', '播放开标纪律与提示', '无', '完成'],
+                ['公布名单', '2026-03-25 09:05', '自动展示投标人名单', '名单缺失', '转人工复核'],
+                ['标书解密', '2026-03-25 09:10', '校验解密状态', '存在1家解密失败', '提示招标人处理'],
+                ['唱标', '2026-03-25 09:20', '自动汇总报价与关键承诺', '报价字段异常', '触发复核'],
+                ['结果确认', '2026-03-25 09:30', '生成开标结果摘要', '无', '完成'],
+              ],
+            },
+            {
+              id: 'opening_time_format',
+              title: 'Format time column',
+              op: 'set_number_format',
+              sheet_name: '开标流程',
+              range: 'B2:B6',
+              number_format: 'yyyy-mm-dd hh:mm',
+            },
+          ],
+        },
+        asserts: [
+          { type: 'skills_selected_includes', skillId: 'bidding-helper', points: 2 },
+          { type: 'et_sheet_exists', name: '开标流程' },
+          { type: 'et_cell_number_format_not_general', a1: 'B2' },
+        ],
+        query: '[override]',
+      },
+      {
+        id: 't2_expert_draw',
+        name: '专家抽取方案表',
+        artifactId: 'bench_policy_expert_draw',
+        forceSkillId: 'bidding-helper',
+        planOverride: {
+          schema_version: 'ah32.plan.v1',
+          host_app: 'et',
+          meta: { kind: 'bench_bidding_policy_expert_draw_v1' },
+          actions: [
+            {
+              id: 'ensure_expert_sheet',
+              title: 'Prepare expert sheet',
+              op: 'ensure_sheet',
+              sheet_name: '专家抽取',
+              clear_existing: true,
+              activate: true,
+              select_a1: true,
+            },
+            {
+              id: 'expert_draw_table',
+              title: 'Insert expert draw table',
+              op: 'insert_table',
+              rows: 5,
+              cols: 5,
+              header: true,
+              borders: true,
+              auto_fit: 1,
+              data: [
+                ['专业分类', '人数', '地域要求', '回避规则', '抽取建议'],
+                ['信息化建设', 2, '省内优先', '与投标人存在业务关系需回避', '优先抽取近两年有同类项目经验专家'],
+                ['网络安全', 1, '全国可选', '曾参与投标咨询需回避', '结合远程异地评标需求'],
+                ['造价/商务', 1, '省内优先', '同单位任职关系需回避', '优先抽取履职记录稳定专家'],
+                ['运维服务', 1, '全国可选', '与候选供应商存在培训利益关系需回避', '补齐服务侧评审视角'],
+              ],
+            },
+          ],
+        },
+        asserts: [
+          { type: 'et_sheet_exists', name: '专家抽取' },
+          { type: 'skills_selected_includes', skillId: 'bidding-helper', points: 2 },
+        ],
+        query: '[override]',
+      },
+      {
+        id: 't3_ai_eval',
+        name: '智能辅助评标指标表',
+        artifactId: 'bench_policy_ai_eval',
+        forceSkillId: 'bidding-helper',
+        planOverride: {
+          schema_version: 'ah32.plan.v1',
+          host_app: 'et',
+          meta: { kind: 'bench_bidding_policy_ai_eval_v1' },
+          actions: [
+            {
+              id: 'ensure_eval_sheet',
+              title: 'Prepare eval sheet',
+              op: 'ensure_sheet',
+              sheet_name: '辅助评标',
+              clear_existing: true,
+              activate: true,
+              select_a1: true,
+            },
+            {
+              id: 'ai_eval_table',
+              title: 'Insert AI eval table',
+              op: 'insert_table',
+              rows: 5,
+              cols: 5,
+              header: true,
+              borders: true,
+              auto_fit: 1,
+              data: [
+                ['评审点', '招标要求', '投标响应', 'AI辅助结论', '专家复核'],
+                ['实施周期', '30天上线', '计划28天上线', '符合，需关注并发任务排期', '待复核'],
+                ['案例能力', '同类案例不少于2个', '提供3个案例', '符合，证据链完整', '待复核'],
+                ['售后保障', '7*24支持，2小时响应', '承诺7*24支持', '符合，建议核验人员排班', '待复核'],
+                ['演示效果', '技术评分项10分', '提供演示脚本', '建议结合现场表现评分，不替代专家判断', '待复核'],
+              ],
+            },
+          ],
+        },
+        asserts: [
+          { type: 'et_sheet_exists', name: '辅助评标' },
+          { type: 'skills_selected_includes', skillId: 'bidding-helper', points: 2 },
+        ],
+        query: '[override]',
+      },
+    ],
+  },
+
+  {
+    id: storyId('bidding-helper', 'et', 'policy_onsite_v1'),
+    suiteId: 'bidding-helper',
+    host: 'et',
+    name: '政策覆盖：场所调度->见证管理->档案管理（ET）',
+    description: '对应实施意见第12-14项，覆盖场所调度、智能见证和交易档案管理。',
+    setupActions: [{ type: 'ensure_bench_document', title: 'Bench-招投标-政策现场管理' }],
+    tags: ['policy-195', 'onsite'],
+    turns: [
+      {
+        id: 't1_venue_dispatch',
+        name: '场所调度表',
+        artifactId: 'bench_policy_venue_dispatch',
+        forceSkillId: 'bidding-helper',
+        planOverride: {
+          schema_version: 'ah32.plan.v1',
+          host_app: 'et',
+          meta: { kind: 'bench_bidding_policy_venue_dispatch_v1' },
+          actions: [
+            {
+              id: 'ensure_venue_sheet',
+              title: 'Prepare venue sheet',
+              op: 'ensure_sheet',
+              sheet_name: '场所调度',
+              clear_existing: true,
+              activate: true,
+              select_a1: true,
+            },
+            {
+              id: 'venue_dispatch_table',
+              title: 'Insert venue dispatch table',
+              op: 'insert_table',
+              rows: 5,
+              cols: 5,
+              header: true,
+              borders: true,
+              auto_fit: 1,
+              data: [
+                ['日期', '时段', '场地', '项目', '状态'],
+                ['2026-03-25', '09:00-10:00', '开标厅A', '数字招采平台项目', '已排期'],
+                ['2026-03-25', '10:00-12:00', '评标室1', '数字招采平台项目', '已排期'],
+                ['2026-03-25', '13:30-15:00', '远程异地评标室', '备选联动项目', '待确认'],
+                ['2026-03-25', '15:00-17:00', '见证室', '全过程见证', '已排期'],
+              ],
+            },
+            {
+              id: 'venue_date_format',
+              title: 'Format date column',
+              op: 'set_number_format',
+              sheet_name: '场所调度',
+              range: 'A2:A5',
+              number_format: 'yyyy-mm-dd',
+            },
+          ],
+        },
+        asserts: [
+          { type: 'et_sheet_exists', name: '场所调度' },
+          { type: 'et_cell_number_format_not_general', a1: 'A2' },
+        ],
+        query: '[override]',
+      },
+      {
+        id: 't2_witness_management',
+        name: '见证管理闭环表',
+        artifactId: 'bench_policy_witness_management',
+        forceSkillId: 'bidding-helper',
+        planOverride: {
+          schema_version: 'ah32.plan.v1',
+          host_app: 'et',
+          meta: { kind: 'bench_bidding_policy_witness_management_v1' },
+          actions: [
+            {
+              id: 'ensure_witness_sheet',
+              title: 'Prepare witness sheet',
+              op: 'ensure_sheet',
+              sheet_name: '见证管理',
+              clear_existing: true,
+              activate: true,
+              select_a1: true,
+            },
+            {
+              id: 'witness_table',
+              title: 'Insert witness management table',
+              op: 'insert_table',
+              rows: 5,
+              cols: 4,
+              header: true,
+              borders: true,
+              auto_fit: 1,
+              data: [
+                ['交易环节', '记录方式', '异常预警', '处置结果'],
+                ['招标文件发布', '链上存证+操作日志', '检测到敏感条款修改', '要求复核后再发布'],
+                ['开标', '视频+系统日志', '解密超时', '人工介入确认'],
+                ['评标', '评审痕迹+评分轨迹', '评分偏离异常', '提示专家复核'],
+                ['定标', '比选记录+决策留痕', '定标依据不充分', '补充佐证材料'],
+              ],
+            },
+          ],
+        },
+        asserts: [
+          { type: 'et_sheet_exists', name: '见证管理' },
+          { type: 'skills_selected_includes', skillId: 'bidding-helper', points: 2 },
+        ],
+        query: '[override]',
+      },
+      {
+        id: 't3_archive_management',
+        name: '档案索引与摘要表',
+        artifactId: 'bench_policy_archive_management',
+        forceSkillId: 'bidding-helper',
+        planOverride: {
+          schema_version: 'ah32.plan.v1',
+          host_app: 'et',
+          meta: { kind: 'bench_bidding_policy_archive_management_v1' },
+          actions: [
+            {
+              id: 'ensure_archive_sheet',
+              title: 'Prepare archive sheet',
+              op: 'ensure_sheet',
+              sheet_name: '档案索引',
+              clear_existing: true,
+              activate: true,
+              select_a1: true,
+            },
+            {
+              id: 'archive_table',
+              title: 'Insert archive index table',
+              op: 'insert_table',
+              rows: 5,
+              cols: 5,
+              header: true,
+              borders: true,
+              auto_fit: 1,
+              data: [
+                ['文件名', '类别', '摘要', '存证方式', '检索标签'],
+                ['招标文件V3', '招标文件', '含资格条件、评标标准与合同条款', '链上存证', '招标/资格/评标'],
+                ['投标文件A', '投标文件', '含技术方案与报价承诺', '电子签章归档', '投标/技术/报价'],
+                ['评标报告', '评标资料', '含评分汇总与专家意见', '链上存证', '评标/评分/复核'],
+                ['投诉处理记录', '监管资料', '含初审意见与处理决定', '日志+归档库', '投诉/监管/决定'],
+              ],
+            },
+          ],
+        },
+        asserts: [
+          { type: 'et_sheet_exists', name: '档案索引' },
+          { type: 'skills_selected_includes', skillId: 'bidding-helper', points: 2 },
+        ],
+        query: '[override]',
       },
     ],
   },

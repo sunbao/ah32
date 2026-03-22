@@ -1239,25 +1239,39 @@ const runDirectAssert = async (
           if (type === 'writer_table_exists') {
             const minRows = Math.max(1, Number((a as any)?.minRows || 1) || 1)
             const minCols = Math.max(1, Number((a as any)?.minCols || 1) || 1)
-            let t: any = null
+            let total = 0
             try {
-              if (doc?.Tables && Number(doc.Tables.Count || 0) >= 1) t = doc.Tables.Item(1)
+              total = Number(doc?.Tables?.Count || 0)
             } catch (_e) {
-              t = null
+              total = 0
             }
-            if (!t) return { ok: false, message: 'ASSERT_FAIL:writer_table_exists:no_table' }
-            let rows = 0
-            let cols = 0
-            try {
-              rows = Number(t?.Rows?.Count || 0)
-              cols = Number(t?.Columns?.Count || 0)
-            } catch (_e) {
-              rows = 0
-              cols = 0
+            if (total < 1) return { ok: false, message: 'ASSERT_FAIL:writer_table_exists:no_table' }
+
+            let bestRows = 0
+            let bestCols = 0
+            for (let i = 1; i <= total; i += 1) {
+              let t: any = null
+              try { t = doc.Tables.Item(i) } catch (_e) { t = null }
+              if (!t) continue
+              let rows = 0
+              let cols = 0
+              try {
+                rows = Number(t?.Rows?.Count || 0)
+                cols = Number(t?.Columns?.Count || 0)
+              } catch (_e) {
+                rows = 0
+                cols = 0
+              }
+              if (rows > bestRows) bestRows = rows
+              if (cols > bestCols) bestCols = cols
+              if (rows >= minRows && cols >= minCols) {
+                return { ok: true, message: `ok:table_index=${i}:rows=${rows}:cols=${cols}` }
+              }
             }
-            if (rows < minRows) return { ok: false, message: `ASSERT_FAIL:writer_table_exists:rows<${minRows} got ${rows}` }
-            if (cols < minCols) return { ok: false, message: `ASSERT_FAIL:writer_table_exists:cols<${minCols} got ${cols}` }
-            return { ok: true, message: 'ok' }
+            return {
+              ok: false,
+              message: `ASSERT_FAIL:writer_table_exists:not_found rows>=${minRows} cols>=${minCols} best_rows=${bestRows} best_cols=${bestCols} tables=${total}`,
+            }
           }
 
           if (type === 'writer_table_header_bold') {

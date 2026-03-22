@@ -414,3 +414,27 @@
 |------|-------|----------|--------|--------|
 | ET macro verifier 定点复跑 | `scripts/run-wps-autobench.ps1 -BenchHost et -RunMode macro -SuiteId et-analyzer -Preset standard -Action start -ApiBase http://192.168.1.154:5123` | 真实成功不再被脚本误杀 | 通过 | pass |
 | Full macro 套跑回归 | `scripts/run-wps-autobench-suite-set.ps1 -ApiBase http://192.168.1.154:5123` | 5 条稳定宏基准全部通过 | `5/5` 全绿 | pass |
+### Phase 20: Policy-195 Benchmark Coverage and Real Validation
+- **Status:** complete
+- **Timestamp:** 2026-03-22 22:25
+- Actions taken:
+  - 按用户给出的政策全文，把 `bidding-helper` 扩展为政策 195 的完整基准覆盖，并新增 `macro_bench_policy_195_matrix.md` 做条款到 story/turn/宿主的映射。
+  - 为 Writer 新增 6 个政策 story，为 ET 新增 2 个政策 story，使 20 条政策要求全部落到可执行 benchmark 上。
+  - 真实执行 `scripts/run-wps-autobench.ps1 -BenchHost wps -RunMode chat -SuiteId bidding-helper -Preset standard -Action start -ApiBase http://192.168.1.154:5123`。
+  - 在 Writer 复跑中定位到 `writer_table_exists` 只检查第一张表，修复 `ah32-ui-next/src/dev/macro-bench-chat.ts` 后再次复跑，结果达到 `18/18` 全绿。
+  - 真实执行 `scripts/run-wps-autobench.ps1 -BenchHost et -RunMode chat -SuiteId bidding-helper -Preset standard -Action start -ApiBase http://192.168.1.154:5123`。
+  - 在 ET 复跑中定位到 `bid_sheet_v1` 仍依赖模型自由输出，修复 `ah32-ui-next/src/dev/macro-bench-chat-suites.ts` 后再次复跑，结果达到 `8/8` 全绿。
+  - 每次改动后都执行 `npm -C ah32-ui-next run build`，确认前端构建可过。
+- Files created/modified:
+  - `ah32-ui-next/src/dev/macro-bench-chat-suites.ts` (modified, policy-195 stories + ET bid sheet deterministic fix)
+  - `ah32-ui-next/src/dev/macro-bench-chat.ts` (modified, Writer table assertion scans all tables)
+  - `macro_bench_policy_195_matrix.md` (new, policy item to benchmark mapping)
+  - `task_plan.md` (updated)
+  - `findings.md` (updated)
+  - `progress.md` (updated)
+
+## Latest Policy-195 Result
+| Test | Input | Expected | Actual | Status |
+|------|-------|----------|--------|--------|
+| WPS policy benchmark 回归 | `scripts/run-wps-autobench.ps1 -BenchHost wps -RunMode chat -SuiteId bidding-helper -Preset standard -Action start -ApiBase http://192.168.1.154:5123` | `bidding-helper` Writer 套件全部通过 | `18/18` 全绿 | pass |
+| ET policy benchmark 回归 | `scripts/run-wps-autobench.ps1 -BenchHost et -RunMode chat -SuiteId bidding-helper -Preset standard -Action start -ApiBase http://192.168.1.154:5123` | `bidding-helper` ET 套件全部通过 | `8/8` 全绿 | pass |

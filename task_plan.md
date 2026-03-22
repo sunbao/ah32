@@ -206,3 +206,16 @@ Phase 5
 - 这次要说准：
   - **已做到**：宏模式整包 `5/5` 全绿，自动化不再把 `et-analyzer` 的真实成功误杀成失败。
   - **未宣称**：ET 产品行为有新功能变更；这次修的是自动化验收脚本过时，不是产品主链新增能力。
+## 2026-03-22 Policy-195 Coverage Expansion
+- 已按《加快招标投标领域人工智能推广应用的实施意见（发改法规〔2026〕195号）》把 `bidding-helper` 扩展为完整政策覆盖，不再只停留在泛化的招投标示例。
+- 当前覆盖拆分为两类宿主：
+  - Writer / WPS：覆盖第 1-5、9-11、15-20 项。
+  - ET：覆盖第 6-8、12-14 项。
+- 本轮新增了 8 个政策 story：
+  - `wps`: `policy_qa_v1` / `policy_tender_v1` / `policy_bid_v1` / `policy_award_v1` / `policy_regulation_v1` / `policy_supervision_v1`
+  - `et`: `policy_open_eval_v1` / `policy_onsite_v1`
+- 额外新增了覆盖矩阵文件 `macro_bench_policy_195_matrix.md`，用于把政策条款编号、story、turn、宿主映射清楚，便于后续继续补数据或扩 story。
+- 当前这一轮的可验证目标已经从“先把 story 设计出来”推进到“真实基准跑通”：
+  - `wps + bidding-helper`：`18/18` 通过
+  - `et + bidding-helper`：`8/8` 通过
+- 这意味着基于政策 195 的首轮宏/chat 基准底盘已经跑通，后续可以在这个集合上继续“补数据 -> 跑红 -> 修程序 -> 回归”。

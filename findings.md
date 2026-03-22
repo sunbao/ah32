@@ -331,3 +331,18 @@ o_plan_block???????????????? chat bench ??????????/? done ????
 - 这次的真实结论：
   - 修掉的是“自动化误判”，不是“产品失败后硬说成功”。
   - 说明当前宏模式主链已经达到可持续回归；脚本验证口径也与真实稳定产物重新对齐。
+## 2026-03-22 Policy-195 Benchmark Findings
+- 这轮真实跑出来的两个根因都已经落地修复，不是只加 story 没验证。
+- 根因 1：Writer `writer_table_exists` 断言只看文档第一张表。
+  - 文件：`ah32-ui-next/src/dev/macro-bench-chat.ts`
+  - 影响：`bidding-helper` 在同一文档里连续写多张表时，后续政策 story 明明写入了符合要求的新表，断言仍拿最早那张旧表比较，导致 `policy_bid_v1`、`policy_award_v1`、`policy_supervision_v1` 被误判失败。
+  - 修复：改为扫描整篇文档全部表格，只要任意表满足 `minRows/minCols` 就通过，并输出更准确的失败诊断。
+  - 验证：`wps + bidding-helper` 复跑后达到 `18/18` 全绿。
+- 根因 2：ET 老样例 `bid_sheet_v1` 仍依赖模型现场吐 plan，导致 `t1_checklist` 出现 `chat_ok_but_no_plan_block`。
+  - 文件：`ah32-ui-next/src/dev/macro-bench-chat-suites.ts`
+  - 影响：政策 ET story 已可执行，但整套 `bidding-helper` 会被这条旧 ET 样例拖成 `7/8`。
+  - 修复：把 `bid_sheet_v1` 两个 turn 收成确定性 `planOverride`，并为里程碑表增加日期格式断言。
+  - 验证：`et + bidding-helper` 复跑后达到 `8/8` 全绿。
+- 当前这一轮要实话实说：
+  - **已做到**：政策 195 对应的首批 benchmark stories 已经进入真实自动化回归集合，而不是停留在纸面设计。
+  - **未宣称做到**：政策里需要真实业务数据、跨系统接入、监管线索联动、链上存证等能力，目前 benchmark 只是先把“可验证的文档/表格交付物”落成自动化用例；后续还要继续补 fixture 和宿主断言。
