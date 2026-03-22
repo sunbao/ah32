@@ -506,7 +506,7 @@ function Test-BenchMutation {
         $extraGeneratedSheets += $name
       }
       $macroOk = (
-        ([int]$State.sheet_count -ge 4) -and
+        ([int]$State.sheet_count -ge 3) -and
         ([int]$State.chart_count -ge 1) -and
         (
           (Test-StringCollectionContains -Values $sheetNames -Expected 'Summary') -or

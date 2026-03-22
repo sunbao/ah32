@@ -394,3 +394,23 @@
 | ET chat 宿主状态复测 | `scripts/run-wps-autobench.ps1 -BenchHost et -RunMode chat -SuiteId et-analyzer -Preset standard -Action start -ApiBase http://192.168.1.154:5123` | 不再停在 `running`，真实落到 `done` | `done`, `ok=3/3` | pass |
 | ET chat 回归复测 | `scripts/run-wps-autobench.ps1 -BenchHost et -RunMode chat -SuiteId et-visualizer -Preset standard -Action start -ApiBase http://192.168.1.154:5123` | 真实落到 `done` | `done`, `ok=3/3` | pass |
 | Full chat 套跑回归 | `.codex-tmp/run-chat-suite-set.ps1` | 修 ET 后整轮仍通过 | `14/14` 全绿 | pass |
+
+### Phase 19: Macro Suite Set Recheck and Verifier Alignment
+- **Status:** complete
+- **Timestamp:** 2026-03-22
+- Actions taken:
+  - 继续执行宏模式整包回归，命令为 `scripts/run-wps-autobench-suite-set.ps1 -ApiBase http://192.168.1.154:5123`。
+  - 定位到本轮唯一失败是 `et-analyzer`，并确认失败不是 ET 没改工作簿，而是脚本仍要求 `sheet_count >= 4`。
+  - 根据真实稳定产物 `_AH32_DEV_STATUS + Summary + Sheet1 + Department Amount Summary`，将 `scripts/run-wps-autobench.ps1` 的 `et-analyzer` 宏验收阈值修正为 `sheet_count >= 3`。
+  - 先做 `et-analyzer` 定点复跑，再做宏模式整包复跑，确认修复有效。
+- Files created/modified:
+  - `scripts/run-wps-autobench.ps1` (modified, ET analyzer macro verifier aligned with stable workbook output)
+  - `task_plan.md` (updated)
+  - `findings.md` (updated)
+  - `progress.md` (updated)
+
+## Latest Macro Result
+| Test | Input | Expected | Actual | Status |
+|------|-------|----------|--------|--------|
+| ET macro verifier 定点复跑 | `scripts/run-wps-autobench.ps1 -BenchHost et -RunMode macro -SuiteId et-analyzer -Preset standard -Action start -ApiBase http://192.168.1.154:5123` | 真实成功不再被脚本误杀 | 通过 | pass |
+| Full macro 套跑回归 | `scripts/run-wps-autobench-suite-set.ps1 -ApiBase http://192.168.1.154:5123` | 5 条稳定宏基准全部通过 | `5/5` 全绿 | pass |

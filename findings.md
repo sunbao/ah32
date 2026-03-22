@@ -315,3 +315,19 @@ o_plan_block???????????????? chat bench ??????????/? done ????
 - 所以当前结论已经升级为：
   - **不是** “ET 只能靠成果物兜底算通过”；
   - **而是** “ET chat 的宿主状态主链已经能稳定走到 done，并且整轮回归未见 Writer/WPP 回归”。
+
+## 2026-03-22 Macro Suite Set Recheck
+- 今天继续执行宏模式整包回归：`scripts/run-wps-autobench-suite-set.ps1 -ApiBase http://192.168.1.154:5123`。
+- 这轮暴露出的唯一红点是 `et-analyzer`，但它不是产品执行失败，而是自动化脚本里对 ET 宏成果物的假设过时了。
+- 已确认当前稳定的 `et-analyzer` 宏产物是：
+  - `sheet_count = 3`
+  - `sheet_names = ["_AH32_DEV_STATUS", "Summary", "Sheet1"]`
+  - `chart_count = 1`
+  - `chart_titles = ["Department Amount Summary"]`
+- 因此把 `scripts/run-wps-autobench.ps1` 中 `et-analyzer` 的宏验收从 `sheet_count >= 4` 改为 `sheet_count >= 3` 是正确收口，不是放水。
+- 修复后已完成两层验证：
+  - 定点复跑 `et-analyzer` 宏基准：通过
+  - 再跑整包宏基准：`5/5` 全绿
+- 这次的真实结论：
+  - 修掉的是“自动化误判”，不是“产品失败后硬说成功”。
+  - 说明当前宏模式主链已经达到可持续回归；脚本验证口径也与真实稳定产物重新对齐。

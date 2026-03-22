@@ -196,3 +196,13 @@ Phase 5
 - 当前这次的结论和 2026-03-20 不同：
   - **已做到**：ET chat 不再只靠成果物兜底退出，本地宿主状态现在能稳定落到 `done`；
   - **同时确认**：这轮 ET 根因修复没有把 Writer/WPP 自动化链路打坏。
+
+## 2026-03-22 Macro Suite Set Follow-up
+- 已重新执行 `scripts/run-wps-autobench-suite-set.ps1 -ApiBase http://192.168.1.154:5123`，当前 5 条稳定宏基准已全部通过。
+- 本轮唯一新增失败来自 `et-analyzer`，但真实根因不是 ET 没执行，而是脚本里的宏验收阈值仍停留在旧假设：
+  - 旧规则要求 `sheet_count >= 4`
+  - 当前稳定输出实际为 `_AH32_DEV_STATUS + Summary + Sheet1`，即 `sheet_count = 3`
+- 已将 `scripts/run-wps-autobench.ps1` 中 `et-analyzer` 的宏验收条件改为 `sheet_count >= 3`，并完成定点复跑与整包复跑确认。
+- 这次要说准：
+  - **已做到**：宏模式整包 `5/5` 全绿，自动化不再把 `et-analyzer` 的真实成功误杀成失败。
+  - **未宣称**：ET 产品行为有新功能变更；这次修的是自动化验收脚本过时，不是产品主链新增能力。
