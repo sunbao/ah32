@@ -766,11 +766,17 @@ export const chatApi = {
 	          ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/services/api.ts', e)
 	        }
 	      } finally {
-	        // 确保Reader资源被正确释放
+	        // Release the reader best-effort. Some embedded webviews can hang here
+	        // even after the server has already delivered the final done event.
 	        try {
-	          await reader.cancel()
+	          await Promise.race([
+	            reader.cancel(),
+	            new Promise<void>((resolve) => {
+	              setTimeout(resolve, 500)
+	            }),
+	          ])
         } catch (e) {
-          console.warn('[SSE] 释放Reader资源时出现警告:', e)
+          console.warn('[SSE] reader.cancel best-effort failed:', e)
         }
       }
 	    } catch (error: any) {

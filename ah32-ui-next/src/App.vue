@@ -88,6 +88,14 @@
 
     <!-- 主内容 -->
 
+    <div v-else-if="isDevBenchShell" class="bench-shell fade-in">
+      <div class="bench-shell-header">
+        <div class="bench-shell-title">宏基准测试</div>
+        <div class="bench-shell-subtitle">当前是开发跑测专用页。打开任务窗格后直接跑，不再经过聊天页。</div>
+      </div>
+      <component :is="MacroBenchWidget" v-if="MacroBenchWidget" />
+    </div>
+
     <div v-else class="app-container fade-in" :class="{ 'right-collapsed': rightCollapsed }">
 
       <!-- 左侧：对话界面 -->
@@ -302,6 +310,40 @@
 
 }
 
+.bench-shell {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  background:
+    radial-gradient(circle at top left, rgba(59, 130, 246, 0.12), transparent 28%),
+    linear-gradient(180deg, #f8fbff 0%, #eef4ff 100%);
+  overflow: auto;
+}
+
+.bench-shell-header {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: rgba(15, 23, 42, 0.92);
+  color: #f8fafc;
+  box-shadow: 0 14px 28px rgba(15, 23, 42, 0.12);
+}
+
+.bench-shell-title {
+  font-size: 20px;
+  font-weight: 800;
+}
+
+.bench-shell-subtitle {
+  font-size: 13px;
+  line-height: 1.5;
+  color: rgba(226, 232, 240, 0.9);
+}
+
 </style>
 
 
@@ -316,6 +358,8 @@ import { ArrowLeft, ArrowRight } from '@element-plus/icons-vue'
 
 import '@/styles/common.css'
 
+import { readDevBenchRouteMode } from '@/utils/dev-bench-auto'
+import { isDevUiEnabled } from '@/utils/dev-ui'
 import { getRuntimeConfig } from '@/utils/runtime-config'
 
 
@@ -323,6 +367,8 @@ import { getRuntimeConfig } from '@/utils/runtime-config'
 // 响应式数据
 
 const isDarkMode = ref(false)
+const devUiEnabled = isDevUiEnabled()
+const isDevBenchShell = computed(() => devUiEnabled && readDevBenchRouteMode() === 'bench')
 
 const isLoading = ref(true)
 
@@ -332,7 +378,7 @@ const errorMessage = ref('')
 
 const componentsLoaded = ref(0) // 跟踪已加载的组件数量
 
-const totalComponents = ref(3) // 总共需要加载的组件数
+const totalComponents = ref(isDevBenchShell.value ? 1 : 3) // 总共需要加载的组件数
 
 const rightCollapsed = ref(false)
 
@@ -423,6 +469,34 @@ const ChatPanel = defineAsyncComponent({
   }
 
 })
+
+const MacroBenchWidget = isDevBenchShell.value ? defineAsyncComponent({
+  loader: async () => {
+    const module = await import('@/components/dev/MacroBenchWidget.vue')
+    componentsLoaded.value++
+    return module
+  },
+
+  errorComponent: (props: { error: Error }) => {
+    hasError.value = true
+    isLoading.value = false
+
+    const error = props.error
+    let errorMsg = '未知错误'
+    if (error instanceof Error) errorMsg = error.message || '组件加载失败'
+    else if (typeof error === 'string') errorMsg = error
+    else if (error) errorMsg = JSON.stringify(error)
+
+    errorMessage.value = `宏基准测试组件加载失败: ${errorMsg}`
+    return {
+      template: '<div class="error-container">宏基准测试组件加载失败，请刷新页面重试</div>'
+    }
+  },
+
+  loadingComponent: () => {
+    return { template: '<div>正在加载宏基准测试...</div>' }
+  }
+}) : null
 
 
 

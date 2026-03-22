@@ -1384,9 +1384,9 @@ watch(
   align-items: center;
   justify-content: center;
   height: 100%;
-  min-height: 400px;
+  min-height: 220px;
   color: #909399;
-  padding: 40px 20px;
+  padding: 20px 16px;
 
   .el-icon {
     color: #667eea;
@@ -1403,8 +1403,8 @@ watch(
   }
 
   .agentic-hint {
-    margin-top: 20px;
-    padding: 16px 20px;
+    margin-top: 14px;
+    padding: 14px 16px;
     background: linear-gradient(135deg, rgba(102, 126, 234, 0.05) 0%, rgba(118, 75, 162, 0.05) 100%);
     border-radius: 12px;
     border: 1px solid rgba(102, 126, 234, 0.1);
@@ -1516,7 +1516,8 @@ watch(
 .input-header {
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-start;
+  flex-wrap: wrap;
   margin-bottom: var(--spacing-md);
   padding: 0 var(--spacing-sm);
   gap: var(--spacing-sm);
@@ -1524,13 +1525,17 @@ watch(
   .input-hint-container {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: var(--spacing-sm);
+    min-width: 0;
+    flex: 1 1 320px;
   }
 
   .skills-hint-row {
     display: flex;
     align-items: center;
     min-width: 0;
+    flex: 1 1 100%;
   }
 
   .skills-hint {

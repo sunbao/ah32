@@ -100,7 +100,7 @@
 
               <span class="code-title-text">
 
-                自动写入：{{ block.description || '文档操作' }}
+                写入任务：{{ block.description || '文档操作' }}
 
                 <span v-if="codeBlocks.length > 1" class="code-title-count">{{ index + 1 }}/{{ codeBlocks.length }}</span>
 
@@ -142,6 +142,16 @@
 
               </el-tag>
 
+              <el-button
+                v-if="devUiEnabled"
+                type="text"
+                size="small"
+                class="toggle-code-btn"
+                @click.stop="toggleMacroCode()"
+              >
+                {{ showMacroCode ? '隐藏JSON' : '查看JSON' }}
+              </el-button>
+
             </div>
 
           </div>
@@ -156,7 +166,13 @@
 
               <div class="macro-step-title">{{ s.title || s.type || '步骤' }}</div>
 
-              <div class="macro-step-content">{{ s.content || '' }}</div>
+              <div class="macro-step-content">
+                <template v-if="s.content">
+                  <!-- Hide internal IDs for non-dev users (block_id is not actionable for them). -->
+                  <template v-if="devUiEnabled || String(s.title || s.type || '') !== '写回块'">{{ s.content }}</template>
+                  <template v-else>（幂等写入）</template>
+                </template>
+              </div>
 
             </div>
 
@@ -182,62 +198,32 @@
 
             </div>
 
+          </div>
 
-
-            <!-- confirmation-required: allow apply writeback (no code shown, still uses global macro queue) -->
-
-            <div
-
-              v-if="needsConfirm(block) && !!(block.code || '').trim() && !block.executed && !block.error && block.runStatus !== 'queued' && block.runStatus !== 'running'"
-
-              class="macro-actions-row"
-
+          <!-- Writeback actions (Plan JSON only). Always show the button so users can find it. -->
+          <div v-if="block.type === 'plan'" class="macro-actions-row">
+            <el-button
+              :type="writebackButtonType(block)"
+              size="small"
+              :disabled="writebackButtonDisabled(block)"
+              :loading="writebackButtonLoading(block)"
+              @click="applyWritebackNow(block)"
             >
+              <el-icon v-if="block.executed"><Select /></el-icon>
+              <el-icon v-else-if="writebackButtonLoading(block)"><Loading class="loading-icon" /></el-icon>
+              <el-icon v-else-if="block.error"><Refresh /></el-icon>
+              <el-icon v-else><CaretRight /></el-icon>
+              {{ writebackButtonLabel(block) }}
+            </el-button>
 
-              <el-button
+            <el-button v-if="block.executed && hasBackupForBlock(block.blockId)" type="warning" size="small" plain @click="rollbackBlockNow(block)">
+              <el-icon><Refresh /></el-icon>
+              回退上一版
+            </el-button>
+          </div>
 
-                type="primary"
-
-                size="small"
-
-                @click="applyWritebackNow(block)"
-
-              >
-
-                <el-icon><CaretRight /></el-icon>
-
-                {{ needsConfirm(block) ? '确认应用' : '应用到文档' }}
-
-              </el-button>
-
-            </div>
-
-
-
-            <!-- apply_with_backup: allow one-click rollback when a backup exists -->
-
-            <div v-if="block.executed && hasBackupForBlock(block.blockId)" class="macro-actions-row">
-
-              <el-button
-
-                type="warning"
-
-                size="small"
-
-                plain
-
-                @click="rollbackBlockNow(block)"
-
-              >
-
-                <el-icon><Refresh /></el-icon>
-
-                回退上一版
-
-              </el-button>
-
-            </div>
-
+          <div v-if="block.type === 'plan' && writebackButtonHint(block)" class="macro-confirm-hint">
+            {{ writebackButtonHint(block) }}
           </div>
 
 
@@ -269,6 +255,10 @@
               size="small"
 
             />
+
+            <div class="error-actions">
+              <el-button type="text" size="small" @click="copyBlockError(block)">复制错误</el-button>
+            </div>
 
           </div>
 
@@ -374,7 +364,7 @@ import {
 
 } from '@element-plus/icons-vue'
 
-import { ref, computed, onErrorCaptured, onMounted } from 'vue'
+import { ref, computed, nextTick, onErrorCaptured, onMounted } from 'vue'
 
 import { ElMessage } from 'element-plus'
 
@@ -463,12 +453,110 @@ const showMacroCode = ref(false)
 
 const macroTargetBlockId = ref<string | null>(null)
 
+const devUiEnabled = isDevUiEnabled()
+const SHOW_CODE_KEY = 'ah32_show_macro_code_v1'
 
+const writebackButtonLoading = (block: CodeBlock): boolean => {
+  try {
+    if (!block || block.type !== 'plan') return false
+    return block.runStatus === 'queued' || block.runStatus === 'running'
+  } catch (e) {
+    ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/components/chat/MessageItem.vue', e)
+    return false
+  }
+}
 
-const needsConfirm = (block: CodeBlock): boolean => {
+const writebackButtonDisabled = (block: CodeBlock): boolean => {
+  try {
+    if (!props.showActions) return true
+    if (!block || block.type !== 'plan') return true
+    if (!String(block.code || '').trim()) return true
+    if (block.executed) return true
+    if (block.runStatus === 'queued' || block.runStatus === 'running') return true
+    // Allow retry on error: user can click "重试写入".
+    return false
+  } catch (e) {
+    ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/components/chat/MessageItem.vue', e)
+    return true
+  }
+}
 
-  return !!block?.confirm
+const writebackButtonLabel = (block: CodeBlock): string => {
+  try {
+    if (!props.showActions) return '写入(只读)'
+    if (!block || block.type !== 'plan') return '写入'
+    if (block.executed) return '已写入'
+    if (block.runStatus === 'queued') return '写入排队中'
+    if (block.runStatus === 'running') return '正在写入'
+    if (block.error) return '重试写入'
+    return '写入文档'
+  } catch (e) {
+    ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/components/chat/MessageItem.vue', e)
+    return '写入文档'
+  }
+}
 
+const writebackButtonType = (block: CodeBlock): 'primary' | 'success' | 'warning' | 'info' | 'danger' | 'default' => {
+  try {
+    if (!props.showActions) return 'default'
+    if (!block || block.type !== 'plan') return 'default'
+    if (block.executed) return 'success'
+    if (block.error) return 'danger'
+    if (block.runStatus === 'queued') return 'info'
+    if (block.runStatus === 'running') return 'warning'
+    return 'primary'
+  } catch (_e) {
+    return 'primary'
+  }
+}
+
+const writebackButtonHint = (block: CodeBlock): string => {
+  try {
+    if (!block || block.type !== 'plan') return ''
+    if (!props.showActions) return '当前为只读视图，无法写入文档。'
+    if (block.executed) return '已写入到文档中。'
+    if (block.runStatus === 'queued') return '已加入写入队列，请稍等...'
+    if (block.runStatus === 'running') return '正在写入文档，请勿关闭文档/任务窗格...'
+    if (block.error) return '上次写入失败，可点击“重试写入”。'
+    if (block.confirm) return '建议确认后再写入（会修改文档）。'
+    return ''
+  } catch (e) {
+    ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/components/chat/MessageItem.vue', e)
+    return ''
+  }
+}
+
+const toggleMacroCode = () => {
+  if (!devUiEnabled) return
+  showMacroCode.value = !showMacroCode.value
+  try { localStorage.setItem(SHOW_CODE_KEY, showMacroCode.value ? '1' : '0') } catch (_e) {}
+  if (showMacroCode.value) {
+    nextTick(() => {
+      try { highlightCodeBlocks() } catch (e) { ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/components/chat/MessageItem.vue', e) }
+    })
+  }
+}
+
+const _copyText = async (text: string): Promise<boolean> => {
+  const s = String(text || '')
+  if (!s.trim()) return false
+  try {
+    await navigator.clipboard.writeText(s)
+    return true
+  } catch (_e) {
+    try { ;(window as any).__AH32_CLIPBOARD_FALLBACK__ = s } catch (_e2) {}
+    return false
+  }
+}
+
+const copyBlockError = async (block: CodeBlock) => {
+  try {
+    const ok = await _copyText(String(block?.error || ''))
+    if (ok) ElMessage.success('已复制错误信息')
+    else ElMessage.warning('复制失败：已写入 window.__AH32_CLIPBOARD_FALLBACK__（可在控制台复制）')
+  } catch (e) {
+    ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/components/chat/MessageItem.vue', e)
+  }
 }
 
 
@@ -551,17 +639,17 @@ const applyWritebackNow = (block?: CodeBlock) => {
 
   } catch (e: any) {
 
-    console.error('应用写回失败:', e)
+    console.error('写入文档失败:', e)
 
     ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/components/chat/MessageItem.vue', e)
 
     try {
-      const msg = `应用写回失败：${String(e?.message || e || 'unknown_error')}`
+      const msg = `写入文档失败：${String(e?.message || e || 'unknown_error')}`
       ;(globalThis as any).__ah32_logToBackend?.(`[UI] ${msg}`, 'error')
       ;(globalThis as any).__ah32_notify?.({
         type: 'error',
         title: '写回失败',
-        message: `${msg}\n建议：确认目标文档仍打开并处于前台，然后点击“应用写回”重试；必要时截图反馈。`,
+        message: `${msg}\n建议：确认目标文档仍打开并处于前台，然后点击“写入文档”重试；必要时截图反馈。`,
         durationMs: 0
       })
     } catch (e2) {
@@ -868,12 +956,24 @@ const planDerivedAssistantText = computed(() => {
   }
 })
 
+const _normalizeAssistantUiText = (raw: string): string => {
+  try {
+    const s = String(raw || '')
+    if (!s) return ''
+    // Keep user-facing terms consistent with the UI button label.
+    return s.replace(/应用写回/g, '写入文档')
+  } catch (e) {
+    ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/components/chat/MessageItem.vue', e)
+    return String(raw || '')
+  }
+}
+
 const assistantTextForDisplay = computed(() => {
   try {
     if (props.message.type !== 'assistant') return String(contentWithoutJS.value || '')
     const t = String(contentWithoutJS.value || '').trim()
-    if (t) return t
-    return String(planDerivedAssistantText.value || '').trim()
+    if (t) return _normalizeAssistantUiText(t)
+    return _normalizeAssistantUiText(String(planDerivedAssistantText.value || '').trim())
   } catch (e) {
     ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/components/chat/MessageItem.vue', e)
     return String(contentWithoutJS.value || '')
@@ -987,9 +1087,10 @@ const codeBlocks = computed<CodeBlock[]>(() => {
 
             try {
 
-              const parsed = JSON.parse(code)
-
-              code = JSON.stringify(_redactForDisplay(parsed), null, 2)
+              const parsed = parseJsonRelaxed(code, { allowRepair: true })
+              if (parsed.ok) {
+                code = JSON.stringify(_redactForDisplay(parsed.value), null, 2)
+              }
 
             } catch (e) {
 
@@ -1316,16 +1417,13 @@ const codeBlocks = computed<CodeBlock[]>(() => {
 
 
     const description =
-
-      (typeof plan?.meta?.title === 'string' && plan.meta.title.trim())
-
+      (typeof plan?.meta?.title === 'string' && String(plan.meta.title).trim())
         ? String(plan.meta.title).trim()
-
-        : (typeof plan?.actions?.[0]?.title === 'string' && String(plan.actions[0].title).trim())
-
-          ? String(plan.actions[0].title).trim()
-
-          : 'Plan'
+        : (typeof plan?.meta?.note === 'string' && String(plan.meta.note).trim())
+          ? String(plan.meta.note).trim()
+          : (typeof plan?.actions?.[0]?.title === 'string' && String(plan.actions[0].title).trim())
+            ? String(plan.actions[0].title).trim()
+            : '写回计划'
 
     // Prepare a redacted code view for Dev UI (do not dump正文 into macro card).
 
@@ -1333,9 +1431,12 @@ const codeBlocks = computed<CodeBlock[]>(() => {
 
     try {
 
-      const parsed = JSON.parse(hydratedCode)
-
-      displayCode = JSON.stringify(_redactForDisplay(parsed), null, 2)
+      const parsed = parseJsonRelaxed(hydratedCode, { allowRepair: true })
+      if (parsed.ok) {
+        displayCode = JSON.stringify(_redactForDisplay(parsed.value), null, 2)
+      } else {
+        displayCode = hydratedCode
+      }
 
     } catch (e) {
 
@@ -1421,9 +1522,11 @@ const codeBlocks = computed<CodeBlock[]>(() => {
           const description =
             (typeof plan?.meta?.title === 'string' && String(plan.meta.title).trim())
               ? String(plan.meta.title).trim()
-              : (typeof plan?.actions?.[0]?.title === 'string' && String(plan.actions[0].title).trim())
-                ? String(plan.actions[0].title).trim()
-                : 'Plan'
+              : (typeof plan?.meta?.note === 'string' && String(plan.meta.note).trim())
+                ? String(plan.meta.note).trim()
+                : (typeof plan?.actions?.[0]?.title === 'string' && String(plan.actions[0].title).trim())
+                  ? String(plan.actions[0].title).trim()
+                  : '写回计划'
 
           let executed = false
           let error: string | undefined = undefined
@@ -1536,9 +1639,11 @@ const codeBlocks = computed<CodeBlock[]>(() => {
 
           if (kind === 'plan' && code) {
             try {
-              const parsed = JSON.parse(code)
-              steps = _buildPlanStepsPreview(parsed)
-              code = JSON.stringify(_redactForDisplay(parsed), null, 2)
+              const parsed = parseJsonRelaxed(code, { allowRepair: true })
+              if (parsed.ok) {
+                steps = _buildPlanStepsPreview(parsed.value)
+                code = JSON.stringify(_redactForDisplay(parsed.value), null, 2)
+              }
             } catch (e) {
               // keep as-is
             }
@@ -1809,8 +1914,11 @@ onMounted(() => {
 
 
 
-  // 默认不展示代码；仅在启用 Dev UI（.env / build-time）时展示，避免引入运行时开关。
-  showMacroCode.value = isDevUiEnabled()
+  // Default: do NOT show JSON/code. Dev UI can toggle locally when debugging.
+  showMacroCode.value = false
+  if (devUiEnabled) {
+    try { showMacroCode.value = localStorage.getItem(SHOW_CODE_KEY) === '1' } catch (_e) {}
+  }
 
   // 仅在展示代码时做高亮，避免无意义的 DOM 扫描
 
@@ -2742,6 +2850,14 @@ const handleAction = async (actionType: string) => {
 
     }
 
+    .toggle-code-btn {
+      height: 22px;
+      line-height: 22px;
+      padding: 0 6px;
+      font-size: 11px;
+      color: rgba(17, 24, 39, 0.72);
+    }
+
   }
 
 
@@ -2924,6 +3040,12 @@ const handleAction = async (actionType: string) => {
 
     }
 
+    .error-actions {
+      display: flex;
+      justify-content: flex-end;
+      margin-top: 4px;
+    }
+
   }
 
 
@@ -2983,12 +3105,21 @@ const handleAction = async (actionType: string) => {
   .macro-actions-row {
 
     margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid rgba(148, 163, 184, 0.18);
 
     display: flex;
 
     gap: var(--spacing-sm);
 
     flex-wrap: wrap;
+    align-items: center;
+
+    /* Make the primary writeback action easy to find on narrow panes. */
+    .el-button:first-child {
+      flex: 1 1 180px;
+      justify-content: center;
+    }
 
   }
 
