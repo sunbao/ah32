@@ -219,6 +219,14 @@ unning/done/error
   - 协同监管补“行刑纪贯通、一网共治”
 - 已新增根目录追踪文件 `bidding_policy_195_coverage.md`，供后续会话直接续跑，不必重新猜哪条政策对哪条 story。
 
+## 2026-03-23 Normalize Follow-up
+- 当前工作区唯一残留改动 `src/ah32/plan/normalize.py` 已单独复核，不是噪音。
+- 已用 3 组最小样例直接验证后端 `normalize_plan_payload(...)`：
+  - 缺 `row/col` 的 `set_table_cell_text` 会自动补齐；
+  - 嵌套 `upsert_block` 里透传下来的同名 `block_id` 会被清掉，避免前端执行器误按 block 作用域去找表；
+  - 第二张表之后的 `set_table_cell_text` 会自动补 `table_index=2`，并在必要时扩充 `insert_table.rows/cols`。
+- 下一步：把这笔后端归一化修复独立提交，和招投标 policy-195 收口分开记账。
+
 ## 2026-03-22 Macro Suite Set Follow-up
 - 已重新执行 `scripts/run-wps-autobench-suite-set.ps1 -ApiBase http://192.168.1.154:5123`，当前 5 条稳定宏基准已全部通过。
 - 本轮唯一新增失败来自 `et-analyzer`，但真实根因不是 ET 没执行，而是脚本里的宏验收阈值仍停留在旧假设：

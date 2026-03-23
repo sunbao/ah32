@@ -1745,7 +1745,7 @@ def _normalize_action(action: Any, *, fallback_id: str, host: HostApp) -> dict[s
 def _repair_missing_writer_table_cell_coords(actions: list[dict[str, Any]]) -> None:
     """Best-effort repair for Writer plans that omit row/col on set_table_cell_text."""
 
-    def _walk(nodes: list[dict[str, Any]]) -> None:
+    def _walk(nodes: list[dict[str, Any]], *, inherited_block_id: str | None = None) -> None:
         for node in nodes:
             if not isinstance(node, dict):
                 continue
@@ -1754,9 +1754,18 @@ def _repair_missing_writer_table_cell_coords(actions: list[dict[str, Any]]) -> N
             if not isinstance(nested, list):
                 continue
 
+            block_id = inherited_block_id
+            if str(node.get("op") or "").strip() == "upsert_block":
+                raw_bid = str(node.get("block_id") or "").strip()
+                if raw_bid:
+                    block_id = raw_bid
+
             table_cols = 0
+            table_rows = 0
+            current_table_index = 0
             next_row = 1
             next_col = 1
+            current_insert_table: dict[str, Any] | None = None
 
             for child in nested:
                 if not isinstance(child, dict):
@@ -1764,13 +1773,21 @@ def _repair_missing_writer_table_cell_coords(actions: list[dict[str, Any]]) -> N
 
                 if str(child.get("op") or "").strip() == "insert_table":
                     try:
+                        rows = int(child.get("rows") or 0)
+                    except Exception:
+                        rows = 0
+                    try:
                         cols = int(child.get("cols") or 0)
                     except Exception:
                         cols = 0
+                    if rows > 0:
+                        table_rows = rows
                     if cols > 0:
                         table_cols = cols
+                        current_table_index += 1
                         next_row = 1
                         next_col = 1
+                        current_insert_table = child
 
                 if str(child.get("op") or "").strip() != "set_table_cell_text":
                     continue
@@ -1781,6 +1798,19 @@ def _repair_missing_writer_table_cell_coords(actions: list[dict[str, Any]]) -> N
                     child["row"] = next_row
                 if not has_col:
                     child["col"] = next_col
+                if block_id and str(child.get("block_id") or "").strip() == block_id:
+                    child.pop("block_id", None)
+                row_value = _to_int_opt(child.get("row")) or next_row
+                col_value = _to_int_opt(child.get("col")) or next_col
+                if current_insert_table is not None:
+                    if row_value > table_rows:
+                        table_rows = row_value
+                        current_insert_table["rows"] = table_rows
+                    if col_value > table_cols:
+                        table_cols = col_value
+                        current_insert_table["cols"] = table_cols
+                if current_table_index >= 1 and child.get("table_index") is None:
+                    child["table_index"] = current_table_index
 
                 if table_cols <= 0:
                     table_cols = 4
@@ -1790,7 +1820,7 @@ def _repair_missing_writer_table_cell_coords(actions: list[dict[str, Any]]) -> N
                     next_col = 1
                     next_row += 1
 
-            _walk([c for c in nested if isinstance(c, dict)])
+            _walk([c for c in nested if isinstance(c, dict)], inherited_block_id=block_id)
 
     _walk([a for a in actions if isinstance(a, dict)])
 

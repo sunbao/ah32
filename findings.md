@@ -118,6 +118,15 @@
   - 第 17 条显式补 `工程量清单/报价清单`
   - 第 19 条显式补 `行刑纪贯通` 与 `一网共治`
 - 这类收紧对后续自动化有直接价值：以后不是只看“有个相似标题”，而是能更明确判断是否真的贴政策要求。
+
+## 2026-03-23 Normalize Findings
+- `src/ah32/plan/normalize.py` 的残留改动已确认是一个真实后端修复，不是无关本地污染。
+- 这笔修复解决的点是：当坏计划在 `upsert_block` 里混用 `insert_table + set_table_cell_text`，但漏了 `row/col/table_index` 或把 `block_id` 继续挂在子动作上时，前端执行器容易报错或命中错表。
+- 直接用 `normalize_plan_payload(...)` 喂 3 组样例后的结果：
+  - Case 1：连续两个 `set_table_cell_text` 漏坐标，已自动补成 `(1,1)` 和 `(1,2)`，并补 `table_index=1`；
+  - Case 2：目标单元格超出原 1x1 表，已自动把 `insert_table` 扩成 `3x2`；
+  - Case 3：第二张表后的改单元格动作，已自动补成 `table_index=2`。
+- 这说明这笔改动已经有可复述的根因、输入和输出，不再是“看起来像修复”。
 - `slide_title_codes` 是这次补的关键点：WPP 中文标题进 PowerShell 后会出现乱码，但码点串是 ASCII 安全的，脚本可以稳定拿它做断言。
 - `scripts/run-wps-autobench.ps1` 也已接上这条探针，并内置以下 suite 的自动验收：
   - `et-analyzer`

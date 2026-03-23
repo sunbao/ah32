@@ -166,6 +166,21 @@
   - `findings.md` (updated)
   - `progress.md` (updated)
 
+### Phase 12: normalize.py 残留收口
+- **Status:** in_progress
+- Actions taken:
+  - 审核当前工作区唯一残留文件 `src/ah32/plan/normalize.py` 的差异，确认它属于 Writer 表格改单元格的后端归一化修复。
+  - 用内联 Python 直接调用 `normalize_plan_payload(...)` 跑了 3 组样例：
+    - 嵌套 block 内缺 `row/col` 的 `set_table_cell_text`
+    - 超出原表尺寸的单元格更新
+    - 第二张表之后的单元格更新
+  - 验证结果全部符合预期：自动补坐标、自动补 `table_index`、必要时自动扩表，并去掉会误导前端执行器的子动作 `block_id`。
+- Files created/modified:
+  - `src/ah32/plan/normalize.py` (validated, pending separate commit)
+  - `task_plan.md` (updated)
+  - `findings.md` (updated)
+  - `progress.md` (updated)
+
 ## Test Results
 | Test | Input | Expected | Actual | Status |
 |------|-------|----------|--------|--------|
