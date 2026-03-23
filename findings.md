@@ -127,6 +127,18 @@
   - Case 2：目标单元格超出原 1x1 表，已自动把 `insert_table` 扩成 `3x2`；
   - Case 3：第二张表后的改单元格动作，已自动补成 `table_index=2`。
 - 这说明这笔改动已经有可复述的根因、输入和输出，不再是“看起来像修复”。
+
+## 2026-03-23 Full Regression Findings
+- 已执行两组真实自动化回归：
+  - 宏烟测套跑：`et-analyzer / et-visualizer / ppt-creator / ppt-outline / wpp-outline`
+  - chat 稳定套跑：`doc-analyzer / doc-formatter / exam-answering / contract-review / finance-audit / meeting-minutes / policy-format / risk-register / bidding-helper / et-analyzer / et-visualizer / ppt-creator / ppt-outline / wpp-outline`
+- 结果：
+  - 宏烟测 `5/5` 全绿
+  - chat 稳定套跑 `14/14` 全绿
+- 这轮回归给出的结论是：
+  - 刚推上的招投标政策覆盖收紧，没有把原有稳定套件带坏；
+  - 后端 `normalize.py` 的 Writer 表格改单元格修复，也没有把现有自动化主链带坏；
+  - 当前项目在“自动化能自己拉起宿主、打开阿蛤、触发 bench、完成验收、给出明确结果”这个里程碑上，状态仍然成立。
 - `slide_title_codes` 是这次补的关键点：WPP 中文标题进 PowerShell 后会出现乱码，但码点串是 ASCII 安全的，脚本可以稳定拿它做断言。
 - `scripts/run-wps-autobench.ps1` 也已接上这条探针，并内置以下 suite 的自动验收：
   - `et-analyzer`

@@ -181,6 +181,21 @@
   - `findings.md` (updated)
   - `progress.md` (updated)
 
+### Phase 13: 全链路大回归复核
+- **Status:** complete
+- Actions taken:
+  - 执行 `scripts/run-wps-autobench-suite-set.ps1 -ApiBase http://192.168.1.154:5123`，回归 ET/WPP 5 条宏烟测。
+  - 执行 `.codex-tmp/run-chat-suite-set.ps1`，回归 14 条跨宿主 chat 稳定套件。
+  - 确认这两轮回归都在最新 GitHub 提交基础上完成，且结果全部通过。
+- Key results:
+  - 宏烟测：`5/5` 全绿
+  - chat 稳定套跑：`14/14` 全绿
+  - 其中 `bidding-helper` 继续保持 `20/20`，没有被 policy-195 文案收紧带坏。
+- Files created/modified:
+  - `task_plan.md` (updated)
+  - `findings.md` (updated)
+  - `progress.md` (updated)
+
 ## Test Results
 | Test | Input | Expected | Actual | Status |
 |------|-------|----------|--------|--------|

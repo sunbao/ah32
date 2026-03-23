@@ -227,6 +227,18 @@ unning/done/error
   - 第二张表之后的 `set_table_cell_text` 会自动补 `table_index=2`，并在必要时扩充 `insert_table.rows/cols`。
 - 下一步：把这笔后端归一化修复独立提交，和招投标 policy-195 收口分开记账。
 
+## 2026-03-23 Full Regression Result
+- 已完成两轮更大范围的真实自动化回归，全部通过：
+  - `scripts/run-wps-autobench-suite-set.ps1`：5/5 全绿
+  - `.codex-tmp/run-chat-suite-set.ps1`：14/14 全绿
+- 这轮回归的意义不是“再跑一遍图个安心”，而是确认下面两笔提交叠加后仍未带坏主链：
+  - `43c0542 feat: tighten policy-195 bidding autobench coverage`
+  - `402394f fix: normalize nested writer table updates`
+- 当前可以明确说：
+  - Writer 主线稳定
+  - ET/WPP 宏烟测主线稳定
+  - 跨宿主 chat 稳定套件主线稳定
+
 ## 2026-03-22 Macro Suite Set Follow-up
 - 已重新执行 `scripts/run-wps-autobench-suite-set.ps1 -ApiBase http://192.168.1.154:5123`，当前 5 条稳定宏基准已全部通过。
 - 本轮唯一新增失败来自 `et-analyzer`，但真实根因不是 ET 没执行，而是脚本里的宏验收阈值仍停留在旧假设：
