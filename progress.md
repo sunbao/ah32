@@ -438,3 +438,69 @@
 |------|-------|----------|--------|--------|
 | WPS policy benchmark 回归 | `scripts/run-wps-autobench.ps1 -BenchHost wps -RunMode chat -SuiteId bidding-helper -Preset standard -Action start -ApiBase http://192.168.1.154:5123` | `bidding-helper` Writer 套件全部通过 | `18/18` 全绿 | pass |
 | ET policy benchmark 回归 | `scripts/run-wps-autobench.ps1 -BenchHost et -RunMode chat -SuiteId bidding-helper -Preset standard -Action start -ApiBase http://192.168.1.154:5123` | `bidding-helper` ET 套件全部通过 | `8/8` 全绿 | pass |
+
+
+### Phase 21: Bidding Live Story Root-Cause Repair
+- **Status:** in_progress
+- **Timestamp:** 2026-03-22 23:40
+- Actions taken:
+  - ? `ah32-ui-next/src/dev/macro-bench-chat-suites.ts` ?????? 3 ? `bidding-helper` live-fixture story ??????????????????????
+  - ??????? Plan fast-path ??????`src/ah32/services/models.py` ?? dedicated plan model ???`src/ah32/server/agentic_chat_api.py` ? `src/ah32/agents/react_agent/core.py` ?????
+  - ? Plan generate / repair ????????? `/agentic/chat/stream` ?? heartbeat ?????
+  - ?? `src/ah32/agents/react_agent/core.py` ?????????????????????????????????????????????? writeback fast-path?
+  - ? `examples/user-docs/skills/bidding-helper/skill.json` ? `delivery.default_writeback=direct` ? `capabilities.active_doc_text=true`?
+  - ?? `154` ?????????????????????? `bidding-helper` ?? skill ??????`SkillRegistry` ? `Extra data`???????????
+  - ???????? skill ???? `/app/storage/tenants/public/skills/bidding-helper/skill.json`???? `bidding-helper` ???????????
+  - ???? `154` ????????? `/usr/local/lib/python3.11/site-packages/ah32/...`??? `/app/src/...`????? `core.py / models.py / agentic_chat_api.py` ?????? `site-packages` ??????????????????
+  - ???? UTF-8 ?????? `127.0.0.1:5123/agentic/chat/stream` ??????
+    - `bidding-helper` ??? `thinking: ??????? Plan...`?
+    - ???? heartbeat ???
+    - ? 75 ???? plan fast-path failure?
+    - ?? auto-repair ?? 89 ??? `plan` ???
+- Files created/modified:
+  - `src/ah32/services/models.py` (modified, dedicated plan model resolver added)
+  - `src/ah32/server/agentic_chat_api.py` (modified, unified plan model loader)
+  - `src/ah32/agents/react_agent/core.py` (modified, plan timeout + writeback heuristic repair)
+  - `examples/user-docs/skills/bidding-helper/skill.json` (modified, default writeback + active_doc_text)
+  - `ah32-ui-next/src/dev/macro-bench-chat-suites.ts` (modified earlier, live-fixture stories remain uncommitted)
+  - `task_plan.md` (updated)
+  - `findings.md` (updated)
+  - `progress.md` (updated)
+
+## Latest Bidding-Live Result
+| Test | Input | Expected | Actual | Status |
+|------|-------|----------|--------|--------|
+| Runtime intent check | direct `ReActAgent.stream_chat(...)` with `bidding-helper` live prompt | enter writeback fast-path | `thinking: ??????? Plan...` | pass |
+| 154 registry check | `SkillRegistry('/app/storage/tenants/public/skills')` | `bidding-helper` loaded with `default_writeback=direct` | yes | pass |
+| 154 HTTP stream check | container-local UTF-8 script -> `127.0.0.1:5123/agentic/chat/stream` | no infinite heartbeat; eventually produce plan | enters plan fast-path; ~75s fail + ~89s repair emits `plan` | pass |
+| Full suite rerun | `wps + bidding-helper` live-fixture stories | all three live cases fully pass | not rerun yet | pending |
+
+### Phase 22: Bidding Live Story Stabilization and Semantic Repair
+- **Status:** in_progress
+- **Timestamp:** 2026-03-23
+- Actions taken:
+  - 继续针对 `policy_tender_live_v1 / policy_bid_live_v1 / policy_complaint_live_v1` 做远端 live-fixture 复测，不再只看早期的单次成功。
+  - 新增 `.codex-tmp/repro_policy_live_streams.py`，固定用 UTF-8 请求直接打 `http://192.168.1.154:5123/agentic/chat/stream?show_thoughts=true&show_rag=false`。
+  - 修改 `src/ah32/agents/react_agent/core.py`：
+    - writeback fast-path 超时默认提高；
+    - 纯 timeout 且无模型输出时不再继续空打 repair；
+    - 增强 writeback 诊断日志。
+  - 修改 `src/ah32/plan/normalize.py`：
+    - 为 Writer `set_table_cell_text` 缺 `row/col` 的坏 Plan 增加确定性语义修复。
+  - 每次本地改动后都同步到 `154` 容器真实运行路径 `/usr/local/lib/python3.11/site-packages/ah32/...` 并重启 `bidagent-ah32-backend-1` 做真实联调。
+- Files created/modified:
+  - `src/ah32/agents/react_agent/core.py` (modified, timeout policy + writeback diagnostics)
+  - `src/ah32/plan/normalize.py` (modified, writer table cell coordinate repair)
+  - `.codex-tmp/repro_policy_live_streams.py` (new, UTF-8 live-fixture repro script)
+  - `task_plan.md` (updated)
+  - `findings.md` (updated)
+  - `progress.md` (updated)
+
+## Latest Bidding-Live Result
+| Test | Input | Expected | Actual | Status |
+|------|-------|----------|--------|--------|
+| Tender live repro | `.codex-tmp/repro_policy_live_streams.py` -> `policy_tender_live_v1` | stream emits runnable plan | `plan` emitted; latest full run about `199.49s` | pass |
+| Bid live repro | `.codex-tmp/repro_policy_live_streams.py` -> `policy_bid_live_v1` | stream emits runnable plan | `plan` emitted; latest full run about `208.66s` | pass |
+| Complaint live repro | `.codex-tmp/repro_policy_live_streams.py` -> `policy_complaint_live_v1` | stream emits runnable plan | `plan` emitted; latest full run about `39.84s` | pass |
+| Writer table bad-plan repair | tender invalid plan with missing `set_table_cell_text.row/col` | normalize to valid plan instead of hard fail | fixed in `src/ah32/plan/normalize.py` | pass |
+| Full UI bench rerun | actual WPS bench host execution | confirm UI bench side also green | not rerun yet in this phase | pending |

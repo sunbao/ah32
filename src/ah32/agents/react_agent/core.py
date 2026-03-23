@@ -1031,6 +1031,17 @@ class ReActAgent:
         if not t:
             return False
 
+        try:
+            if re.search("(\u5199\u56de|\u5199\u5230|\u5199\u5165|\u63d2\u5165|\u751f\u6210).{0,12}(\u6587\u672b|\u672b\u5c3e|\u6587\u6863|\u6b63\u6587|\u5f53\u524d\u6587\u6863|\u5757|\u4ea4\u4ed8\u5757|\u62a5\u544a\u5757)", t):
+                return True
+            if ("Plan JSON" in t or "ah32.plan.v1" in t) and re.search(
+                "(\u5199\u56de|\u5199\u5230|\u5199\u5165|\u63d2\u5165|\u6587\u672b|\u672b\u5c3e|\u6587\u6863|\u6b63\u6587)",
+                t,
+            ):
+                return True
+        except Exception as e:
+            logger.debug("[writeback] shortcut writeback detect failed (ignored): %s", e, exc_info=True)
+
         # NOTE: Keep this generic (no business/scenario keywords). We only detect *writeback intent*.
         # Use \u-escapes to avoid editor/console encoding issues on Windows.
         write_verbs_strong = (
@@ -1233,6 +1244,22 @@ class ReActAgent:
             logger.debug("[writeback] explicit write request detect failed (ignored): %s", e, exc_info=True)
             explicit_write_request = False
 
+        try:
+            if (not explicit_write_request) and self._is_writeback_intent(t):
+                explicit_write_request = True
+        except Exception as e:
+            logger.debug("[writeback] fallback explicit write detect failed (ignored): %s", e, exc_info=True)
+
+        source_preserve_writeback = False
+        try:
+            source_preserve_writeback = bool(
+                explicit_write_request
+                and re.search("(\u4e0d\u8981|\u4e0d\u6539|\u52ff\u6539|\u4e0d\u4fee\u6539).{0,8}(\u539f\u6587|\u9898\u5e72|\u6b63\u6587|\u539f\u59cb\u6750\u6599)", t)
+            )
+        except Exception as e:
+            logger.debug("[writeback] source-preserve detect failed (ignored): %s", e, exc_info=True)
+            source_preserve_writeback = False
+
         # Explicitly non-writeback instructions.
         explicit_no_write = (
             "不要写回",
@@ -1246,7 +1273,7 @@ class ReActAgent:
             "只聊天",
             "先解释",
         )
-        if any(k in t for k in explicit_no_write):
+        if any(k in t for k in explicit_no_write) and (not explicit_write_request) and (not source_preserve_writeback):
             return True
 
         # "Text-only / do not create" instructions (common in PPT outline requests).
@@ -1565,6 +1592,90 @@ class ReActAgent:
 
         return best_mode
 
+    def _load_writeback_plan_llm(self):
+        """Prefer a faster dedicated model for Plan generate/repair paths."""
+        try:
+            from ah32.config import settings
+            from ah32.services.models import load_plan_llm
+
+            llm, plan_model, plan_temp = load_plan_llm(settings)
+            return llm, str(plan_model or ""), plan_temp, False
+        except Exception as e:
+            logger.warning("[writeback] load dedicated plan llm failed; fallback to chat llm: %s", e, exc_info=True)
+            model_name = ""
+            try:
+                model_name = str(
+                    getattr(self.llm, "model_name", "")
+                    or getattr(self.llm, "model", "")
+                    or getattr(self.llm, "model_id", "")
+                    or ""
+                ).strip()
+            except Exception:
+                model_name = ""
+            return self.llm, model_name, None, True
+
+    def _plan_llm_timeout_seconds(self, *, kind: str = "") -> float:
+        kind_lower = str(kind or "").strip().lower()
+        env_name = "AH32_PLAN_REPAIR_TIMEOUT_SECONDS" if "repair" in kind_lower else "AH32_PLAN_TIMEOUT_SECONDS"
+        raw = (os.getenv(env_name) or "").strip()
+        if not raw:
+            return 75.0 if "repair" in kind_lower else 130.0
+        try:
+            value = float(raw)
+            if value > 0:
+                return value
+            return 75.0 if "repair" in kind_lower else 130.0
+        except Exception:
+            logger.warning("[writeback] invalid %s=%r; fallback to default", env_name, raw)
+            return 75.0 if "repair" in kind_lower else 130.0
+
+    async def _invoke_writeback_plan_llm(self, llm, messages, *, kind: str):
+        timeout_s = self._plan_llm_timeout_seconds(kind=kind)
+        try:
+            return await asyncio.wait_for(llm.ainvoke(messages), timeout=timeout_s)
+        except asyncio.TimeoutError:
+            logger.error("[writeback] %s timed out after %.1fs without a first result", kind, timeout_s)
+            raise
+
+    def _truncate_prompt_text(self, text: str, *, max_chars: int) -> str:
+        value = str(text or "").strip()
+        if not value or max_chars <= 0:
+            return ""
+        if len(value) <= max_chars:
+            return value
+        return value[:max_chars] + "\n...(truncated)"
+
+    def _build_writeback_doc_excerpt(
+        self,
+        *,
+        frontend_context: Optional[dict],
+        max_chars: int = 6000,
+    ) -> str:
+        """Return a bounded document excerpt for Plan generation/repair prompts."""
+        text = ""
+        try:
+            text = str(getattr(self, "_turn_active_doc_text", "") or "").strip()
+        except Exception:
+            text = ""
+
+        if (not text) and isinstance(frontend_context, dict):
+            try:
+                text = str(maybe_extract_active_doc_text_full(frontend_context) or "").strip()
+            except Exception as e:
+                logger.debug("[writeback] extract active_doc_text_full failed (ignored): %s", e, exc_info=True)
+                text = ""
+            if not text:
+                try:
+                    text = str(maybe_extract_active_docx(frontend_context, max_chars=max_chars) or "").strip()
+                except Exception as e:
+                    logger.debug("[writeback] extract active_doc_text preview failed (ignored): %s", e, exc_info=True)
+                    text = ""
+
+        if not text:
+            return ""
+
+        return self._truncate_prompt_text(text, max_chars=max_chars)
+
 
 
     def _build_compare_table_writeback_directive(self, user_message: str) -> str:
@@ -1735,6 +1846,7 @@ class ReActAgent:
         anchor: str,
         delivery: str,
         original_plan: Optional[dict] = None,
+        original_plan_text: str = "",
         error_type: str = "missing_plan",
         error_message: str = "",
     ) -> Optional[dict]:
@@ -1764,11 +1876,12 @@ class ReActAgent:
 
         delivery_hint = "compare_table" if str(delivery or "").strip().lower() == "compare_table" else ""
         original_text = json.dumps(original_plan or {}, ensure_ascii=False, default=str)
+        original_plan_text = self._truncate_prompt_text(original_plan_text, max_chars=6000)
         selected_skill_guidance = self._selected_skill_plan_guidance()
+        doc_excerpt = self._build_writeback_doc_excerpt(frontend_context=None)
 
         user_prompt = (
             f"User request:\n{(user_query or '').strip()}\n\n"
-            f"{(rag_context or '').strip()}\n\n"
             f"Writeback anchor: {anchor}\n"
             f"Delivery: {delivery_hint}\n"
             f"Suggested block_id: {block_id}\n\n"
@@ -1779,26 +1892,61 @@ class ReActAgent:
                 if selected_skill_guidance
                 else ""
             )
+            + (f"Document excerpt:\n{doc_excerpt}\n\n" if doc_excerpt else "")
+            + (f"Relevant context:\n{(rag_context or '').strip()}\n\n" if (rag_context or "").strip() else "")
             + "Original plan:\n"
             + f"{original_text}\n\n"
+            + (f"Original model output:\n{original_plan_text}\n\n" if original_plan_text else "")
             + f"Error: {error_type}\n"
             + f"Error message: {error_message}\n"
         ).strip()
 
-        resp = await self.llm.ainvoke([("system", sys_prompt), ("user", user_prompt)])
+        llm, plan_model, _plan_temp, fallback_used = self._load_writeback_plan_llm()
+        t0 = time.perf_counter()
+        resp = await self._invoke_writeback_plan_llm(
+            llm,
+            [("system", sys_prompt), ("user", user_prompt)],
+            kind="plan_repair_fast_path",
+        )
+        self._accumulate_token_usage(resp)
+        ms = int((time.perf_counter() - t0) * 1000)
+        try:
+            self._turn_llm_total_ms = int(getattr(self, "_turn_llm_total_ms", 0) or 0) + ms
+            if not getattr(self, "_turn_first_llm_ms", None):
+                self._turn_first_llm_ms = ms
+            tsvc = get_telemetry()
+            if tsvc:
+                tsvc.emit(
+                    "chat.llm_call",
+                    {
+                        "iteration": 1,
+                        "llm_ms": ms,
+                        "kind": "plan_repair_fast_path",
+                        "model": plan_model,
+                        "fallback_to_chat_llm": bool(fallback_used),
+                    },
+                    ctx=getattr(self, "_turn_run_context", None),
+                )
+        except Exception as e:
+            logger.debug(f"[telemetry] emit chat.llm_call (plan_repair_fast_path) failed: {e}", exc_info=True)
         raw = getattr(resp, "content", "") or str(resp)
         plan, _err = self._extract_plan_from_text(raw, host)
         if not plan:
-            try:
-                logger.debug(
-                    "[writeback] plan fast path invalid plan: %s (raw_len=%s)",
-                    _err,
-                    len(raw or ""),
-                )
-            except Exception as e:
-                logger.debug("[writeback] plan fast path debug log failed (ignored): %s", e, exc_info=True)
+            snippet = self._truncate_prompt_text(raw, max_chars=600)
+            logger.warning(
+                "[writeback] plan_repair_fast_path returned invalid plan: %s (raw_len=%s, raw_preview=%r)",
+                _err,
+                len(raw or ""),
+                snippet,
+            )
             return None
         plan = self._apply_writeback_plan_overrides(plan, block_id=block_id, anchor=anchor)
+        logger.info(
+            "[writeback] plan_repair_fast_path succeeded host=%s session_id=%s block_id=%s",
+            host,
+            session_id,
+            block_id,
+        )
         return plan
 
 
@@ -1828,7 +1976,7 @@ class ReActAgent:
             host_app = ""
         host = host_app if host_app in ("wps", "et", "wpp") else "wps"
 
-        llm = self.llm
+        llm, plan_model, _plan_temp, fallback_used = self._load_writeback_plan_llm()
 
         # Capabilities (best-effort): small, host-filtered, deterministic JSON for prompt guidance.
         caps_text = ""
@@ -1853,6 +2001,7 @@ class ReActAgent:
 
         delivery_hint = "compare_table" if str(delivery or "").strip().lower() == "compare_table" else ""
         selected_skill_guidance = self._selected_skill_plan_guidance()
+        doc_excerpt = self._build_writeback_doc_excerpt(frontend_context=frontend_context)
 
         try:
             from ah32.services.plan_prompts import get_plan_generation_prompt
@@ -1862,54 +2011,173 @@ class ReActAgent:
             logger.error(f"[writeback] build plan prompt failed: {e}", exc_info=True)
             return None
 
-        user = (
-            f"session_id: {session_id}\n"
-            f"document_name: {document_name or ''}\n"
-            f"host_app: {host}\n"
-            f"capabilities: {caps_text}\n"
-            f"writeback_anchor: {anchor}\n"
-            f"delivery: {delivery_hint}\n"
-            f"suggested_block_id: {block_id}\n\n"
-            + (
-                "selected_skill_guidance:\n"
-                f"{selected_skill_guidance}\n\n"
-                "Honor every selected skill contract. If exactly one skill is selected, "
-                "do not mix in other scenario templates or plain-text explanations.\n\n"
-                if selected_skill_guidance
-                else ""
+        skill_guidance_full = self._truncate_prompt_text(selected_skill_guidance, max_chars=1600)
+        skill_guidance_compact = self._truncate_prompt_text(selected_skill_guidance, max_chars=700)
+        doc_excerpt_full = self._truncate_prompt_text(doc_excerpt, max_chars=6000)
+        doc_excerpt_compact = self._truncate_prompt_text(doc_excerpt, max_chars=2200)
+        user_query_full = self._truncate_prompt_text(user_query, max_chars=2200)
+        user_query_compact = self._truncate_prompt_text(user_query, max_chars=900)
+
+        attempts: list[tuple[str, str]] = []
+        attempts.append(
+            (
+                "plan_fast_path",
+                (
+                    f"session_id: {session_id}\n"
+                    f"document_name: {document_name or ''}\n"
+                    f"host_app: {host}\n"
+                    f"capabilities: {caps_text}\n"
+                    f"writeback_anchor: {anchor}\n"
+                    f"delivery: {delivery_hint}\n"
+                    f"suggested_block_id: {block_id}\n\n"
+                    + (
+                        "selected_skill_guidance:\n"
+                        f"{skill_guidance_full}\n\n"
+                        "Honor every selected skill contract. If exactly one skill is selected, "
+                        "do not mix in other scenario templates or plain-text explanations.\n\n"
+                        if skill_guidance_full
+                        else ""
+                    )
+                    + (f"Document excerpt:\n{doc_excerpt_full}\n\n" if doc_excerpt_full else "")
+                    + f"User request:\n{user_query_full}\n"
+                ),
             )
-            + f"User request:\n{user_query}\n"
+        )
+        attempts.append(
+            (
+                "plan_fast_path_compact",
+                (
+                    f"host_app: {host}\n"
+                    f"writeback_anchor: {anchor}\n"
+                    f"delivery: {delivery_hint}\n"
+                    f"suggested_block_id: {block_id}\n"
+                    "Goal: output a minimal valid ah32.plan.v1 JSON that writes one idempotent delivery block.\n"
+                    "Prefer a single upsert_block with plain text paragraphs. Avoid extra actions unless required.\n\n"
+                    + (
+                        "selected_skill_guidance_compact:\n"
+                        f"{skill_guidance_compact}\n\n"
+                        if skill_guidance_compact
+                        else ""
+                    )
+                    + (f"Document excerpt:\n{doc_excerpt_compact}\n\n" if doc_excerpt_compact else "")
+                    + f"User request:\n{user_query_compact}\n"
+                ),
+            )
         )
 
-        t0 = time.perf_counter()
-        try:
-            resp = await llm.ainvoke([("system", system), ("system", context), ("user", user)])
-        except asyncio.CancelledError:
-            logger.info("[writeback] plan generation cancelled")
-            raise
-        self._accumulate_token_usage(resp)
-        ms = int((time.perf_counter() - t0) * 1000)
-        try:
-            self._turn_llm_total_ms = int(getattr(self, "_turn_llm_total_ms", 0) or 0) + ms
-            if not getattr(self, "_turn_first_llm_ms", None):
-                self._turn_first_llm_ms = ms
-            tsvc = get_telemetry()
-            if tsvc:
-                tsvc.emit(
-                    "chat.llm_call",
-                    {"iteration": 1, "llm_ms": ms, "kind": "plan_fast_path"},
-                    ctx=getattr(self, "_turn_run_context", None),
-                )
-        except Exception as e:
-            logger.debug(f"[telemetry] emit chat.llm_call (plan_fast_path) failed: {e}", exc_info=True)
+        last_error = "empty_plan_payload"
+        last_error_type = "missing_plan"
+        last_raw = ""
 
-        raw = getattr(resp, "content", "") or str(resp)
-        plan, _err = self._extract_plan_from_text(raw, host)
-        if not plan:
+        for attempt_index, (kind, user) in enumerate(attempts, start=1):
+            prompt_chars = len(system) + len(user)
+            logger.info(
+                "[writeback] %s attempt=%s host=%s session_id=%s prompt_chars=%s",
+                kind,
+                attempt_index,
+                host,
+                session_id,
+                prompt_chars,
+            )
+            t0 = time.perf_counter()
+            try:
+                resp = await self._invoke_writeback_plan_llm(
+                    llm,
+                    [("system", system), ("user", user)],
+                    kind=kind,
+                )
+            except asyncio.CancelledError:
+                logger.info("[writeback] plan generation cancelled")
+                raise
+            except Exception as e:
+                last_error = str(e or "").strip() or e.__class__.__name__
+                last_error_type = "llm_timeout" if isinstance(e, asyncio.TimeoutError) else "llm_error"
+                logger.warning(
+                    "[writeback] %s attempt=%s failed: %s",
+                    kind,
+                    attempt_index,
+                    last_error,
+                    exc_info=True,
+                )
+                if attempt_index == 1:
+                    break
+                continue
+
+            self._accumulate_token_usage(resp)
+            ms = int((time.perf_counter() - t0) * 1000)
+            try:
+                self._turn_llm_total_ms = int(getattr(self, "_turn_llm_total_ms", 0) or 0) + ms
+                if not getattr(self, "_turn_first_llm_ms", None):
+                    self._turn_first_llm_ms = ms
+                tsvc = get_telemetry()
+                if tsvc:
+                    tsvc.emit(
+                        "chat.llm_call",
+                        {
+                            "iteration": attempt_index,
+                            "llm_ms": ms,
+                            "kind": kind,
+                            "model": plan_model,
+                            "fallback_to_chat_llm": bool(fallback_used),
+                        },
+                        ctx=getattr(self, "_turn_run_context", None),
+                    )
+            except Exception as e:
+                logger.debug(f"[telemetry] emit chat.llm_call ({kind}) failed: {e}", exc_info=True)
+
+            raw = getattr(resp, "content", "") or str(resp)
+            last_raw = raw
+            plan, err = self._extract_plan_from_text(raw, host)
+            if plan:
+                plan = self._apply_writeback_plan_overrides(plan, block_id=block_id, anchor=anchor)
+                return plan
+
+            last_error = err or "invalid_plan"
+            last_error_type = "invalid_plan"
+            logger.warning(
+                "[writeback] %s attempt=%s returned invalid plan: %s (raw_len=%s)",
+                kind,
+                attempt_index,
+                last_error,
+                len(raw or ""),
+            )
+            if attempt_index == 1:
+                continue
+            break
+
+        if last_error_type in ("llm_timeout", "llm_error") and not str(last_raw or "").strip():
+            logger.warning(
+                "[writeback] skip repair fallback after %s because no model output was returned",
+                last_error_type,
+            )
             return None
 
-        plan = self._apply_writeback_plan_overrides(plan, block_id=block_id, anchor=anchor)
-        return plan
+        try:
+            self._turn_writeback_repair_attempted = True
+        except Exception:
+            pass
+
+        try:
+            repaired = await self._auto_repair_missing_writeback_plan(
+                user_query=user_query,
+                rag_context=context or "",
+                session_id=session_id,
+                anchor=anchor,
+                delivery=delivery,
+                original_plan=None,
+                original_plan_text=last_raw,
+                error_type=last_error_type,
+                error_message=last_error,
+            )
+            if repaired:
+                return self._apply_writeback_plan_overrides(repaired, block_id=block_id, anchor=anchor)
+        except asyncio.CancelledError:
+            logger.info("[writeback] plan repair fallback cancelled")
+            raise
+        except Exception as e:
+            logger.error("[writeback] internal repair fallback failed: %s", e, exc_info=True)
+
+        return None
 
 
     def _create_react_prompt(self) -> str:

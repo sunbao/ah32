@@ -2935,6 +2935,160 @@ const STORIES: ChatBenchStory[] = [
   },
 
   {
+    id: storyId('bidding-helper', 'wps', 'policy_tender_live_v1'),
+    suiteId: 'bidding-helper',
+    host: 'wps',
+    name: '政策深测：原始招标文件检测（Writer）',
+    description: '使用带问题的原始招标文件节选，真实测试“读取材料 -> 识别问题 -> 输出 Plan JSON -> 写回”链路。',
+    setupActions: [{ type: 'ensure_bench_document', title: 'Bench-招投标-真实招标材料' }, { type: 'set_cursor', pos: 'start' }],
+    tags: ['policy-195', 'tender', 'live-fixture'],
+    turns: [
+      {
+        id: 't1_tender_detection_live',
+        name: '招标文件检测报告块（真实材料）',
+        artifactId: 'bench_policy_tender_detection_live',
+        forceSkillId: 'bidding-helper',
+        actionsBeforeSend: [
+          { type: 'clear_document' },
+          { type: 'set_cursor', pos: 'start' },
+          {
+            type: 'insert_text',
+            text:
+              '原始材料：某市数字招采平台建设项目招标文件节选\n' +
+              '一、项目概况\n' +
+              '项目拟建设统一招投标业务平台，要求 30 天内完成上线试运行。\n\n' +
+              '二、资格条件\n' +
+              '1. 投标人注册资本不低于人民币 5000 万元。\n' +
+              '2. 投标人必须在本市设有全资子公司并连续经营 3 年以上。\n' +
+              '3. 近三年须在本市完成同类项目不少于 5 个。\n\n' +
+              '三、技术要求\n' +
+              '核心服务器推荐使用 XX 品牌，不接受其他品牌。\n' +
+              '投标人需提供原厂驻场工程师 2 名。\n\n' +
+              '四、评标标准\n' +
+              '商务部分由评标专家根据综合印象进行打分。\n' +
+              '技术部分重点考虑“先进性、稳定性、服务能力”，不再细分量化档位。\n\n' +
+              '五、合同条款\n' +
+              '合同签订后支付 70%，系统初验前支付 25%，验收通过后支付 30%。\n' +
+              '如遇需求变化，招标人可单方调整实施范围，投标人应无条件配合。\n',
+          },
+        ],
+        asserts: [
+          { type: 'skills_selected_includes', skillId: 'bidding-helper', points: 2 },
+          { type: 'writer_table_exists', minRows: 4, minCols: 4 },
+          { type: 'writer_text_contains', text: '招标文件检测报告' },
+          { type: 'writer_text_contains', text: '排斥限制竞争' },
+          { type: 'writer_text_contains', text: '修改建议' },
+        ],
+        query:
+          '请基于上面的“原始材料”生成一个《招标文件检测报告》写回文末，要求只做块级交付，不改原文正文。\n' +
+          '交付块必须包含：1) 执行摘要；2) 问题清单表（问题类别/条款定位/判断依据/修改建议）；3) P0/P1/P2 分级；4) 先体检再发布的复核建议。\n' +
+          '重点识别排斥限制竞争、指定品牌、评分标准不量化、合同条款逻辑冲突等问题。\n' +
+          '只输出可执行 Plan JSON（schema_version=\"ah32.plan.v1\", host_app=\"wps\"），不要输出任何额外文字。',
+      },
+    ],
+  },
+
+  {
+    id: storyId('bidding-helper', 'wps', 'policy_bid_live_v1'),
+    suiteId: 'bidding-helper',
+    host: 'wps',
+    name: '政策深测：原始投标响应自查（Writer）',
+    description: '使用原始招标要求与投标草稿，真实测试投标合规自查与低价风险提示。',
+    setupActions: [{ type: 'ensure_bench_document', title: 'Bench-招投标-真实投标材料' }, { type: 'set_cursor', pos: 'start' }],
+    tags: ['policy-195', 'bid', 'live-fixture'],
+    turns: [
+      {
+        id: 't1_bid_compliance_live',
+        name: '投标响应自查矩阵（真实材料）',
+        artifactId: 'bench_policy_bid_compliance_live',
+        forceSkillId: 'bidding-helper',
+        actionsBeforeSend: [
+          { type: 'clear_document' },
+          { type: 'set_cursor', pos: 'start' },
+          {
+            type: 'insert_text',
+            text:
+              '原始材料：招标要求与投标草稿对照\n' +
+              '【招标要求】\n' +
+              '1. 提供 ISO9001 质量体系证书。\n' +
+              '2. 提供近三年同类项目案例不少于 2 个。\n' +
+              '3. 需承诺 30 天内上线，并提供关键路径计划。\n' +
+              '4. 需提供 7*24 运维支持，2 小时响应。\n' +
+              '5. 报价不得低于成本，并附成本测算依据。\n\n' +
+              '【投标草稿】\n' +
+              '1. 已列出 ISO9001 证书，但未写有效期。\n' +
+              '2. 只列出 1 个案例，另 1 个案例尚未整理合同首页。\n' +
+              '3. 技术方案承诺 28 天上线，但未附关键路径和备援人员安排。\n' +
+              '4. 服务方案写明工作日支持，未明确夜间和节假日机制。\n' +
+              '5. 报价总额 198 万，成本测算表显示直接成本约 192 万，尚未计入驻场、差旅和应急成本。\n',
+          },
+        ],
+        asserts: [
+          { type: 'skills_selected_includes', skillId: 'bidding-helper', points: 2 },
+          { type: 'writer_table_exists', minRows: 5, minCols: 5 },
+          { type: 'writer_text_contains', text: '投标响应自查矩阵' },
+          { type: 'writer_text_contains', text: '低价风险' },
+          { type: 'writer_text_contains', text: '修改动作' },
+        ],
+        query:
+          '请基于上面的“原始材料”生成一个《投标响应自查矩阵》写回文末，不要改动原始材料正文。\n' +
+          '交付块必须包含：1) 执行摘要；2) 对照表（招标要求/当前响应/证据定位/风险提示/修改动作）；3) 低价风险提示；4) 自检清单。\n' +
+          '要求明确指出案例不足、证据缺口、7*24 服务响应不足、成本边界过窄等问题。\n' +
+          '只输出可执行 Plan JSON（schema_version=\"ah32.plan.v1\", host_app=\"wps\"），不要输出任何额外文字。',
+      },
+    ],
+  },
+
+  {
+    id: storyId('bidding-helper', 'wps', 'policy_complaint_live_v1'),
+    suiteId: 'bidding-helper',
+    host: 'wps',
+    name: '政策深测：原始投诉材料初审（Writer）',
+    description: '使用投诉书与评审背景节选，真实测试投诉处理初审意见生成。',
+    setupActions: [{ type: 'ensure_bench_document', title: 'Bench-招投标-真实投诉材料' }, { type: 'set_cursor', pos: 'start' }],
+    tags: ['policy-195', 'supervision', 'live-fixture'],
+    turns: [
+      {
+        id: 't1_complaint_handling_live',
+        name: '投诉处理初审意见（真实材料）',
+        artifactId: 'bench_policy_complaint_live',
+        forceSkillId: 'bidding-helper',
+        actionsBeforeSend: [
+          { type: 'clear_document' },
+          { type: 'set_cursor', pos: 'start' },
+          {
+            type: 'insert_text',
+            text:
+              '原始材料：投诉书与评审背景节选\n' +
+              '【投诉书】\n' +
+              '投诉人认为：\n' +
+              '1. 招标文件对演示评分表述不清，导致主观判断空间过大；\n' +
+              '2. 开标现场唱标记录与后续评标报告中的报价不一致；\n' +
+              '3. 专家对同一项商务响应打分差异过大，未说明理由。\n\n' +
+              '【评审背景】\n' +
+              '1. 招标文件中演示环节仅写“根据系统完成度与易用性酌情评分”；\n' +
+              '2. 开标记录表显示 A 公司报价 218 万，评标报告首页写为 228 万；\n' +
+              '3. 某商务评分项 3 位专家分别打 9 分、6 分、4 分；\n' +
+              '4. 当前仅收集到评标报告首页和唱标记录摘录，尚未调取完整评审痕迹与录像。\n',
+          },
+        ],
+        asserts: [
+          { type: 'skills_selected_includes', skillId: 'bidding-helper', points: 2 },
+          { type: 'writer_text_contains', text: '投诉处理初审意见' },
+          { type: 'writer_text_contains', text: '初步审查意见' },
+          { type: 'writer_text_contains', text: '处理建议' },
+          { type: 'writer_text_contains', text: '恶意投诉筛查' },
+        ],
+        query:
+          '请基于上面的“原始材料”生成一个《投诉处理初审意见》写回文末，不要改原始材料正文。\n' +
+          '交付块必须包含：1) 投诉事项摘要；2) 政策法规依据；3) 初步审查意见；4) 处理建议；5) 恶意投诉筛查；6) 需要补调的证据清单。\n' +
+          '重点识别评分标准量化不足、报价记录不一致、专家打分偏离异常、证据不完整等问题。\n' +
+          '只输出可执行 Plan JSON（schema_version=\"ah32.plan.v1\", host_app=\"wps\"），不要输出任何额外文字。',
+      },
+    ],
+  },
+
+  {
     id: storyId('doc-formatter', 'wps', 'doc_formatter_v2'),
     suiteId: 'doc-formatter',
     host: 'wps',

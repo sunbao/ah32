@@ -21,7 +21,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 import sys
 
 from ah32.config import settings
-from ah32.services.models import load_llm, load_llm_custom
+from ah32.services.models import load_llm, load_llm_custom, load_plan_llm
 from ah32.services.js_sanitize import sanitize_wps_js, looks_like_wps_js_macro
 from ah32.services.plan_prompts import get_plan_generation_prompt, get_plan_repair_prompt
 from ah32.core.metrics_recorder import metrics_recorder
@@ -55,21 +55,7 @@ router = APIRouter(prefix="/agentic", tags=["agentic"])
 
 def _load_plan_llm():
     """Prefer a faster model for deterministic Plan generate/repair endpoints."""
-    try:
-        plan_model = (os.getenv("AH32_PLAN_MODEL") or "").strip()
-        if not plan_model:
-            base_model = str(getattr(settings, "llm_model", "") or os.getenv("AH32_LLM_MODEL") or "").strip()
-            plan_model = (
-                "deepseek-chat"
-                if "deepseek-reasoner" in base_model.lower()
-                else (base_model or "deepseek-chat")
-            )
-
-        plan_temp_raw = (os.getenv("AH32_PLAN_TEMPERATURE") or "").strip()
-        plan_temp = float(plan_temp_raw) if plan_temp_raw else 0.1
-        return load_llm_custom(settings, model=plan_model, temperature=plan_temp), plan_model, plan_temp
-    except ValueError:
-        raise
+    return load_plan_llm(settings)
 
 
 def _sanitize_frontend_context_for_failure_store(frontend_context: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:

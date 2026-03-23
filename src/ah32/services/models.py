@@ -281,5 +281,23 @@ def load_llm_custom(settings: Ah32Settings, model: str, temperature: float) -> C
     return _llm_manager.get_llm_custom(settings=settings, model=model, temperature=temperature)
 
 
+def resolve_plan_llm_config(settings: Ah32Settings) -> tuple[str, float]:
+    """Resolve the model/temperature used by deterministic Plan generation paths."""
+    plan_model = (os.getenv("AH32_PLAN_MODEL") or "").strip()
+    if not plan_model:
+        base_model = str(getattr(settings, "llm_model", "") or os.getenv("AH32_LLM_MODEL") or "").strip()
+        plan_model = "deepseek-chat" if "deepseek-reasoner" in base_model.lower() else (base_model or "deepseek-chat")
+
+    plan_temp_raw = (os.getenv("AH32_PLAN_TEMPERATURE") or "").strip()
+    plan_temp = float(plan_temp_raw) if plan_temp_raw else 0.1
+    return plan_model, plan_temp
+
+
+def load_plan_llm(settings: Ah32Settings) -> tuple[ChatOpenAI, str, float]:
+    """Load the dedicated LLM used by Plan-generate / Plan-repair paths."""
+    plan_model, plan_temp = resolve_plan_llm_config(settings)
+    return load_llm_custom(settings=settings, model=plan_model, temperature=plan_temp), plan_model, plan_temp
+
+
 def get_llm_manager() -> LLMManager:
     return _llm_manager

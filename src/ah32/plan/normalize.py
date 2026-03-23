@@ -1742,6 +1742,59 @@ def _normalize_action(action: Any, *, fallback_id: str, host: HostApp) -> dict[s
     return {"id": action_id, "title": title, "op": op}
 
 
+def _repair_missing_writer_table_cell_coords(actions: list[dict[str, Any]]) -> None:
+    """Best-effort repair for Writer plans that omit row/col on set_table_cell_text."""
+
+    def _walk(nodes: list[dict[str, Any]]) -> None:
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+
+            nested = node.get("actions")
+            if not isinstance(nested, list):
+                continue
+
+            table_cols = 0
+            next_row = 1
+            next_col = 1
+
+            for child in nested:
+                if not isinstance(child, dict):
+                    continue
+
+                if str(child.get("op") or "").strip() == "insert_table":
+                    try:
+                        cols = int(child.get("cols") or 0)
+                    except Exception:
+                        cols = 0
+                    if cols > 0:
+                        table_cols = cols
+                        next_row = 1
+                        next_col = 1
+
+                if str(child.get("op") or "").strip() != "set_table_cell_text":
+                    continue
+
+                has_row = child.get("row") is not None
+                has_col = child.get("col") is not None
+                if not has_row:
+                    child["row"] = next_row
+                if not has_col:
+                    child["col"] = next_col
+
+                if table_cols <= 0:
+                    table_cols = 4
+
+                next_col += 1
+                if next_col > table_cols:
+                    next_col = 1
+                    next_row += 1
+
+            _walk([c for c in nested if isinstance(c, dict)])
+
+    _walk([a for a in actions if isinstance(a, dict)])
+
+
 def normalize_plan_payload(plan: Any, *, host_app: HostApp | str | None = None) -> dict[str, Any]:
     """
     Best-effort normalization for LLM-produced plan JSON.
@@ -1778,6 +1831,9 @@ def normalize_plan_payload(plan: Any, *, host_app: HostApp | str | None = None) 
         norm = _normalize_action(a, fallback_id=f"step_{i+1}", host=host)
         if norm is not None:
             actions.append(norm)
+
+    if host == "wps":
+        _repair_missing_writer_table_cell_coords(actions)
 
     return {
         "schema_version": schema_version,

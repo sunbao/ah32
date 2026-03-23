@@ -87,5 +87,13 @@
   },
   "entry": {
     "system_prompt": "SYSTEM.docx"
+  },
+  "delivery": {
+    "default_writeback": "direct"
+  },
+  "capabilities": {
+    "rag_missing_hint": true,
+    "active_doc_text": true,
+    "active_doc_max_chars": 80000
   }
 }
