@@ -147,6 +147,25 @@
   - `findings.md` (updated)
   - `progress.md` (updated)
 
+### Phase 11: 招投标政策 195 覆盖收紧
+- **Status:** in_progress
+- Actions taken:
+  - 盘点 `bidding-helper` 全部政策相关 story，确认 1-20 条已经各有对应入口，不是从零开始补。
+  - 在 `ah32-ui-next/src/dev/macro-bench-chat-suites.ts` 收紧多处交付文本与断言，使其更贴近政策原文：
+    - 智慧问答补 `多模态交互说明`
+    - 辅助定标补 `数字人答辩`
+    - 合同签约补 `在线签订并同步电子存档`
+    - 专家管理补 `一网管理`
+    - 围串标补 `工程量清单异常`
+    - 协同监管补 `行刑纪贯通` / `一网共治`
+  - 新增 `bidding_policy_195_coverage.md`，把政策条款、story、宿主、turn、状态对应起来，方便后续会话直接续跑。
+- Files created/modified:
+  - `ah32-ui-next/src/dev/macro-bench-chat-suites.ts` (modified, policy-195 wording tightened)
+  - `bidding_policy_195_coverage.md` (created)
+  - `task_plan.md` (updated)
+  - `findings.md` (updated)
+  - `progress.md` (updated)
+
 ## Test Results
 | Test | Input | Expected | Actual | Status |
 |------|-------|----------|--------|--------|

@@ -211,6 +211,7 @@ const lastError = ref<string>('')
 const latestDetailStage = ref<any>(null)
 const autoBenchDebugText = ref<string>('')
 const benchStatusHost = ref<MacroBenchHost | null>(null)
+const autoStoryIds = ref<string[]>([])
 let autoBenchPollTimer: number | null = null
 let benchUnmounting = false
 
@@ -684,6 +685,14 @@ const readDevBenchRequestFromDocument = (): DevBenchAutoConfig | null => {
       preset: value.preset ? value.preset : null,
       action: value.action === 'resume' ? 'resume' : 'start',
       onceKey: String(value.onceKey || '').trim(),
+      storyIds: Array.isArray(value.storyIds)
+        ? value.storyIds.map((x: any) => String(x || '').trim()).filter((x: string) => !!x)
+        : (typeof value.storyIds === 'string'
+          ? String(value.storyIds || '')
+              .split(',')
+              .map((x: string) => x.trim())
+              .filter((x: string) => !!x)
+          : []),
     }
   } catch (e) {
     ;(globalThis as any).__ah32_reportError?.('ah32-ui-next/src/components/dev/MacroBenchWidget.vue', e)
@@ -719,8 +728,11 @@ const triggerAutoBench = (cfg: DevBenchAutoConfig, source: 'url' | 'doc_var') =>
   if (cfg.runMode && isValidRunMode(cfg.runMode)) runMode.value = cfg.runMode
   if (cfg.suiteId && isValidSuiteId(cfg.suiteId)) suiteId.value = cfg.suiteId
   if (cfg.preset && isValidPreset(cfg.preset)) preset.value = cfg.preset
+  autoStoryIds.value = Array.isArray(cfg.storyIds) ? cfg.storyIds.slice() : []
   persistWidgetState()
-  autoBenchDebugText.value = `auto cfg: enabled=1 action=${cfg.action} suite=${String(cfg.suiteId || '') || '-'} source=${source}`
+  autoBenchDebugText.value =
+    `auto cfg: enabled=1 action=${cfg.action} suite=${String(cfg.suiteId || '') || '-'} ` +
+    `stories=${autoStoryIds.value.length || 0} source=${source}`
   syncDevBenchStatus('mounted', {
     autoEnabled: true,
     autoAction: cfg.action,
@@ -780,6 +792,8 @@ const start = async () => {
   try {
     if (runMode.value === 'chat') {
       const ctrl = new AbortController()
+      const storyIdsForRun = autoStoryIds.value.slice()
+      autoStoryIds.value = []
       macroAbort.value = ctrl
       const out = await runChatBenchCurrentHost(chatStore as any, {
         onProgress: (p) => {
@@ -794,6 +808,7 @@ const start = async () => {
         signal: ctrl.signal,
         suiteId: suiteId.value,
         preset: preset.value,
+        storyIds: storyIdsForRun,
         maxHours: maxHours.value,
         maxTurns: maxTurns.value,
         maxFailures: maxFailures.value,
@@ -890,6 +905,8 @@ const resume = async () => {
 
   try {
     const ctrl = new AbortController()
+    const storyIdsForRun = autoStoryIds.value.slice()
+    autoStoryIds.value = []
     macroAbort.value = ctrl
       const out = await runChatBenchCurrentHost(chatStore as any, {
         onProgress: (p) => {
@@ -904,6 +921,7 @@ const resume = async () => {
       signal: ctrl.signal,
       suiteId: suiteId.value,
       preset: preset.value,
+      storyIds: storyIdsForRun,
       resumeFrom: prev,
       maxHours: maxHours.value,
       maxTurns: maxTurns.value,

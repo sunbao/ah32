@@ -10,6 +10,7 @@ export type DevBenchAutoConfig = {
   preset: MacroBenchPreset | null
   action: DevBenchAutoAction
   onceKey: string
+  storyIds: string[]
 }
 
 const truthy = (v: string) => ['1', 'true', 'yes', 'on'].includes(v)
@@ -81,6 +82,7 @@ export const readDevBenchAutoConfig = (): DevBenchAutoConfig => {
     const suiteIdRaw = String(params.get('ah32_dev_bench_suite') || '').trim()
     const presetRaw = String(params.get('ah32_dev_bench_preset') || '').trim().toLowerCase()
     const actionRaw = String(params.get('ah32_dev_bench_action') || '').trim().toLowerCase()
+    const storyIdsRaw = String(params.get('ah32_dev_bench_story_ids') || '').trim()
 
     const runMode: DevBenchRunMode | null =
       runModeRaw === 'chat' || runModeRaw === 'macro' ? (runModeRaw as DevBenchRunMode) : null
@@ -91,6 +93,12 @@ export const readDevBenchAutoConfig = (): DevBenchAutoConfig => {
       actionRaw === 'resume' || actionRaw === 'start'
         ? (actionRaw as DevBenchAutoAction)
         : (enabled ? 'start' : 'none')
+    const storyIds = storyIdsRaw
+      ? storyIdsRaw
+          .split(',')
+          .map(x => String(x || '').trim())
+          .filter(x => !!x)
+      : []
 
     return {
       enabled,
@@ -99,6 +107,7 @@ export const readDevBenchAutoConfig = (): DevBenchAutoConfig => {
       preset,
       action,
       onceKey: onceRaw ? `ah32_dev_bench_once:${onceRaw}` : '',
+      storyIds,
     }
   } catch {
     return {
@@ -108,6 +117,7 @@ export const readDevBenchAutoConfig = (): DevBenchAutoConfig => {
       preset: null,
       action: 'none',
       onceKey: '',
+      storyIds: [],
     }
   }
 }

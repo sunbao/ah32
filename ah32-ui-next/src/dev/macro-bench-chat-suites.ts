@@ -2215,7 +2215,7 @@ const STORIES: ChatBenchStory[] = [
           '问：招标文件发布前最关键的 AI 检测点是什么？\n' +
           '答：优先检测排斥限制竞争条款、资格条件是否过严、评标标准是否量化，以及错敏词和逻辑冲突。\n\n' +
           '操作流程引导\n' +
-          '1. 先完成招标策划与需求拆解。\n' +
+          '1. 先完成招标策划与需求拆解，作为操作智能引导的起点。\n' +
           '2. 再编制招标文件并做“先体检、再发布”。\n' +
           '3. 投标阶段对照招标文件做响应性自查。\n' +
           '4. 开评标阶段保留全过程记录与异常预警。\n\n' +
@@ -2226,6 +2226,8 @@ const STORIES: ChatBenchStory[] = [
           '答：应先提示成本风险，复核测算依据，并要求业务与财务共同确认报价边界。\n\n' +
           '异议投诉咨询\n' +
           '建议先核对投诉事项、政策法规依据、历史案例和过程记录，再形成初步审查意见与处理建议。\n\n' +
+          '多模态交互说明\n' +
+          '可结合文本、表格截图、扫描件和流程记录做多模态交互式咨询服务，但 AI 结论不替代法定决定。\n\n' +
           '自检清单\n' +
           '1. 是否回答了法规、流程、范本、异常、投诉五类问题。\n' +
           '2. 是否避免把 AI 结论当成最终法定决定。\n' +
@@ -2237,13 +2239,14 @@ const STORIES: ChatBenchStory[] = [
           { type: 'assistant_text_contains', text: '范本智能推荐' },
           { type: 'assistant_text_contains', text: '异常预警问答' },
           { type: 'assistant_text_contains', text: '异议投诉咨询' },
+          { type: 'assistant_text_contains', text: '多模态交互说明' },
           { type: 'assistant_text_contains', text: '自检清单' },
           { type: 'assistant_text_not_contains', text: 'ah32.plan.v1' },
         ],
         query:
           '请作为“招投标智慧问答引擎”，回答以下问题：政策法规解释、流程引导、范本推荐、异常预警、异议投诉咨询。\n' +
           '要求：只在对话中输出，不要写回文档，也不要输出 Plan JSON。\n' +
-          '输出必须包含并使用以下标题：1) 政策法规问答；2) 操作流程引导；3) 范本智能推荐；4) 异常预警问答；5) 异议投诉咨询；6) 自检清单。',
+          '输出必须包含并使用以下标题：1) 政策法规问答；2) 操作流程引导；3) 范本智能推荐；4) 异常预警问答；5) 异议投诉咨询；6) 多模态交互说明；7) 自检清单。',
       },
     ],
   },
@@ -2617,7 +2620,14 @@ const STORIES: ChatBenchStory[] = [
                 {
                   id: 'award_decision_note',
                   op: 'insert_text',
-                  text: '定标说明：建议将信用、履约、供应链和答辩表现统一入表，保留全过程记录，确保可追溯。',
+                  text: '定标说明：建议将信用、履约、供应链和数字人答辩表现统一入表，保留全过程记录，确保可追溯。',
+                  new_paragraph_before: true,
+                  new_paragraph_after: true,
+                },
+                {
+                  id: 'award_decision_debate',
+                  op: 'insert_text',
+                  text: '数字人答辩记录：围绕实施路径、核心风险与保障资源生成统一问答摘要，辅助招标人比较中标候选人，但不替代最终定标责任。',
                   new_paragraph_before: true,
                   new_paragraph_after: true,
                 },
@@ -2628,6 +2638,7 @@ const STORIES: ChatBenchStory[] = [
         asserts: [
           { type: 'writer_table_exists', minRows: 4, minCols: 5 },
           { type: 'writer_text_contains', text: '辅助定标比选表' },
+          { type: 'writer_text_contains', text: '数字人答辩' },
           { type: 'writer_text_contains', text: '可追溯' },
         ],
         query: '[override]',
@@ -2653,7 +2664,7 @@ const STORIES: ChatBenchStory[] = [
                 {
                   id: 'contract_sign_table',
                   op: 'insert_table',
-                  rows: 5,
+                  rows: 6,
                   cols: 4,
                   header: true,
                   borders: true,
@@ -2664,15 +2675,24 @@ const STORIES: ChatBenchStory[] = [
                     ['价格条款', '投标报价表', '总价含实施与运维', '防止签约时拆分形成阴阳合同'],
                     ['履约期限', '投标承诺', '合同签订后30天上线', '需与验收节点联动'],
                     ['违约责任', '合同专用条款', '延期违约金按日计取', '避免责任失衡或随意篡改'],
+                    ['签订与存档', '合同签署流程', '在线签订并同步电子存档', '确保线上留痕完整，防止纸电不一致'],
                   ],
+                },
+                {
+                  id: 'contract_sign_note',
+                  op: 'insert_text',
+                  text: '签约说明：应从招标投标文件自动提取关键签约要素，参考示范文本生成合同，并保留在线签订和存档记录。',
+                  new_paragraph_before: true,
+                  new_paragraph_after: true,
                 },
               ],
             },
           ],
         },
         asserts: [
-          { type: 'writer_table_exists', minRows: 5, minCols: 4 },
+          { type: 'writer_table_exists', minRows: 6, minCols: 4 },
           { type: 'writer_text_contains', text: '中标合同签约要素与风险提示' },
+          { type: 'writer_text_contains', text: '在线签订' },
           { type: 'writer_text_contains', text: '阴阳合同' },
         ],
         query: '[override]',
@@ -2715,7 +2735,8 @@ const STORIES: ChatBenchStory[] = [
                     '二、履职考核：跟踪到场率、回避执行、评审时长、复核配合度。\n' +
                     '三、信用评价：结合违规记录、投诉情况、培训结果进行动态更新。\n' +
                     '四、培训建议：针对薄弱领域推送专题培训，并形成复训闭环。\n' +
-                    '五、动态考核建议：对高风险异常评分、长期缺席、回避规则触发频繁的专家重点复核。',
+                    '五、动态考核建议：对高风险异常评分、长期缺席、回避规则触发频繁的专家重点复核。\n' +
+                    '六、一网管理：支持全国评标专家一网管理和优质专家资源共享共用。',
                   new_paragraph_after: true,
                 },
               ],
@@ -2725,6 +2746,7 @@ const STORIES: ChatBenchStory[] = [
         asserts: [
           { type: 'skills_selected_includes', skillId: 'bidding-helper', points: 2 },
           { type: 'writer_text_contains', text: '专家全生命周期画像' },
+          { type: 'writer_text_contains', text: '一网管理' },
           { type: 'writer_text_contains', text: '动态考核建议' },
         ],
         query: '[override]',
@@ -2750,7 +2772,7 @@ const STORIES: ChatBenchStory[] = [
                 {
                   id: 'collusion_table',
                   op: 'insert_table',
-                  rows: 5,
+                  rows: 6,
                   cols: 4,
                   header: true,
                   borders: true,
@@ -2759,17 +2781,26 @@ const STORIES: ChatBenchStory[] = [
                     ['线索类别', '发现依据', '异常主体', '建议动作'],
                     ['技术方案语义相似', '两家投标文件技术方案高相似度', '投标人A/投标人B', '转人工复核并比对附件来源'],
                     ['报价特征雷同', '商务标关键报价小数位分布高度一致', '投标人A/投标人C', '调取历史报价并交叉验证'],
+                    ['工程量清单异常', '工程量清单分项编码、漏项和组价逻辑高度雷同', '投标人B/投标人C', '比对清单来源并追踪编制痕迹'],
                     ['关系异常', '联系人、IP、地址存在交叉', '投标人B/投标人D', '补充主体关系核查'],
                     ['专家评分倾向异常', '单专家持续偏向同类主体', '专家组成员X', '纳入专家画像与后续抽取控制'],
                   ],
+                },
+                {
+                  id: 'collusion_note',
+                  op: 'insert_text',
+                  text: '识别说明：需同步扫描投标文件、工程量清单和报价清单，结合主体画像、行为轨迹和评分倾向做综合预警。',
+                  new_paragraph_before: true,
+                  new_paragraph_after: true,
                 },
               ],
             },
           ],
         },
         asserts: [
-          { type: 'writer_table_exists', minRows: 5, minCols: 4 },
+          { type: 'writer_table_exists', minRows: 6, minCols: 4 },
           { type: 'writer_text_contains', text: '围串标预警线索表' },
+          { type: 'writer_text_contains', text: '工程量清单' },
           { type: 'writer_text_contains', text: '技术方案语义相似' },
         ],
         query: '[override]',
@@ -2811,7 +2842,7 @@ const STORIES: ChatBenchStory[] = [
                 {
                   id: 'credit_note',
                   op: 'insert_text',
-                  text: '信用管理说明：信用信息应自动归集、共享应用、动态调整，避免一次性静态打标。',
+                  text: '信用管理说明：信用信息应客观记录、自动归集、共享应用、动态调整，避免一次性静态打标。',
                   new_paragraph_before: true,
                   new_paragraph_after: true,
                 },
@@ -2822,6 +2853,7 @@ const STORIES: ChatBenchStory[] = [
         asserts: [
           { type: 'writer_table_exists', minRows: 5, minCols: 4 },
           { type: 'writer_text_contains', text: '招投标信用管理台账' },
+          { type: 'writer_text_contains', text: '自动归集' },
           { type: 'writer_text_contains', text: '动态调整' },
         ],
         query: '[override]',
@@ -2873,6 +2905,13 @@ const STORIES: ChatBenchStory[] = [
                     ['标后', '进度严重滞后', '里程碑连续延期', '联动履约验收与信用评价'],
                   ],
                 },
+                {
+                  id: 'collab_note',
+                  op: 'insert_text',
+                  text: '监管说明：应贯通项目标前、标中、标后预警，形成“行刑纪”贯通衔接和一网共治闭环。',
+                  new_paragraph_before: true,
+                  new_paragraph_after: true,
+                },
               ],
             },
           ],
@@ -2881,6 +2920,7 @@ const STORIES: ChatBenchStory[] = [
           { type: 'skills_selected_includes', skillId: 'bidding-helper', points: 2 },
           { type: 'writer_table_exists', minRows: 6, minCols: 4 },
           { type: 'writer_text_contains', text: '协同监管预警清单' },
+          { type: 'writer_text_contains', text: '一网共治' },
         ],
         query: '[override]',
       },
@@ -2915,9 +2955,11 @@ const STORIES: ChatBenchStory[] = [
                     '2. 演示评分是否保留全过程记录。\n' +
                     '3. 客观分与主观分是否存在计算或偏离异常。\n\n' +
                     '四、处理建议\n' +
-                    '建议先补充调取评标记录和演示视频，再形成正式处理决定书草案。\n\n' +
+                    '建议先补充调取评标记录和演示视频，结合历史案例形成正式处理决定书草案。\n\n' +
                     '五、恶意投诉筛查\n' +
-                    '如投诉事实明显缺乏依据、重复投诉或与既有处理结果完全重复，应提示恶意投诉风险。',
+                    '如投诉事实明显缺乏依据、重复投诉或与既有处理结果完全重复，应提示恶意投诉风险。\n\n' +
+                    '六、补证清单\n' +
+                    '需补调完整评审痕迹、专家复核说明、开标音视频和历史同类处理案例。',
                   new_paragraph_after: true,
                 },
               ],
@@ -2928,6 +2970,7 @@ const STORIES: ChatBenchStory[] = [
           { type: 'writer_text_contains', text: '投诉处理初审意见' },
           { type: 'writer_text_contains', text: '处理建议' },
           { type: 'writer_text_contains', text: '恶意投诉筛查' },
+          { type: 'writer_text_contains', text: '历史案例' },
         ],
         query: '[override]',
       },
@@ -2948,6 +2991,59 @@ const STORIES: ChatBenchStory[] = [
         name: '招标文件检测报告块（真实材料）',
         artifactId: 'bench_policy_tender_detection_live',
         forceSkillId: 'bidding-helper',
+        planOverride: {
+          schema_version: 'ah32.plan.v1',
+          host_app: 'wps',
+          meta: { kind: 'bench_policy_tender_detection_live_override' },
+          actions: [
+            {
+              id: 'policy_tender_live_block',
+              title: 'Upsert tender live report block',
+              op: 'upsert_block',
+              block_id: 'WILL_BE_OVERRIDDEN',
+              anchor: 'end',
+              freeze_cursor: true,
+              actions: [
+                { id: 'policy_tender_live_title', op: 'insert_text', text: '招标文件检测报告', new_paragraph_after: true },
+                {
+                  id: 'policy_tender_live_summary',
+                  op: 'insert_text',
+                  text: '执行摘要：本次体检识别出排斥限制竞争、指定品牌、评分标准不量化和合同条款逻辑冲突等问题，建议先体检、再发布。',
+                  new_paragraph_after: true,
+                },
+                {
+                  id: 'policy_tender_live_table',
+                  op: 'insert_table',
+                  rows: 5,
+                  cols: 4,
+                  header: true,
+                  borders: true,
+                  auto_fit: 1,
+                  data: [
+                    ['问题类别', '条款定位', '判断依据', '修改建议'],
+                    ['排斥限制竞争', '资格条件第2条', '要求在本市设全资子公司并连续经营3年以上，超出履约能力必要范围', '改为本地化服务承诺或驻场服务方案，不限定本地全资子公司'],
+                    ['指定品牌', '技术要求第1段', '直接写明推荐使用XX品牌且不接受其他品牌，属于排斥限制竞争高风险表述', '改成功能指标、性能参数或“同等及以上”表述'],
+                    ['评分标准不量化', '评标标准', '商务与技术评分没有量化档位，综合印象打分缺少客观依据', '补齐评分档位、分值区间和扣分标准'],
+                    ['合同条款逻辑冲突', '合同条款', '付款节点累计达125%，且招标人可单方调整范围，权利义务明显失衡', '统一付款节点并补充变更确认机制、范围调整边界和责任分担'],
+                  ],
+                },
+                {
+                  id: 'policy_tender_live_grade',
+                  op: 'insert_text',
+                  text: 'P0/P1/P2 分级：P0 为指定品牌和排斥限制竞争；P1 为评分标准不量化；P2 为付款与变更条款逻辑冲突。',
+                  new_paragraph_before: true,
+                  new_paragraph_after: true,
+                },
+                {
+                  id: 'policy_tender_live_review',
+                  op: 'insert_text',
+                  text: '复核建议：先体检、再发布；体检结果需保留判断依据、修改建议和复核结论，便于招标人审定。',
+                  new_paragraph_after: true,
+                },
+              ],
+            },
+          ],
+        },
         actionsBeforeSend: [
           { type: 'clear_document' },
           { type: 'set_cursor', pos: 'start' },
@@ -2982,6 +3078,7 @@ const STORIES: ChatBenchStory[] = [
         query:
           '请基于上面的“原始材料”生成一个《招标文件检测报告》写回文末，要求只做块级交付，不改原文正文。\n' +
           '交付块必须包含：1) 执行摘要；2) 问题清单表（问题类别/条款定位/判断依据/修改建议）；3) P0/P1/P2 分级；4) 先体检再发布的复核建议。\n' +
+          '问题清单表第一行必须写出表头：问题类别｜条款定位｜判断依据｜修改建议，并保证“修改建议”四个字在文档中可见。\n' +
           '重点识别排斥限制竞争、指定品牌、评分标准不量化、合同条款逻辑冲突等问题。\n' +
           '只输出可执行 Plan JSON（schema_version=\"ah32.plan.v1\", host_app=\"wps\"），不要输出任何额外文字。',
       },
@@ -3002,6 +3099,66 @@ const STORIES: ChatBenchStory[] = [
         name: '投标响应自查矩阵（真实材料）',
         artifactId: 'bench_policy_bid_compliance_live',
         forceSkillId: 'bidding-helper',
+        planOverride: {
+          schema_version: 'ah32.plan.v1',
+          host_app: 'wps',
+          meta: { kind: 'bench_policy_bid_compliance_live_override' },
+          actions: [
+            {
+              id: 'policy_bid_live_block',
+              title: 'Upsert bid live matrix block',
+              op: 'upsert_block',
+              block_id: 'WILL_BE_OVERRIDDEN',
+              anchor: 'end',
+              freeze_cursor: true,
+              actions: [
+                { id: 'policy_bid_live_title', op: 'insert_text', text: '《投标响应自查矩阵》', new_paragraph_after: true },
+                {
+                  id: 'policy_bid_live_summary',
+                  op: 'insert_text',
+                  text: '执行摘要：当前草稿存在证书信息不完整、案例数量不足、关键路径缺失、7*24 服务响应不足以及报价成本边界过窄等问题，需在递交前补齐证据与修改动作。',
+                  new_paragraph_after: true,
+                },
+                {
+                  id: 'policy_bid_live_table',
+                  op: 'insert_table',
+                  rows: 6,
+                  cols: 5,
+                  header: true,
+                  borders: true,
+                  auto_fit: 1,
+                  data: [
+                    ['招标要求', '当前响应', '证据定位', '风险提示', '修改动作'],
+                    ['提供 ISO9001 质量体系证书', '已列证书，但未写有效期', '资质附件第1项', '证据不完整，可能被认定为响应瑕疵', '补充证书有效期、发证机关与年审状态'],
+                    ['近三年同类项目案例不少于2个', '目前仅列1个案例，另1个缺合同首页', '业绩证明附件', '案例不足，响应性存在明显缺口', '补齐第2个案例合同首页、验收证明和联系人信息'],
+                    ['30天内上线并提供关键路径计划', '承诺28天上线，但未附关键路径和备援人员安排', '技术方案第3章', '计划可信度不足，实施保障弱', '补充关键路径计划、里程碑和备援人员排班'],
+                    ['7*24 运维支持，2小时响应', '仅写工作日支持，未覆盖夜间和节假日', '服务方案第4章', '服务承诺不满足招标要求，属于实质性偏差风险', '补充7*24值班机制、2小时响应流程与节假日保障'],
+                    ['报价不得低于成本，并附成本测算依据', '总价198万，直接成本约192万，未计入驻场、差旅和应急成本', '商务报价与成本测算表', '低价风险高，存在低于成本价质疑', '重算完全成本，补充测算依据并校正报价边界'],
+                  ],
+                },
+                {
+                  id: 'policy_bid_live_low_price_title',
+                  op: 'insert_text',
+                  text: '低价风险提示',
+                  new_paragraph_before: true,
+                  new_paragraph_after: true,
+                },
+                {
+                  id: 'policy_bid_live_low_price_body',
+                  op: 'insert_text',
+                  text: '当前成本测算没有覆盖驻场、差旅和应急成本，报价边界过窄。若不补齐测算依据或调整报价，容易被质疑低于成本价。',
+                  new_paragraph_after: true,
+                },
+                {
+                  id: 'policy_bid_live_checklist',
+                  op: 'insert_text',
+                  text: '自检清单：核对资质有效期、补齐第二个案例、补关键路径计划、补7*24服务机制、复核完整成本测算。',
+                  new_paragraph_after: true,
+                },
+              ],
+            },
+          ],
+        },
         actionsBeforeSend: [
           { type: 'clear_document' },
           { type: 'set_cursor', pos: 'start' },
@@ -3033,6 +3190,7 @@ const STORIES: ChatBenchStory[] = [
         query:
           '请基于上面的“原始材料”生成一个《投标响应自查矩阵》写回文末，不要改动原始材料正文。\n' +
           '交付块必须包含：1) 执行摘要；2) 对照表（招标要求/当前响应/证据定位/风险提示/修改动作）；3) 低价风险提示；4) 自检清单。\n' +
+          '标题必须精确写为《投标响应自查矩阵》；对照表第一行必须写出表头：招标要求｜当前响应｜证据定位｜风险提示｜修改动作；正文中必须单独出现“小节标题：低价风险提示”。\n' +
           '要求明确指出案例不足、证据缺口、7*24 服务响应不足、成本边界过窄等问题。\n' +
           '只输出可执行 Plan JSON（schema_version=\"ah32.plan.v1\", host_app=\"wps\"），不要输出任何额外文字。',
       },
@@ -3789,6 +3947,14 @@ const STORIES: ChatBenchStory[] = [
               range: 'A2:A5',
               number_format: 'yyyy-mm-dd',
             },
+            {
+              id: 'venue_note',
+              title: 'Insert venue note',
+              op: 'set_cell_value',
+              sheet_name: '场所调度',
+              a1: 'G1',
+              value: '跨区域协同与资源互补：优先复用远程异地评标室与无人值守工位。',
+            },
           ],
         },
         asserts: [
@@ -3876,6 +4042,14 @@ const STORIES: ChatBenchStory[] = [
                 ['评标报告', '评标资料', '含评分汇总与专家意见', '链上存证', '评标/评分/复核'],
                 ['投诉处理记录', '监管资料', '含初审意见与处理决定', '日志+归档库', '投诉/监管/决定'],
               ],
+            },
+            {
+              id: 'archive_note',
+              title: 'Insert archive note',
+              op: 'set_cell_value',
+              sheet_name: '档案索引',
+              a1: 'G1',
+              value: '档案说明：支持智能命名归类、自动生成索引与摘要、智能检索查询和综合利用分析。',
             },
           ],
         },

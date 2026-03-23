@@ -71,6 +71,7 @@
           if (parsed.suiteId) params.set('ah32_dev_bench_suite', String(parsed.suiteId))
           if (parsed.preset) params.set('ah32_dev_bench_preset', String(parsed.preset))
           if (parsed.action) params.set('ah32_dev_bench_action', String(parsed.action))
+          if (Array.isArray(parsed.storyIds) && parsed.storyIds.length) params.set('ah32_dev_bench_story_ids', parsed.storyIds.join(','))
           if (parsed.onceKey) params.set('ah32_dev_bench_once', String(parsed.onceKey))
           return normalizeQuery(params.toString())
         } catch (e) {

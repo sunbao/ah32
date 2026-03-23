@@ -98,6 +98,26 @@
 - 为了把“自动跑”补成“自动跑完还能自动验”，已给 `scripts/wps_taskpane_driver.py` 增加 `inspect-host-state`：
   - ET：输出 `sheet_count / sheet_names / chart_count / chart_titles / freeze_panes`
   - WPP：输出 `slide_count / slide_titles / slide_title_codes / 每页文本摘要`
+
+## 2026-03-23 Policy 195 Findings
+- `bidding-helper` 当前已经具备完整政策骨架，不需要推翻重做：
+  - `policy_tender_v1` 对应 1-3
+  - `policy_bid_v1` 对应 4-5
+  - `policy_open_eval_v1` 对应 6-8
+  - `policy_award_v1` 对应 9-11
+  - `policy_onsite_v1` 对应 12-14
+  - `policy_qa_v1` 对应 15
+  - `policy_regulation_v1` 对应 16-18
+  - `policy_supervision_v1` 对应 19-20
+- 真正的缺口主要不在“有没有 story”，而在“有些 story 说得还不够贴政策原文”，容易在验收时被认为是泛泛而谈。
+- 本轮收紧的关键点：
+  - 第 10 条显式补 `数字人答辩`
+  - 第 11 条显式补 `在线签订和存档`
+  - 第 15 条显式补 `多模态交互说明`
+  - 第 16 条显式补 `一网管理`
+  - 第 17 条显式补 `工程量清单/报价清单`
+  - 第 19 条显式补 `行刑纪贯通` 与 `一网共治`
+- 这类收紧对后续自动化有直接价值：以后不是只看“有个相似标题”，而是能更明确判断是否真的贴政策要求。
 - `slide_title_codes` 是这次补的关键点：WPP 中文标题进 PowerShell 后会出现乱码，但码点串是 ASCII 安全的，脚本可以稳定拿它做断言。
 - `scripts/run-wps-autobench.ps1` 也已接上这条探针，并内置以下 suite 的自动验收：
   - `et-analyzer`

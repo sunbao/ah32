@@ -48,6 +48,13 @@ Phase 5
 - [x] 为已稳定 suite 补串行批跑入口，并完成 5 条整包回归
 - **Status:** in_progress
 
+### Phase 8: 招投标政策 195 覆盖收口
+- [x] 盘点 `bidding-helper` 当前 story 与政策 20 条条款的对应关系
+- [x] 为已有 story 补齐关键政策原文字段，避免“看起来覆盖，实际说得太泛”
+- [ ] 复跑 `bidding-helper` 全套 chat 宏基准，确认收紧文案后仍然全绿
+- [ ] 整理一笔只包含招投标稳定性与覆盖收口的提交
+- **Status:** in_progress
+
 ## Key Questions
 1. `doc_formatter_v2` 失败是不是主要来自未强制 `doc-formatter` 技能，导致漂移到 `policy-format`？
 2. 当前本机链路是否已经足够稳定到可以作为后续 suite 的统一自动化入口？
@@ -197,6 +204,20 @@ unning/done/error
 - 当前这次的结论和 2026-03-20 不同：
   - **已做到**：ET chat 不再只靠成果物兜底退出，本地宿主状态现在能稳定落到 `done`；
   - **同时确认**：这轮 ET 根因修复没有把 Writer/WPP 自动化链路打坏。
+
+## 2026-03-23 Policy 195 Coverage Tightening
+- 已确认 `bidding-helper` 不是零散 story，而是已有按政策条款拆分的完整骨架：
+  - `wps`：1-5、9-11、15-20
+  - `et`：6-8、12-14
+  - `wpp`：投标汇报类展示场景
+- 本轮新增工作不是“再起一套新 case”，而是把已有 case 收紧到更贴近政策原文：
+  - 智慧问答补“多模态交互说明”
+  - 辅助定标显式补“数字人答辩”
+  - 合同签订显式补“在线签订和存档”
+  - 专家管理补“一网管理”
+  - 围串标补“工程量清单/报价清单”
+  - 协同监管补“行刑纪贯通、一网共治”
+- 已新增根目录追踪文件 `bidding_policy_195_coverage.md`，供后续会话直接续跑，不必重新猜哪条政策对哪条 story。
 
 ## 2026-03-22 Macro Suite Set Follow-up
 - 已重新执行 `scripts/run-wps-autobench-suite-set.ps1 -ApiBase http://192.168.1.154:5123`，当前 5 条稳定宏基准已全部通过。
